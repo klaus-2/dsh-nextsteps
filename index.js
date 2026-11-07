@@ -110,7 +110,7 @@ function toolDescription(settings) {
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
     `Write every prompt in ${language}.`,
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
-    'This never waits for an answer: it returns immediately and your turn ends normally.',
+    'This never waits for an answer and produces no follow-up work: after it returns, end your turn immediately without writing any further text.',
     'Example input:',
     '{"followups":[{"prompt":"Show me how to run the test suite","label":"Run tests"},{"prompt":"Add error handling for empty uploads","label":"Handle empty uploads"},{"prompt":"What about handling streaming updates?","label":"Streaming updates"}]}'
   ].join('\n');
@@ -134,7 +134,7 @@ function toolSpec(settings) {
       const followups = coerceFollowups(args.followups);
       const problem = validationProblem(followups);
       if (problem !== null) return problem;
-      return 'Followups suggested! End your turn.';
+      return 'Followups recorded. Your turn is now complete — do not write any further text after this tool result.';
     }
   };
 }
