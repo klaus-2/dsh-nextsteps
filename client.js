@@ -245,6 +245,28 @@ window.__ModuleLoader__.load({
       return best;
     }
 
+    const adoptedCallIds = new Set();
+
+    function unclaimedCaptures(sessionId, turn) {
+      const entries = captures.get(sessionId);
+      if (entries === undefined) return null;
+      const candidates = [];
+      for (const [callId, entry] of entries.entries()) {
+        if (entry.turn === undefined && !adoptedCallIds.has(callId)) candidates.push([callId, entry]);
+      }
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+      const [callId, entry] = candidates[0];
+      adoptedCallIds.add(callId);
+      entries.set(callId, { ...entry, turn });
+      const store = readStoredCaptures();
+      const sessionEntries = store[sessionId] !== null && typeof store[sessionId] === 'object' ? store[sessionId] : {};
+      sessionEntries[callId] = { turn, followups: entry.followups, clickedId: entry.clickedId };
+      store[sessionId] = sessionEntries;
+      writeStoredCaptures(store);
+      return entry;
+    }
+
     function displayLabel(followup) {
       if (followup.label !== null) return followup.label;
       const prompt = followup.prompt.trim();
@@ -444,7 +466,11 @@ window.__ModuleLoader__.load({
 
 
 
-        const entry = turn !== undefined ? captureForTurn(sessionId, turn) : newestCapture(sessionId);
+        let entry = turn !== undefined ? captureForTurn(sessionId, turn) : newestCapture(sessionId);
+        if (entry === null) {
+          const unclaimed = unclaimedCaptures(sessionId, turn);
+          if (unclaimed !== null) entry = unclaimed;
+        }
         return h(FollowupsCard, { entry, sessionId, ctx, t: props.t });
       };
     }
