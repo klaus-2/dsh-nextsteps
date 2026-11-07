@@ -13,17 +13,29 @@ const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.js
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 const LANGUAGE_NAMES = {
-  auto: 'the same language as the conversation',
-  en: 'English',
-  'pt-BR': 'Brazilian Portuguese',
-  'zh-CN': 'Simplified Chinese'
+  auto: "the same language as the conversation",
+  'en': "English",
+  'pt-BR': "Brazilian Portuguese",
+  'zh-CN': "Simplified Chinese",
+  'es': "Spanish",
+  'fr': "French",
+  'de': "German",
+  'it': "Italian",
+  'ja': "Japanese",
+  'ko': "Korean",
+  'ru': "Russian",
+  'ar': "Arabic",
+  'hi': "Hindi",
+  'id': "Indonesian",
+  'tr': "Turkish",
+  'vi': "Vietnamese"
 };
 
 function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
     return {
-      lang: ['auto', 'en', 'pt-BR', 'zh-CN'].includes(stored.lang) ? stored.lang : 'auto',
+      lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(stored.lang) ? stored.lang : 'auto',
       maxFollowups: Number.isInteger(stored.maxFollowups) && stored.maxFollowups >= 1 && stored.maxFollowups <= 6 ? stored.maxFollowups : 3,
       showHeader: stored.showHeader !== false
     };
@@ -193,7 +205,7 @@ async function apply(ctx) {
       try { body = await request.json(); } catch { return json({ ok: false, error: 'bad request' }, 400); }
       const current = settingsLoad();
       const next = {
-        lang: ['auto', 'en', 'pt-BR', 'zh-CN'].includes(body?.lang) ? body.lang : current.lang,
+        lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(body?.lang) ? body.lang : current.lang,
         maxFollowups: Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : current.maxFollowups,
         showHeader: typeof body?.showHeader === 'boolean' ? body.showHeader : current.showHeader
       };

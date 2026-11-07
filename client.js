@@ -243,6 +243,23 @@ window.__ModuleLoader__.load({
       };
     }
 
+    const LANGUAGE_OPTIONS = [
+      { value: "en", label: "English" },
+      { value: "pt-BR", label: "Português (Brasil)" },
+      { value: "zh-CN", label: "简体中文" },
+      { value: "es", label: "Español" },
+      { value: "fr", label: "Français" },
+      { value: "de", label: "Deutsch" },
+      { value: "it", label: "Italiano" },
+      { value: "ja", label: "日本語" },
+      { value: "ko", label: "한국어" },
+      { value: "ru", label: "Русский" },
+      { value: "ar", label: "العربية" },
+      { value: "hi", label: "हिन्दी" },
+      { value: "id", label: "Bahasa Indonesia" },
+      { value: "tr", label: "Türkçe" },
+      { value: "vi", label: "Tiếng Việt" }
+];
     const NPM_NAME = 'dsh-nextsteps';
     const ICON_DATAURI = 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20256%20256%22%20role%3D%22img%22%20aria-label%3D%22Nextsteps%20icon%22%3E%0A%20%20%3Crect%20width%3D%22256%22%20height%3D%22256%22%20rx%3D%2256%22%20fill%3D%22%230d0d10%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%2264%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22124%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22184%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%23e5484d%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M84%20206h72M136%20194l14%2012-14%2012%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%228%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20fill%3D%22none%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M76%2086h96M76%20146h96%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%227%22%20stroke-linecap%3D%22round%22%2F%3E%0A%3C%2Fsvg%3E%0A';
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
@@ -459,10 +476,8 @@ window.__ModuleLoader__.load({
             h('img', { src: ICON_DATAURI, width: 96, height: 54, alt: '', style: { borderRadius: 6, border: '1px solid var(--dsw-alias-border-l1)', flex: 'none' } }),
             h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', lineHeight: '18px' } }, t('intro'))),
           row(t('setLanguage'), t('setLanguageTip'), h('select', { value: settings.lang, onChange: (event) => save({ lang: event.target.value }), style: controlStyle, 'aria-label': t('setLanguage') },
-            h('option', { value: 'auto' }, t('optAuto')),
-            h('option', { value: 'en' }, t('optEn')),
-            h('option', { value: 'pt-BR' }, t('optPt')),
-            h('option', { value: 'zh-CN' }, t('optZh'))), 'lang'),
+                      h('option', { value: 'auto' }, t('optAuto')),
+          ...LANGUAGE_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label))), 'lang'),
           row(t('setMax'), t('setMaxTip'), h('input', { type: 'number', min: 1, max: 6, value: settings.maxFollowups, onChange: (event) => save({ maxFollowups: Number(event.target.value) }), style: { ...controlStyle, width: 64 }, 'aria-label': t('setMax') }), 'max'),
           row(t('setHeader'), t('setHeaderTip'), h('input', { type: 'checkbox', checked: settings.showHeader, onChange: (event) => save({ showHeader: event.target.checked }), 'aria-label': t('setHeader') }), 'header'),
           h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '14px 0', borderBottom: '.5px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
