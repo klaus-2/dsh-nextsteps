@@ -30,9 +30,9 @@ jobs:
         if: steps.guard.outputs.publish == 'true'
         run: |
           set -e
-          node --check lib/index.js
-          node --check lib/client.js
-          for lang in en pt-BR zh-CN; do node -e "JSON.parse(require('fs').readFileSync('locale/$lang.json','utf8'))"; done
+          node --check index.js
+          node --check client.js
+          for lang in en pt-BR zh-CN; do node -e "JSON.parse(require('fs').readFileSync('lib/locale/$lang.json','utf8'))"; done
       - name: Publish
         if: steps.guard.outputs.publish == 'true'
         run: |
