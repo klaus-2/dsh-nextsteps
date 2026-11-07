@@ -247,8 +247,8 @@ window.__ModuleLoader__.load({
     const ICON_DATAURI = 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20256%20256%22%20role%3D%22img%22%20aria-label%3D%22Nextsteps%20icon%22%3E%0A%20%20%3Crect%20width%3D%22256%22%20height%3D%22256%22%20rx%3D%2256%22%20fill%3D%22%230d0d10%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%2264%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22124%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22184%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%23e5484d%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M84%20206h72M136%20194l14%2012-14%2012%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%228%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20fill%3D%22none%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M76%2086h96M76%20146h96%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%227%22%20stroke-linecap%3D%22round%22%2F%3E%0A%3C%2Fsvg%3E%0A';
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
     const UPDATE_ROUTE = '/api/dsh-nextsteps.update';
-    const EN_DICT = require('./locale/en.json');
-    const DICTIONARIES = { en: EN_DICT, 'pt-BR': require('./locale/pt-BR.json'), 'zh-CN': require('./locale/zh-CN.json') };
+    const EN_DICT = require('./lib/locale/en.json');
+    const DICTIONARIES = { en: EN_DICT, 'pt-BR': require('./lib/locale/pt-BR.json'), 'zh-CN': require('./lib/locale/zh-CN.json') };
     let pluginSettings = { lang: 'auto', maxFollowups: 3, showHeader: true };
     let pluginVersion;
 
