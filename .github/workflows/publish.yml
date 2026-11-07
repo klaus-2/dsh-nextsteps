@@ -1,0 +1,46 @@
+name: Publish Node.js Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Guard v-tag
+        id: guard
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "release $GITHUB_REF_NAME is not a v-tag; publish skipped"
+          fi
+      - name: Smoke suite
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          set -e
+          node --check lib/index.js
+          node --check lib/client.js
+          for lang in en pt-BR zh-CN; do node -e "JSON.parse(require('fs').readFileSync('locale/$lang.json','utf8'))"; done
+      - name: Publish
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "dsh-nextsteps@$VERSION" version > /dev/null 2>&1; then
+            echo "dsh-nextsteps@$VERSION is already on npm; publish skipped"
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
