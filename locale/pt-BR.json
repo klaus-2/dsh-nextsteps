@@ -1,0 +1,10 @@
+{
+  "header": "Sugestões de acompanhamento",
+  "showEarlier": "Mostrar sugestões anteriores",
+  "hideEarlier": "Ocultar sugestões anteriores",
+  "srFollowupSent": "Follow-up enviado",
+  "meta": {
+    "title": "Nextsteps",
+    "description": "Sugestões de próximos passos sob cada turno do agente — um clique envia o followup."
+  }
+}

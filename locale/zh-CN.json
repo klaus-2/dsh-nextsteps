@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "Nextsteps",
+    "description": "在每个智能体回合下方推荐后续步骤提示——单击即可发送。"
+  },
+  "header": "建议的后续操作",
+  "srFollowupSent": "后续操作已发送",
+  "sendFailed": "发送失败："
+}

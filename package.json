@@ -1,0 +1,53 @@
+{
+  "name": "dsh-nextsteps",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "locale",
+    "docs/assets/icon.png",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "description": "Suggested next-step prompts under every finished agent turn in the DeepSeek Harness chat — one click sends the followup.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "dsh",
+    "followups",
+    "next-steps",
+    "suggestions",
+    "ai-agents",
+    "human-in-the-loop"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/klaus-2/dsh-nextsteps#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/klaus-2/dsh-nextsteps.git"
+  },
+  "bugs": {
+    "url": "https://github.com/klaus-2/dsh-nextsteps/issues"
+  },
+  "icon": "./docs/assets/icon.png"
+}

@@ -1,0 +1,10 @@
+{
+  "header": "Suggested followups",
+  "showEarlier": "Show earlier suggestions",
+  "hideEarlier": "Hide earlier suggestions",
+  "srFollowupSent": "Followup sent",
+  "meta": {
+    "title": "Nextsteps",
+    "description": "Suggested next-step prompts under every finished agent turn — one click sends the followup."
+  }
+}
