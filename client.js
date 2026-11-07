@@ -144,6 +144,57 @@ window.__ModuleLoader__.load({
 
     const captures = new Map();
     const captureListeners = new Set();
+    const CAPTURES_KEY = 'dsh.nextsteps.captures.v1';
+    const CAPTURE_LIMIT = 400;
+
+    function readStoredCaptures() {
+      try {
+        const raw = window.localStorage.getItem(CAPTURES_KEY);
+        const parsed = raw === null ? {} : JSON.parse(raw);
+        return parsed !== null && typeof parsed === 'object' ? parsed : {};
+      } catch (error) {
+        console.warn('dsh-nextsteps: could not read stored captures:', error);
+        return {};
+      }
+    }
+
+    function writeStoredCaptures(store) {
+      try {
+        window.localStorage.setItem(CAPTURES_KEY, JSON.stringify(store));
+      } catch (error) {
+        console.warn('dsh-nextsteps: could not persist captures:', error);
+      }
+    }
+
+    function rehydrateCaptures() {
+      const store = readStoredCaptures();
+      for (const [sessionId, sessionEntries] of Object.entries(store)) {
+        if (sessionEntries === null || typeof sessionEntries !== 'object') continue;
+        const entries = sessionCaptures(sessionId);
+        for (const [callId, entry] of Object.entries(sessionEntries)) {
+          if (entry === null || typeof entry !== 'object' || !Array.isArray(entry.followups) || entry.followups.length === 0) continue;
+          if (entries.has(callId)) continue;
+          entries.set(callId, { turn: entry.turn, followups: entry.followups, clickedId: entry.clickedId });
+        }
+      }
+    }
+
+    function pruneStoredCaptures(store) {
+      let total = 0;
+      for (const sessionEntries of Object.values(store)) total += Object.keys(sessionEntries ?? {}).length;
+      if (total <= CAPTURE_LIMIT) return;
+      const sessionIds = Object.keys(store);
+      for (const sessionId of sessionIds) {
+        if (total <= CAPTURE_LIMIT) break;
+        const keys = Object.keys(store[sessionId]);
+        for (const callId of keys) {
+          if (total <= CAPTURE_LIMIT) break;
+          delete store[sessionId][callId];
+          total -= 1;
+        }
+        if (Object.keys(store[sessionId]).length === 0) delete store[sessionId];
+      }
+    }
 
     function sessionCaptures(sessionId) {
       let entries = captures.get(sessionId);
@@ -162,6 +213,12 @@ window.__ModuleLoader__.load({
       const clickedId = previous?.clickedId
         ?? `sf-${contentHash(`${sessionId}|${mergedTurn ?? callId}|${followups.map((entry) => entry.prompt).join('|')}`)}`;
       entries.set(callId, { turn: mergedTurn, followups, clickedId });
+      const store = readStoredCaptures();
+      const sessionEntries = store[sessionId] !== null && typeof store[sessionId] === 'object' ? store[sessionId] : {};
+      sessionEntries[callId] = { turn: mergedTurn, followups, clickedId };
+      store[sessionId] = sessionEntries;
+      pruneStoredCaptures(store);
+      writeStoredCaptures(store);
       for (const listener of captureListeners) listener(sessionId);
     }
 
@@ -180,9 +237,12 @@ window.__ModuleLoader__.load({
 
     function newestCapture(sessionId) {
       const entries = captures.get(sessionId);
-      if (entries === undefined || entries.size !== 1) return null;
-      for (const entry of entries.values()) return entry;
-      return null;
+      if (entries === undefined || entries.size === 0) return null;
+      let best = null;
+      for (const entry of entries.values()) {
+        if (best === null || (entry.turn ?? -1) > (best.turn ?? -1)) best = entry;
+      }
+      return best;
     }
 
     function displayLabel(followup) {
@@ -501,6 +561,7 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale', 'remote'],
       apply(ctx) {
         installStyles(ctx);
+        rehydrateCaptures();
         refreshPluginSettings();
         for (const [code, dictionary] of Object.entries(DICTIONARIES)) {
           ctx.effect(() => {
