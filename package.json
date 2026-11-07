@@ -14,7 +14,9 @@
     "lib/locale",
     "docs/assets/icon.png",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "README.pt-BR.md",
+    "README.zh-CN.md"
   ],
   "dsh": {
     "bundle": {

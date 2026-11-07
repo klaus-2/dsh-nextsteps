@@ -1,8 +1,8 @@
 # dsh-nextsteps
 
-[![npm](https://img.shields.io/npm/v/dsh-nextsteps)](https://www.npmjs.com/package/dsh-nextsteps)
-[![license](https://img.shields.io/github/license/klaus-2/dsh-nextsteps)](LICENSE)
-[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-e5484d)](https://github.com/deepseek-ai/deepseek-harness)
+English · [Português (Brasil)](README.pt-BR.md) · [简体中文](README.zh-CN.md)
+
+[![npm](https://img.shields.io/npm/v/dsh-nextsteps)](https://www.npmjs.com/package/dsh-nextsteps) [![license](https://img.shields.io/github/license/klaus-2/dsh-nextsteps)](LICENSE) [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-e5484d)](https://github.com/deepseek-ai/deepseek-harness)
 
 **Every finished agent turn ends with ready-to-click next steps.**
 
@@ -12,21 +12,24 @@
 dsh plugin --profile web add dsh-nextsteps
 ```
 
-## How it works
+## Product tour
 
-1. The plugin registers a native `suggest_followups` agent tool with a strict JSON Schema.
-2. At the end of its turn, the model calls it with about three followup prompts.
-3. Each completed turn renders its own suggestion cards — attributed to that turn, never repeated across messages.
-4. Click a card: the prompt is sent verbatim as your next queued message and the card flips to a sent state.
+![Nextsteps demo loop](docs/assets/demo.svg)
+
+1. Ask anything. The model works, answers, and calls the native `suggest_followups` tool right before its final answer.
+2. The completed turn renders its own suggestion cards — attributed to that turn, never repeated across messages.
+3. Click a card: the prompt is sent verbatim as your next queued message and the card flips to a sent state.
+4. Everything survives restarts: cards, their turn attribution, and which ones you already clicked.
+5. Open the dsh settings → **Nextsteps** to pick the generation language (15 languages or Auto), how many suggestions you get per turn (1–6), and whether the small header shows.
 
 ## Features
 
-- Per-turn attribution — suggestions stay attached to the turn that produced them, across reloads.
+- Per-turn attribution — suggestions stay attached to the turn that produced them, across reloads and app restarts.
 - One-click send through the session's own conversation controller, with a composer fallback.
-- Clicked cards persist (content-addressed keys) and stay marked after reloads.
+- Persistent captures: clicked cards stay marked after restarts (content-addressed keys, turn backfilled from history).
 - Model-supplied labels, with automatic truncation when absent; strict payload validation with corrective model feedback.
 - Settings page inside the dsh settings — language, followups per turn, header visibility, updates.
-- Followups generated in the selected language (Auto follows the conversation).
+- Followups generated in the selected language — 15 languages or Auto, which follows the conversation.
 - In-app updater — version check, one-click install, release notes, restart prompt.
 - UI in English, Português (Brasil) and 简体中文.
 
