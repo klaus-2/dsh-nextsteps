@@ -25,7 +25,24 @@ dsh plugin --profile web add dsh-nextsteps
 - One-click send through the session's own conversation controller, with a composer fallback.
 - Clicked cards persist (content-addressed keys) and stay marked after reloads.
 - Model-supplied labels, with automatic truncation when absent; strict payload validation with corrective model feedback.
+- Settings page inside the dsh settings — language, followups per turn, header visibility, updates.
+- Followups generated in the selected language (Auto follows the conversation).
+- In-app updater — version check, one-click install, release notes, restart prompt.
 - UI in English, Português (Brasil) and 简体中文.
+
+## Settings
+
+Open the dsh settings and find the **Nextsteps** section:
+
+| Setting | What it does |
+| --- | --- |
+| Language | The language the model writes followups in. `Auto` follows the conversation. |
+| Followups per turn | How many suggested prompts the model produces (1–6). |
+| Show header | The small label above the cards. |
+
+## Updates
+
+The same settings page checks GitHub for new releases. When a newer version is published on npm, **Update now** installs it through the dsh plugin manager and asks you to restart. Updates only ever install the `dsh-nextsteps` npm package — a renamed or development copy is detected and left alone.
 
 ## Requirements
 
