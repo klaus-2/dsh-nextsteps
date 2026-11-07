@@ -104,13 +104,13 @@ const PARAMETER_SCHEMA = {
 function toolDescription(settings) {
   const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
   return [
-    'MANDATORY in every turn: call this tool exactly once, at the very end of your turn, after your written answer and all other tool calls. Never finish a turn without calling it.',
+    'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
     `Suggest exactly ${settings.maxFollowups} followup prompts the user is likely to want next.`,
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
     `Write every prompt in ${language}.`,
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
-    'This never waits for an answer and produces no follow-up work: after it returns, end your turn immediately without writing any further text.',
+    'This never waits for an answer: its result only confirms the suggestions were recorded.',
     'Example input:',
     '{"followups":[{"prompt":"Show me how to run the test suite","label":"Run tests"},{"prompt":"Add error handling for empty uploads","label":"Handle empty uploads"},{"prompt":"What about handling streaming updates?","label":"Streaming updates"}]}'
   ].join('\n');
@@ -134,7 +134,7 @@ function toolSpec(settings) {
       const followups = coerceFollowups(args.followups);
       const problem = validationProblem(followups);
       if (problem !== null) return problem;
-      return 'Followups recorded. Your turn is now complete — do not write any further text after this tool result.';
+      return 'Followups recorded. Now write your final answer for this turn (do not call this tool again).';
     }
   };
 }
