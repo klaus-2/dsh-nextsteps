@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -519,6 +520,23 @@ export async function freePort() {
   const port = typeof address === "object" && address !== null ? address.port : 0;
   await new Promise((resolve) => server.close(resolve));
   return port;
+}
+
+export async function packedFiles(dir) {
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      execFile("npm", ["pack", "--dry-run", "--json"], { cwd: dir, timeout: 120000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, shell: true }, (error, out) => {
+        if (error) reject(error);
+        else resolve(out);
+      });
+    });
+    const parsed = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return undefined;
+    return (parsed[0]?.files ?? []).map((entry) => entry.path);
+  } catch (error) {
+    if (process.env.DSH_SUITE_DEBUG === '1') console.error('packedFiles falhou:', String(error?.message ?? error).slice(0, 300));
+    return undefined;
+  }
 }
 
 export function jsonResponse(body, status = 200) {

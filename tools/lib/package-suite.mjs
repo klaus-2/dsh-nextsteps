@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { packedFiles } from "./harness.mjs";
 import { listPublishedReleases, readPublishedReleases } from "./release-suite.mjs";
 
 export async function runPackageSuite(harness, { pluginDir, packageName }) {
@@ -58,6 +59,28 @@ export async function runPackageSuite(harness, { pluginDir, packageName }) {
       for (const [code, data] of dictionaries) {
         harness.eq(`the ${code} locale file has the same keys`, Object.keys(data).filter((key) => key !== "meta").sort(), reference);
       }
+    }
+  }
+
+  harness.section("package: what npm would publish");
+  {
+    const files = await packedFiles(pluginDir);
+    if (files === undefined) {
+      harness.skip("the published file list can be read", "npm pack is not available here");
+    } else {
+      const required = [
+        "index.js",
+        "client.js",
+        "cordis.patch.yml",
+        "package.json",
+        "lib/locale/en.json",
+        "lib/locale/pt-BR.json",
+        "lib/locale/zh-CN.json",
+        "docs/assets/icon.png"
+      ];
+      const missing = required.filter((file) => !files.includes(file));
+      harness.check("the published package carries what the host loads", missing.length === 0, missing.join(", "));
+      harness.check("the published package carries the readmes", ["README.md", "README.pt-BR.md", "README.zh-CN.md"].every((file) => files.includes(file)));
     }
   }
 

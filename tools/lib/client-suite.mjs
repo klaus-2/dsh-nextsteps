@@ -296,6 +296,55 @@ export async function runClientSuite(harness, { pluginDir }) {
     }
   }
 
+  harness.section("client: the update button shows the real error");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const diagnostic = [
+      "? Verifying lockfile against supply-chain policies (253 entries)...",
+      "Progress: resolved 254, reused 2, downloaded 0, added 1, done",
+      "",
+      "dsh: installation rejected: Cannot validate installed package dsh-nextsteps: Error: ENOENT: no such file or directory",
+      "dsh: restored package.json, pnpm-lock.yaml, and node_modules."
+    ].join(String.fromCharCode(10));
+    const pluginManager = {
+      async installBundle() {
+        return { ok: true, value: { application: "failed", error: { code: "operation-error", diagnostic } } };
+      }
+    };
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        if (String(url).includes("update")) {
+          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx({ remote: { pluginManager } });
+    module.apply(client.ctx);
+    client.resolve();
+    const label = (key) => (key === "checkFailed" ? "Falha ao verificar atualizações ({e})" : key);
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, { t: label });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    const withButton = renderOnce(stub, settings, { t: label });
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(6);
+      const after = renderOnce(stub, settings, { t: label });
+      const errors = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("Falha ao verificar"));
+      harness.eq("the failure is shown", errors.length, 1);
+      const message = errors[0]?.props?.children ?? "";
+      harness.check("the message names the real failure", message.includes("installation rejected"), message.slice(0, 140));
+      harness.check("the message is not the install progress", !message.includes("Verifying lockfile"), message.slice(0, 140));
+    }
+  }
+
   harness.section("client: the update button reports a missing plugin manager");
   {
     const stub = createReactStub();

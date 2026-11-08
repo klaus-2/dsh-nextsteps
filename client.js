@@ -581,7 +581,8 @@ window.__ModuleLoader__.load({
             };
             let result = await installSpec(NPM_NAME + '@' + info.latest);
             if (result?.error?.code === 'already-installed') result = await installSpec('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
-            const firstLine = () => result?.error?.diagnostic?.split(String.fromCharCode(10)).find((line) => line.trim() !== '') ?? result?.error?.code ?? result?.application;
+            const diagnosticLines = String(result?.error?.diagnostic ?? '').split(String.fromCharCode(10)).map((line) => line.trim()).filter((line) => line !== '');
+            const firstLine = () => diagnosticLines.find((line) => line.startsWith('dsh:')) ?? diagnosticLines.at(-1) ?? result?.error?.code ?? result?.application;
             const live = result?.application === 'applied';
             if (!live && result?.application !== 'restart-required' && result?.version !== info.latest) throw new Error(firstLine());
             if (result?.application === 'failed') console.warn(`dsh-nextsteps: ${info.latest} is installed; dsh could not start it before a restart: ${firstLine()}`);
