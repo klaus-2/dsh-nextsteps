@@ -129,7 +129,7 @@ function languageRuleOf(settings) {
   if (settings.lang === 'auto') {
     return 'Write every prompt and label in the same language the conversation has been using.';
   }
-  return `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
+  return `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language}. The user chose this language for these cards on purpose: the language of the conversation, of the session history and of any saved preference about how the user usually writes do not apply here, and the prompts and labels must not follow them.`;
 }
 
 function toolDescription(settings = { lang: 'auto', maxFollowups: 3, model: '' }) {
