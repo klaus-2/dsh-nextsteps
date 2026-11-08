@@ -367,19 +367,39 @@ export async function runHostSuite(harness, { pluginDir }) {
 
     harness.section("host: the update check");
     {
-      const newer = await checkUpdate(async () => new Response(JSON.stringify({ tag_name: "v9.9.9", body: "notes", html_url: "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v9.9.9" }), { status: 200, headers: { "content-type": "application/json" } }));
+      const registry = (version) => async (url) => {
+        if (String(url).includes("registry.npmjs.org")) {
+          return new Response(JSON.stringify({ version }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ body: "notes" }), { status: 200, headers: { "content-type": "application/json" } });
+      };
+      const newer = await checkUpdate(registry("9.9.9"));
       harness.check("a newer release is detected", newer.newer === true && newer.latest === "9.9.9", JSON.stringify(newer));
       harness.eq("the notes are carried", newer.notes, "notes");
       harness.eq("the release page is carried", newer.url, "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v9.9.9");
 
-      const same = await checkUpdate(async () => new Response(JSON.stringify({ tag_name: "v0.0.1", body: "" }), { status: 200, headers: { "content-type": "application/json" } }));
+      const same = await checkUpdate(registry("0.0.1"));
       harness.check("an older release is not newer", same.newer === false);
+
+      const githubBlocked = await checkUpdate(async (url) => {
+        if (String(url).includes("registry.npmjs.org")) {
+          return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response("{}", { status: 403 });
+      });
+      harness.check("a blocked notes request does not break the check", githubBlocked.newer === true && githubBlocked.latest === "9.9.9", JSON.stringify(githubBlocked));
+      harness.check("a blocked notes request leaves the notes empty", githubBlocked.notes === undefined, JSON.stringify(githubBlocked.notes));
 
       const missing = await checkUpdate(async () => new Response("{}", { status: 404 })).then(() => undefined, (error) => error);
       harness.check("a missing release answers with an error", missing !== undefined && /404/.test(String(missing.message)), String(missing?.message));
 
-      const untagged = await checkUpdate(async () => new Response(JSON.stringify({ tag_name: "nightly" }), { status: 200, headers: { "content-type": "application/json" } })).then(() => undefined, (error) => error);
-      harness.check("a release without a version is refused", untagged !== undefined && /no x\.y\.z tag/.test(String(untagged.message)), String(untagged?.message));
+      const untagged = await checkUpdate(async (url) => {
+        if (String(url).includes("registry.npmjs.org")) {
+          return new Response(JSON.stringify({ version: "nightly" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }).then(() => undefined, (error) => error);
+      harness.check("a release without a version is refused", untagged !== undefined && /no x\.y\.z version/.test(String(untagged.message)), String(untagged?.message));
     }
   });
 }

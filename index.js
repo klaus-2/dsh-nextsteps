@@ -8,7 +8,6 @@ const TOOL_NAME = 'suggest_followups';
 const name = 'dsh-nextsteps';
 const inject = ['tools', 'connection'];
 const NPM_NAME = 'dsh-nextsteps';
-const RELEASES_URL = 'https://api.github.com/repos/klaus-2/dsh-nextsteps/releases/latest';
 const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.json');
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const GENERATE_TIMEOUT_MS = 30000;
@@ -346,20 +345,36 @@ function newerVersion(latest, current) {
   return false;
 }
 
+async function releaseNotes(fetchImpl, version, signal) {
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/klaus-2/dsh-nextsteps/releases/tags/v${version}`, {
+      signal: signal === undefined ? AbortSignal.timeout(6000) : AbortSignal.any([signal, AbortSignal.timeout(6000)]),
+      headers: { accept: 'application/vnd.github+json', 'user-agent': NPM_NAME }
+    });
+    if (!response.ok) return undefined;
+    const release = await response.json();
+    return typeof release.body === 'string' ? release.body.slice(0, 4000) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function checkUpdate(fetchImpl = fetch, pkg = PACKAGE, signal) {
   const current = parseVersion(pkg.version);
   const managed = pkg.name === NPM_NAME && current !== undefined;
-  const response = await fetchImpl(RELEASES_URL, { signal: signal === undefined ? AbortSignal.timeout(10000) : AbortSignal.any([signal, AbortSignal.timeout(10000)]), headers: { accept: 'application/vnd.github+json', 'user-agent': NPM_NAME } });
-  if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-  const release = await response.json();
-  const latest = parseVersion(release?.tag_name);
-  if (latest === undefined) throw new Error('latest release has no x.y.z tag');
-  const info = { name: NPM_NAME, current: pkg.version, latest: latest.join('.'), managed, newer: false, url: typeof release.html_url === 'string' && release.html_url.startsWith('https://github.com/') ? release.html_url : undefined };
-  const notes = typeof release.body === 'string' ? release.body.slice(0, 4000) : undefined;
+  const response = await fetchImpl(`https://registry.npmjs.org/${NPM_NAME}/latest`, {
+    signal: signal === undefined ? AbortSignal.timeout(10000) : AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+    headers: { accept: 'application/json', 'user-agent': NPM_NAME }
+  });
+  if (!response.ok) throw new Error(`the registry answered ${response.status}`);
+  const payload = await response.json();
+  const latest = parseVersion(payload?.version);
+  if (latest === undefined) throw new Error('the registry has no x.y.z version');
+  const info = { name: NPM_NAME, current: pkg.version, latest: latest.join('.'), managed, newer: false, url: `https://github.com/klaus-2/dsh-nextsteps/releases/tag/v${latest.join('.')}` };
+  const notes = await releaseNotes(fetchImpl, latest.join('.'), signal);
   if (notes !== undefined) info.notes = notes;
   if (current === undefined || !newerVersion(latest, current)) return info;
-  const registry = await fetchImpl(`https://registry.npmjs.org/${NPM_NAME}/${info.latest}`, { signal: AbortSignal.any([signal ?? AbortSignal.timeout(10000), AbortSignal.timeout(10000)]) });
-  return { ...info, newer: registry.ok };
+  return { ...info, newer: true };
 }
 
 async function apply(ctx) {
