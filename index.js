@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const TOOL_NAME = 'suggest_followups';
 const name = 'dsh-nextsteps';
-const inject = ['tools', 'connection', 'sessionQuery'];
+const inject = ['tools', 'connection'];
 const NPM_NAME = 'dsh-nextsteps';
 const RELEASES_URL = 'https://api.github.com/repos/klaus-2/dsh-nextsteps/releases/latest';
 const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.json');
@@ -133,10 +133,10 @@ function toolDescription(external = false) {
   }
   return [
     'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
-    'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt.',
+    'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt; when there is no such section, suggest three.',
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
-    'Write every prompt and label in the language the nextsteps section of the system prompt states.',
+    'Write every prompt and label in the language the nextsteps section of the system prompt states; when there is no such section, use the language of the conversation.',
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
     'This never waits for an answer: its result only confirms the suggestions were recorded.',
     'Example input:',
@@ -362,20 +362,15 @@ async function apply(ctx) {
   } catch (error) {
     console.error('dsh-nextsteps: tool registration failed:', error);
   }
-  if (typeof ctx.inject === 'function') {
-    ctx.inject(['tools', 'systemPrompt'], (sub) => {
-      try {
-        try { sub.tools.unregister(TOOL_NAME); } catch { /* not registered yet */ }
-        sub.tools.register(toolSpec(settings));
-      } catch (error) {
-        console.error('dsh-nextsteps: tool registration via inject failed:', error);
-      }
-      try {
-        sub.systemPrompt.section({ name: 'dsh-nextsteps', order: 640, interpolate: false, text: () => nextstepsSectionText() });
-      } catch (error) {
-        console.error('dsh-nextsteps: system prompt section rejected:', error);
-      }
-    });
+  const systemPrompt = get(ctx, 'systemPrompt');
+  if (systemPrompt !== undefined && typeof systemPrompt.section === 'function') {
+    try {
+      systemPrompt.section({ name: 'dsh-nextsteps', order: 640, interpolate: false, text: () => nextstepsSectionText() });
+    } catch (error) {
+      console.error('dsh-nextsteps: system prompt section rejected:', error);
+    }
+  } else {
+    console.warn('dsh-nextsteps: the system prompt service is unavailable; the suggestions follow the conversation language');
   }
   ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.settings',
