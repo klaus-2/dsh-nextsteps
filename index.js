@@ -124,7 +124,13 @@ const PARAMETER_SCHEMA = {
   required: ['followups']
 };
 
-function toolDescription() {
+function toolDescription(external = false) {
+  if (external) {
+    return [
+      'This tool is not used any more: the host generates the followup suggestions after your turn with a separate model.',
+      'Do not call it. Just finish your answer as usual.'
+    ].join('\n');
+  }
   return [
     'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
     'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt.',
@@ -140,6 +146,11 @@ function toolDescription() {
 
 function nextstepsSectionText() {
   const settings = settingsLoad();
+  if (typeof settings.model === 'string' && settings.model !== '') {
+    return [
+      'nextsteps (the followup suggestion cards): the host generates them after your turn with a separate model, so you must not call any followup tool. Just finish your answer as usual.'
+    ].join('\n');
+  }
   const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
   const languageRule = settings.lang === 'auto'
     ? `Write every prompt and label in the same language the conversation has been using.`
@@ -153,10 +164,11 @@ function nextstepsSectionText() {
 
 const PLUGIN_REV = 'sf-2';
 
-function toolSpec() {
+function toolSpec(settings = { lang: 'auto', maxFollowups: 3, model: '' }) {
+  const external = typeof settings.model === 'string' && settings.model !== '';
   return {
     name: TOOL_NAME,
-    description: toolDescription(),
+    description: toolDescription(external),
     parameters: PARAMETER_SCHEMA,
     output: {
       schema: { type: 'string' },
@@ -166,6 +178,7 @@ function toolSpec() {
       ]
     },
     async execute(args) {
+      if (external) return 'The host generates the followup suggestions after this turn. Do not call this tool again.';
       const followups = coerceFollowups(args.followups);
       const problem = validationProblem(followups);
       if (problem !== null) return problem;
@@ -202,15 +215,33 @@ async function modelCatalog(ctx) {
   return out;
 }
 
+function textOf(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const part of content) {
+    if (part === null || typeof part !== 'object') continue;
+    if (part.type === 'text' && typeof part.text === 'string') parts.push(part.text);
+    else if (part.type === 'reasoning' && typeof part.text === 'string') parts.push(part.text);
+  }
+  return parts.join('\n');
+}
+
 function turnTranscript(events, afterSeq) {
   const lines = [];
   for (const entry of events) {
     const event = entry?.event ?? entry;
     if (event === null || typeof event !== 'object') continue;
     if (Number.isSafeInteger(afterSeq) && Number.isSafeInteger(event.seq) && event.seq > afterSeq) break;
-    if (event.type === 'user/message' && typeof event.data?.text === 'string') lines.push(`User: ${event.data.text.slice(0, 2000)}`);
-    else if (event.type === 'agent/message' && typeof event.data?.text === 'string') lines.push(`Assistant: ${event.data.text.slice(0, 2000)}`);
-    else if (event.type === 'tool/call' && typeof event.data?.name === 'string') lines.push(`Tool call: ${event.data.name}`);
+    if (event.type === 'user/message') {
+      const text = textOf(event.data?.content);
+      if (text !== '' && event.data?.source?.kind === 'user') lines.push(`User: ${text.slice(0, 2000)}`);
+    } else if (event.type === 'assistant/message') {
+      const text = textOf(event.data?.message?.content);
+      if (text !== '') lines.push(`Assistant: ${text.slice(0, 2000)}`);
+    } else if (event.type === 'tool/call' && typeof event.data?.name === 'string') {
+      lines.push(`Tool call: ${event.data.name}`);
+    }
   }
   return lines.join('\n\n');
 }
@@ -321,13 +352,13 @@ async function apply(ctx) {
     settings = next;
     try {
       try { ctx.tools.unregister(TOOL_NAME); } catch { /* not registered yet */ }
-      if (!isExternal(next)) ctx.tools.register(toolSpec());
+      ctx.tools.register(toolSpec(next));
     } catch (error) {
       console.error('dsh-nextsteps: tool re-registration failed:', error);
     }
   };
   try {
-    if (!isExternal(settings)) ctx.tools.register(toolSpec());
+    ctx.tools.register(toolSpec(settings));
   } catch (error) {
     console.error('dsh-nextsteps: tool registration failed:', error);
   }
@@ -335,7 +366,7 @@ async function apply(ctx) {
     ctx.inject(['tools', 'systemPrompt'], (sub) => {
       try {
         try { sub.tools.unregister(TOOL_NAME); } catch { /* not registered yet */ }
-        if (!isExternal(settings)) sub.tools.register(toolSpec());
+        sub.tools.register(toolSpec(settings));
       } catch (error) {
         console.error('dsh-nextsteps: tool registration via inject failed:', error);
       }

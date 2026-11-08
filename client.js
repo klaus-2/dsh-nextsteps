@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const TOOL_NAME = 'suggest_followups';
     const MAX_FOLLOWUPS = 6;
     const PROMPT_TRUNCATE = 60;
-    const CLICKED_KEY = 'dsh.suggest-followups.clicked';
+    const CLICKED_KEY = 'dsh-nextsteps.clicked';
 
 
     const CSS = `
@@ -226,9 +226,12 @@ window.__ModuleLoader__.load({
     function captureForTurn(sessionId, turn) {
       const entries = captures.get(sessionId);
       if (entries === undefined) return null;
+      const external = typeof pluginSettings.model === 'string' && pluginSettings.model !== '';
       let best = null;
-      for (const entry of entries.values()) {
-        if (entry.turn === turn) best = entry;
+      for (const [callId, entry] of entries.entries()) {
+        if (entry.turn !== turn) continue;
+        if (external && !callId.startsWith('generated-')) continue;
+        best = entry;
       }
       return best;
     }
