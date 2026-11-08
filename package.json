@@ -49,5 +49,9 @@
   "bugs": {
     "url": "https://github.com/klaus-2/dsh-nextsteps/issues"
   },
+  "scripts": {
+    "test": "node tools/regression.mjs",
+    "regression": "node tools/regression.mjs"
+  },
   "icon": "./docs/assets/icon.png"
 }

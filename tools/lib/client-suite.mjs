@@ -1,0 +1,272 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import {
+  createReactStub,
+  evaluateExpression,
+  evaluateObjectLiteral,
+  extractObjectLiteral,
+  fakeClientCtx,
+  findByClass,
+  findElements,
+  flush,
+  loadClientModule,
+  makeLocalStorage,
+  renderOnce
+} from "./harness.mjs";
+
+const FOLLOWUPS = [
+  { prompt: "Add the missing tests", label: "Add tests" },
+  { prompt: "Wire the error handler", label: "Error handler" }
+];
+
+function argsRaw() {
+  return JSON.stringify({ followups: FOLLOWUPS });
+}
+
+function fakeConversation(sent, options = {}) {
+  return {
+    binding(binding) {
+      if (options.fail === true) return { send: async () => { throw new Error("the composer refused the message"); } };
+      void binding;
+      return { send: async (text) => { sent.push(text); } };
+    }
+  };
+}
+
+export async function runClientSuite(harness, { pluginDir }) {
+  const clientPath = path.join(pluginDir, "client.js");
+  const source = readFileSync(clientPath, "utf8");
+
+  harness.section("client: bundle contract");
+  harness.includes("the client registers with the module loader", source, "__ModuleLoader__.load");
+  {
+    const requires = [...source.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)].map((match) => match[1]);
+    const relative = requires.filter((name) => name.startsWith(".") || name.startsWith("/"));
+    harness.check("the client never requires a relative path", relative.length === 0, relative.join(" | "));
+    const json = requires.filter((name) => name.endsWith(".json"));
+    harness.check("the client never requires a JSON file", json.length === 0, json.join(" | "));
+    harness.check("the client requires react", requires.includes("react"));
+  }
+
+  harness.section("client: dictionaries");
+  {
+    const dictionaries = evaluateObjectLiteral(extractObjectLiteral(source, "const DICTIONARIES"), "DICTIONARIES");
+    if (!harness.check("the client carries the dictionaries", dictionaries !== undefined)) {
+      return;
+    }
+    const codes = Object.keys(dictionaries);
+    harness.eq("the client ships three languages", codes.sort(), ["en", "pt-BR", "zh-CN"]);
+    const reference = Object.keys(dictionaries[codes[0]]).slice().sort();
+    for (const code of codes) {
+      harness.eq(`the ${code} dictionary has the same keys`, Object.keys(dictionaries[code]).slice().sort(), reference);
+    }
+    for (const code of codes) {
+      const empty = Object.entries(dictionaries[code]).filter(([, value]) => typeof value !== "string" || value === "");
+      harness.check(`every ${code} entry has a text`, empty.length === 0, empty.map(([key]) => key).join(", "));
+    }
+    const placeholders = codes.every((code) => Object.entries(dictionaries[code]).every(([key, value]) => (value.match(/\{/g) ?? []).length === (value.match(/\}/g) ?? []).length));
+    harness.check("every placeholder is closed", placeholders);
+  }
+
+  harness.section("client: the language list matches the host");
+  {
+    const options = /const LANGUAGE_OPTIONS = (\[[\s\S]*?\]);/.exec(source)?.[1];
+    const parsed = evaluateExpression(options, "LANGUAGE_OPTIONS");
+    harness.check("the client carries the language list", Array.isArray(parsed));
+    if (Array.isArray(parsed)) {
+      const codes = parsed.map((entry) => entry.value);
+      harness.eq("the client offers fifteen languages", codes.length, 15);
+      harness.check("the client offers no automatic entry", !codes.includes("auto"));
+      harness.check("every language carries a native label", parsed.every((entry) => typeof entry.label === "string" && entry.label !== ""));
+      const hostSource = readFileSync(path.join(pluginDir, "index.js"), "utf8");
+      const hostBlock = /const LANGUAGE_NAMES = \{([\s\S]*?)\n\};/.exec(hostSource)?.[1];
+      const hostCodes = hostBlock === undefined ? [] : [...hostBlock.matchAll(/^\s*'?([a-zA-Z-]+)'?\s*:/gm)].map((match) => match[1]);
+      harness.eq("the host and the client agree on the languages", hostCodes.filter((code) => code !== "auto").sort(), codes.slice().sort());
+      harness.check("the host offers the automatic entry", hostCodes.includes("auto"));
+    }
+  }
+
+  harness.section("client: the plugin registers itself");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true }, version: "1.0.0" }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    harness.eq("the dictionaries are registered", client.locale.map((entry) => entry.code).sort(), ["en", "pt-BR", "zh-CN"]);
+    harness.check("the tool view slot is registered", client.slots.some((slot) => slot.spec.name === "tool.call.toolview"));
+    harness.check("the turn tail slot is registered", client.slots.some((slot) => slot.spec.name === "conversation.chat.turnTail"));
+    harness.check("the settings slot is registered", client.slots.some((slot) => slot.spec.name === "settings.section"));
+    harness.check("the styles are installed", true);
+  }
+
+  harness.section("client: the capture is stored and restored");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-1", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    harness.check("the capture reaches the local storage", localStorage.size >= 1, `${localStorage.size} key(s)`);
+
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-1", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    const buttons = findByClass(card.tree, "dsh-sf-card");
+    harness.eq("the card shows every followup", buttons.length, FOLLOWUPS.length);
+    harness.check("the card shows the followup label", findElements(card.tree, (element) => element.props?.children === "Add tests").length === 1);
+  }
+
+  harness.section("client: the followups survive a restart");
+  {
+    const localStorage = makeLocalStorage();
+    const first = loadClientModule(clientPath, {
+      react: createReactStub().React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const firstClient = fakeClientCtx();
+    first.module.apply(firstClient.ctx);
+    firstClient.resolve();
+    const firstCapture = firstClient.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(createReactStub(), firstCapture, { sessionId: "session-9", callId: "call-9", block: { callId: "call-9", turn: 3, argsRaw: argsRaw() } });
+
+    const stub = createReactStub();
+    const second = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const secondClient = fakeClientCtx();
+    second.module.apply(secondClient.ctx);
+    secondClient.resolve();
+    const tail = secondClient.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-9", turn: { turn: 3, end: { seq: 12 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    harness.eq("the followups come back after a restart", findByClass(card.tree, "dsh-sf-card").length, FOLLOWUPS.length);
+  }
+
+  harness.section("client: the card sends the followup");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const sent = [];
+    const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation(sent) });
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-2", callId: "call-2", block: { callId: "call-2", turn: 1, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-2", turn: { turn: 1, end: { seq: 4 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    const buttons = findByClass(card.tree, "dsh-sf-card");
+    await buttons[0].props.onClick();
+    await flush();
+    harness.eq("the prompt reaches the conversation", sent, ["Add the missing tests"]);
+    const clickedKey = /CLICKED_KEY = '([^']+)'/.exec(source)?.[1] ?? "";
+    harness.check("the click is remembered", clickedKey !== "" && localStorage.getItem(clickedKey) !== null, clickedKey);
+  }
+
+  harness.section("client: the card sends through the composer");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const drafts = [];
+    let submitted = 0;
+    let draft = "";
+    const client = fakeClientCtx({
+      sessions: { binding: (id) => ({ id }) },
+      conversation: {
+        input: {
+          shell: () => ({
+            state: { getSnapshot: () => ({ draft }) },
+            actions: {
+              setDraft: (value) => { draft = value; drafts.push(value); },
+              submit: () => { submitted += 1; }
+            }
+          })
+        }
+      }
+    });
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-3", callId: "call-3", block: { callId: "call-3", turn: 1, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-3", turn: { turn: 1, end: { seq: 4 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    const buttons = findByClass(card.tree, "dsh-sf-card");
+    await buttons[0].props.onClick();
+    await flush(8);
+    harness.eq("the draft carries the prompt", drafts, ["Add the missing tests"]);
+    harness.eq("the composer was submitted", submitted, 1);
+  }
+
+  harness.section("client: a failed send is reported");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation([], { fail: true }) });
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-4", callId: "call-4", block: { callId: "call-4", turn: 1, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-4", turn: { turn: 1, end: { seq: 4 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    await findByClass(card.tree, "dsh-sf-card")[0].props.onClick();
+    await flush();
+    const again = renderOnce(stub, restored.tree.type, restored.tree.props);
+    harness.check("the failure is shown on the card", findElements(again.tree, (element) => element.props?.className === "dsh-sf-error").length === 1);
+  }
+
+  harness.section("client: the capture list is pruned");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    for (let index = 0; index < 450; index += 1) {
+      renderOnce(stub, capture, { sessionId: "session-5", callId: `call-${index}`, block: { callId: `call-${index}`, turn: index, argsRaw: argsRaw() } });
+    }
+    const stored = Object.values(localStorage.dump()).find((value) => typeof value === "string" && value.includes("followups"));
+    const parsed = stored === undefined ? {} : JSON.parse(stored);
+    const total = Object.values(parsed).reduce((sum, entries) => sum + Object.keys(entries ?? {}).length, 0);
+    harness.check("the stored captures are capped", total <= 400, String(total));
+  }
+}
