@@ -51,8 +51,9 @@
     "url": "https://github.com/klaus-2/dsh-nextsteps/issues"
   },
   "scripts": {
-    "test": "node tools/regression.mjs",
-    "regression": "node tools/regression.mjs"
+    "test": "node tools/regression.mjs && node scripts/test.mjs",
+    "regression": "node tools/regression.mjs",
+    "test:unit": "node scripts/test.mjs"
   },
   "icon": "./docs/assets/icon.png"
 }

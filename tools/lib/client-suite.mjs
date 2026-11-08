@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   createReactStub,
@@ -66,6 +66,49 @@ export async function runClientSuite(harness, { pluginDir }) {
     }
     const placeholders = codes.every((code) => Object.entries(dictionaries[code]).every(([key, value]) => (value.match(/\{/g) ?? []).length === (value.match(/\}/g) ?? []).length));
     harness.check("every placeholder is closed", placeholders);
+
+    const asked = [...new Set([...source.matchAll(/\bt\(\s*'([a-zA-Z]+)'\s*\)/g)].map((match) => match[1]))];
+    const missing = [];
+    for (const key of asked) {
+      for (const code of codes) {
+        if (dictionaries[code][key] === undefined) missing.push(`${code}:${key}`);
+      }
+    }
+    harness.check("every key the client asks for exists in every dictionary", missing.length === 0, missing.slice(0, 8).join(", "));
+    const unused = codes.every((code) => Object.keys(dictionaries[code]).filter((key) => !asked.includes(key)).length === 0);
+    harness.check("every dictionary key is used by the client", unused);
+  }
+
+  harness.section("client: the contract with the host");
+  {
+    const hostSource = readFileSync(path.join(pluginDir, "index.js"), "utf8");
+    const clientRoutes = [...new Set([...source.matchAll(/'(\/api\/dsh-nextsteps[^']*)'/g)].map((match) => match[1]))].sort();
+    const hostRoutes = [...new Set([...hostSource.matchAll(/path: '(\/api\/dsh-nextsteps[^']*)'/g)].map((match) => match[1]))].sort();
+    harness.check("the client calls at least one route", clientRoutes.length > 0, String(clientRoutes.length));
+    harness.eq("every route the client calls is registered by the host", clientRoutes.filter((route) => !hostRoutes.includes(route)), []);
+    harness.eq("the host registers no route the client never calls", hostRoutes.filter((route) => !clientRoutes.includes(route)), []);
+
+    const keys = [...new Set([...source.matchAll(/(?:CLICKED_KEY|CAPTURES_KEY) = '([^']+)'/g)].map((match) => match[1]))];
+    harness.check("the storage keys belong to the plugin", keys.length > 0 && keys.every((key) => key.startsWith("dsh-nextsteps")), keys.join(", "));
+
+    const identity = [...new Set([...source.matchAll(/dsh-[a-z]+(?:-[a-z]+)*/g)].map((match) => match[0]))];
+    const foreign = identity.filter((value) => value !== "dsh-nextsteps" && !value.startsWith("dsh-nextsteps-") && !value.startsWith("dsh-sf-"));
+    harness.check("the sources carry no identity from another variant", foreign.length === 0, foreign.join(", "));
+    harness.check("the sources carry no identity from the old name", !source.includes("suggest-followups"));
+    harness.check("the sources carry no development marker", !source.includes("dsh-nextsteps-dev"));
+  }
+
+  harness.section("client: the two halves carry the same keys");
+  {
+    const inline = evaluateExpression(/const DICTIONARIES = (\{[\s\S]*?\n    \});/.exec(source)?.[1], "DICTIONARIES");
+    for (const code of ["en", "pt-BR", "zh-CN"]) {
+      const file = path.join(pluginDir, "lib", "locale", `${code}.json`);
+      if (!harness.check(`the ${code} locale file exists`, existsSync(file))) continue;
+      const data = JSON.parse(readFileSync(file, "utf8"));
+      const inlineKeys = Object.keys(inline[code]).filter((key) => key !== "meta").sort();
+      const fileKeys = Object.keys(data).filter((key) => key !== "meta").sort();
+      harness.eq(`the ${code} locale file and the client carry the same keys`, inlineKeys, fileKeys);
+    }
   }
 
   harness.section("client: the language list matches the host");
