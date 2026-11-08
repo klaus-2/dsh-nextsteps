@@ -191,6 +191,18 @@ export function fakeClientCtx(overrides = {}) {
       effects.push({ fn, label });
       return () => {};
     },
+    inject(deps, setup) {
+      const scope = {
+        ...services,
+        remote: services.remote,
+        effect: (fn, label) => {
+          effects.push({ fn, label });
+          return () => {};
+        }
+      };
+      setup(scope);
+      return { dispose() {} };
+    },
     remote: services.remote ?? { get: async () => undefined }
   };
   const api = {

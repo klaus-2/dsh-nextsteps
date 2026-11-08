@@ -208,13 +208,17 @@ export async function runClientSuite(harness, { pluginDir }) {
     const localStorage = makeLocalStorage();
     const calls = [];
     const pluginManager = {
-      async updateBundle(packageName, version, options) {
-        calls.push({ op: "updateBundle", packageName, version, options });
-        return { ok: true, value: { application: "restart-required", version } };
+      async installBundle(spec, options) {
+        calls.push({ op: "installBundle", spec, options });
+        return { ok: true, value: { application: "restart-required", version: "1.0.1" } };
       },
       async installBundle(spec, options) {
         calls.push({ op: "installBundle", spec, options });
         return { ok: true, value: { application: "applied", version: "1.0.0" } };
+      },
+      async updateBundle() {
+        calls.push({ op: "updateBundle" });
+        return { ok: true, value: { application: "applied", version: "1.0.1" } };
       }
     };
     const { module } = loadClientModule(clientPath, {
@@ -243,29 +247,21 @@ export async function runClientSuite(harness, { pluginDir }) {
     if (buttons.length === 1) {
       await buttons[0].props.onClick();
       await flush(6);
-      harness.eq("the button asks the plugin manager to update", calls.length, 1);
-      harness.eq("the plugin manager receives the package", calls[0]?.packageName, "dsh-nextsteps");
-      harness.eq("the plugin manager receives the version", calls[0]?.version, "1.0.1");
+      harness.eq("the button asks the plugin manager to install", calls.length, 1);
+      harness.eq("the plugin manager receives the package and the version", calls[0]?.spec, "dsh-nextsteps@1.0.1");
       harness.check("the plugin manager receives a request id", typeof calls[0]?.options?.requestId === "string", JSON.stringify(calls[0]?.options));
     }
   }
 
-  harness.section("client: the update button recovers a lost answer");
+  harness.section("client: the update button falls back to the tarball");
   {
     const stub = createReactStub();
     const localStorage = makeLocalStorage();
     const calls = [];
     const pluginManager = {
-      async updateBundle() {
-        calls.push("updateBundle");
-        return { ok: false, error: { message: "the reply was lost" } };
-      },
-      async waitForInstall(requestId) {
-        calls.push("waitForInstall");
-        return { ok: true, value: { application: "restart-required", version: "1.0.1", requestId } };
-      },
-      async installBundle() {
-        calls.push("installBundle");
+      async installBundle(spec, options) {
+        calls.push({ op: "installBundle", spec, options });
+        if (spec === "dsh-nextsteps@1.0.1") return { ok: true, value: { error: { code: "already-installed" } } };
         return { ok: true, value: { application: "applied", version: "1.0.1" } };
       }
     };
@@ -292,10 +288,11 @@ export async function runClientSuite(harness, { pluginDir }) {
     if (buttons.length === 1) {
       await buttons[0].props.onClick();
       await flush(6);
-      harness.check("the plugin manager is asked for the lost answer", calls.includes("waitForInstall"), calls.join(" | "));
+      harness.eq("the plugin manager is asked twice", calls.length, 2);
+      harness.eq("the second attempt uses the tarball", calls[1]?.spec, "https://registry.npmjs.org/dsh-nextsteps/-/dsh-nextsteps-1.0.1.tgz");
       const after = renderOnce(stub, settings, { t: (key) => key });
-      const restart = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("restartMsg"));
-      harness.eq("the recovered result is shown", restart.length, 1);
+      const current = findElements(after.tree, (element) => element.props?.children === "upToDate");
+      harness.eq("the applied version is shown", current.length, 1);
     }
   }
 

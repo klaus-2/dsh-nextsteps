@@ -172,6 +172,10 @@ function nextstepsSectionText() {
   ].join('\n');
 }
 
+function onDiskVersion() {
+  try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version ?? null; } catch { return null; }
+}
+
 const PLUGIN_REV = 'sf-2';
 
 function toolSpec(settings = { lang: 'auto', maxFollowups: 3, model: '' }) {
@@ -449,7 +453,7 @@ async function apply(ctx) {
     fetch: async (request) => {
       try {
         const info = await checkUpdate(fetch, PACKAGE, request.signal);
-        return json({ ...info, installed: undefined });
+        return json({ ...info, installed: onDiskVersion() });
       } catch (error) {
         return json({ error: String(error?.message ?? error) }, 502);
       }

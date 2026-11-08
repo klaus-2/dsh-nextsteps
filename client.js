@@ -369,6 +369,16 @@ window.__ModuleLoader__.load({
       'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”会跟随对话语言。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。自动会跟随对话所用的模型。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","releaseNotes":"发布说明","repo":"GitHub 仓库","issues":"反馈问题"}
     };
     let pluginSettings = { lang: 'auto', maxFollowups: 3, showHeader: true };
+    let updateManager = undefined;
+
+    function compareVersions(a, b) {
+      const pa = String(a ?? '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
+      const pb = String(b ?? '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
+      for (let index = 0; index < Math.max(pa.length, pb.length); index += 1) {
+        if ((pa[index] ?? 0) !== (pb[index] ?? 0)) return (pa[index] ?? 0) < (pb[index] ?? 0) ? -1 : 1;
+      }
+      return 0;
+    }
     let pluginVersion;
 
     async function responseJson(response) {
@@ -555,58 +565,34 @@ window.__ModuleLoader__.load({
             const response = await fetch(UPDATE_ROUTE, { cache: 'no-store' });
             const info = await responseJson(response);
             if (!response.ok || info === null || typeof info !== 'object' || info.error !== undefined) throw new Error(info?.error ?? 'HTTP ' + response.status);
-            setUpdate({ status: info.newer === true ? (info.managed ? 'available' : 'manual') : 'current', info });
+            const installedNewer = compareVersions(info.installed, info.current) > 0;
+            const status = installedNewer ? 'restart' : info.newer !== true ? 'current' : info.managed ? 'available' : 'manual';
+            setUpdate({ status, info });
           } catch (error) {
             setUpdate((previous) => previous.status === 'restart' ? previous : { status: 'error', info: previous.info, error: String(error?.message ?? error) });
           }
         };
         const install = async () => {
           const { info } = update;
-          let pluginManager;
-          try {
-            pluginManager = ctx.remote?.pluginManager ?? ctx.get?.('remote')?.pluginManager;
-          } catch { pluginManager = undefined; }
-          if (info === undefined) return;
-          if (pluginManager === undefined || typeof pluginManager.installBundle !== 'function') {
+          if (info === undefined || updateManager === undefined) {
             setUpdate({ status: 'error', info, error: 'the plugin manager is not available in this install' });
             return;
           }
           setUpdate({ status: 'installing', info });
           try {
             const requestId = NS + '-update-' + info.latest + '-' + Date.now();
-            const recoverInstall = async (manager, id) => {
-              if (typeof manager.waitForInstall !== 'function') return undefined;
-              try {
-                const reply = await manager.waitForInstall(id);
-                if (reply === null || typeof reply !== 'object' || reply.ok !== true) return undefined;
-                return reply.value ?? undefined;
-              } catch { return undefined; }
-            };
-            const attempt = async (spec) => {
-              const reply = await pluginManager.installBundle(spec, { enabled: true, requestId });
-              if (reply === null || typeof reply !== 'object' || reply.ok !== true) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
+            const installSpec = async (spec) => {
+              const reply = await updateManager.installBundle(spec, { requestId });
+              if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
               return reply.value;
             };
-            let result;
-            if (typeof pluginManager.updateBundle === 'function') {
-              const reply = await pluginManager.updateBundle(NPM_NAME, info.latest, { requestId });
-              if (reply === null || typeof reply !== 'object' || reply.ok !== true) {
-                const recovered = await recoverInstall(pluginManager, requestId);
-                if (recovered === undefined) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
-                result = recovered;
-              } else {
-                result = reply.value;
-              }
-            } else {
-              result = await attempt(NPM_NAME + '@' + info.latest);
-              if (result !== null && typeof result === 'object' && result.error?.code === 'already-installed') result = await attempt('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
-            }
-            const applied = result !== null && typeof result === 'object' && (result.application === 'applied' || result.application === 'restart-required' || result.version === info.latest);
-            if (!applied) {
-              const diagnostic = typeof result?.error?.diagnostic === 'string' ? result.error.diagnostic.split('\n').find((entry) => entry.trim() !== '') : undefined;
-              throw new Error(diagnostic ?? result?.error?.code ?? 'install failed');
-            }
-            setUpdate(result.application === 'applied'
+            let result = await installSpec(NPM_NAME + '@' + info.latest);
+            if (result?.error?.code === 'already-installed') result = await installSpec('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
+            const firstLine = () => result?.error?.diagnostic?.split(String.fromCharCode(10)).find((line) => line.trim() !== '') ?? result?.error?.code ?? result?.application;
+            const live = result?.application === 'applied';
+            if (!live && result?.application !== 'restart-required' && result?.version !== info.latest) throw new Error(firstLine());
+            if (result?.application === 'failed') console.warn(`dsh-nextsteps: ${info.latest} is installed; dsh could not start it before a restart: ${firstLine()}`);
+            setUpdate(live
               ? { status: 'current', info: { ...info, current: info.latest, newer: false } }
               : { status: 'restart', info });
           } catch (error) {
@@ -665,6 +651,15 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale', 'remote'],
       apply(ctx) {
+        const injectScope = (deps, setup) => {
+          if (ctx.inject === undefined) return [];
+          const fiber = ctx.inject(deps, setup);
+          return [() => fiber.dispose()];
+        };
+        for (const off of injectScope(['remote.pluginManager'], (scope) => {
+          updateManager = scope.remote?.pluginManager;
+          scope.effect(() => () => { updateManager = undefined; }, 'dsh-nextsteps: update installer');
+        })) if (ctx.effect !== undefined) ctx.effect(() => off, 'dsh-nextsteps: update installer scope');
         installStyles(ctx);
         rehydrateCaptures();
         refreshPluginSettings();
