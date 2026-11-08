@@ -563,17 +563,31 @@ window.__ModuleLoader__.load({
         const install = async () => {
           const { info } = update;
           let pluginManager;
-          try { pluginManager = ctx.get('remote')?.pluginManager; } catch { pluginManager = undefined; }
-          if (info === undefined || pluginManager === undefined || typeof pluginManager.installBundle !== 'function') return;
+          try {
+            pluginManager = ctx.remote?.pluginManager ?? ctx.get?.('remote')?.pluginManager;
+          } catch { pluginManager = undefined; }
+          if (info === undefined) return;
+          if (pluginManager === undefined || typeof pluginManager.installBundle !== 'function') {
+            setUpdate({ status: 'error', info, error: 'the plugin manager is not available in this install' });
+            return;
+          }
           setUpdate({ status: 'installing', info });
           try {
+            const requestId = NS + '-update-' + info.latest + '-' + Date.now();
             const attempt = async (spec) => {
-              const reply = await pluginManager.installBundle(spec, { requestId: NS + '-update-' + info.latest + '-' + Date.now() });
+              const reply = await pluginManager.installBundle(spec, { enabled: true, requestId });
               if (reply === null || typeof reply !== 'object' || reply.ok !== true) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
               return reply.value;
             };
-            let result = await attempt(NPM_NAME + '@' + info.latest);
-            if (result !== null && typeof result === 'object' && result.error?.code === 'already-installed') result = await attempt('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
+            let result;
+            if (typeof pluginManager.updateBundle === 'function') {
+              const reply = await pluginManager.updateBundle(NPM_NAME, info.latest, { requestId });
+              if (reply === null || typeof reply !== 'object' || reply.ok !== true) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
+              result = reply.value;
+            } else {
+              result = await attempt(NPM_NAME + '@' + info.latest);
+              if (result !== null && typeof result === 'object' && result.error?.code === 'already-installed') result = await attempt('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
+            }
             const applied = result !== null && typeof result === 'object' && (result.application === 'applied' || result.application === 'restart-required' || result.version === info.latest);
             if (!applied) {
               const diagnostic = typeof result?.error?.diagnostic === 'string' ? result.error.diagnostic.split('\n').find((entry) => entry.trim() !== '') : undefined;

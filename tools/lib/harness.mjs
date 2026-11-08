@@ -22,7 +22,8 @@ export function createHarness({ title }) {
     eq(name, actual, expected) {
       const a = JSON.stringify(actual);
       const b = JSON.stringify(expected);
-      return harness.check(name, a === b, a === b ? "" : `got ${a}, want ${b}`);
+      const clip = (value) => (typeof value === "string" && value.length > 160 ? `${value.slice(0, 157)}...` : value);
+      return harness.check(name, a === b, a === b ? "" : `got ${clip(a)}, want ${clip(b)}`);
     },
     includes(name, haystack, needle) {
       const ok = typeof haystack === "string" && haystack.includes(needle);
@@ -166,6 +167,7 @@ export function fakeClientCtx(overrides = {}) {
   const services = { styles: { insert() {} }, ...overrides };
   const ctx = {
     get(name) {
+      if (name === "remote") return undefined;
       return services[name];
     },
     slots: {
@@ -189,7 +191,7 @@ export function fakeClientCtx(overrides = {}) {
       effects.push({ fn, label });
       return () => {};
     },
-    remote: { get: async () => undefined }
+    remote: services.remote ?? { get: async () => undefined }
   };
   const api = {
     ctx,

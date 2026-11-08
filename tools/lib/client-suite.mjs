@@ -202,6 +202,87 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.check("the tail renders the card the host generated", findByClass(renderedCard.tree, "dsh-sf-card").length === 1, JSON.stringify(renderedCard.tree).slice(0, 140));
   }
 
+  harness.section("client: the update button reaches the plugin manager");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const calls = [];
+    const pluginManager = {
+      async updateBundle(packageName, version, options) {
+        calls.push({ op: "updateBundle", packageName, version, options });
+        return { ok: true, value: { application: "restart-required", version } };
+      },
+      async installBundle(spec, options) {
+        calls.push({ op: "installBundle", spec, options });
+        return { ok: true, value: { application: "applied", version: "1.0.0" } };
+      }
+    };
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        if (String(url).includes("update")) {
+          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1", url: "https://github.com/klaus-2/dsh-nextsteps/releases" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (String(url).includes("models")) {
+          return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx({ remote: { pluginManager } });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    const withButton = renderOnce(stub, settings, { t: (key) => key });
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears when a release is available", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(6);
+      harness.eq("the button asks the plugin manager to update", calls.length, 1);
+      harness.eq("the plugin manager receives the package", calls[0]?.packageName, "dsh-nextsteps");
+      harness.eq("the plugin manager receives the version", calls[0]?.version, "1.0.1");
+      harness.check("the plugin manager receives a request id", typeof calls[0]?.options?.requestId === "string", JSON.stringify(calls[0]?.options));
+    }
+  }
+
+  harness.section("client: the update button reports a missing plugin manager");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        if (String(url).includes("update")) {
+          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx({ remote: {} });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    const withButton = renderOnce(stub, settings, { t: (key) => key });
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(6);
+      const after = renderOnce(stub, settings, { t: (key) => key });
+      const errors = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("checkFailed"));
+      harness.eq("the failure is shown instead of nothing happening", errors.length, 1);
+    }
+  }
+
   harness.section("client: the followups survive a restart");
   {
     const localStorage = makeLocalStorage();
