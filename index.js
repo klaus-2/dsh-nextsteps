@@ -339,6 +339,7 @@ async function apply(ctx) {
   ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.models',
     methods: ['GET'],
+    requestBody: 'buffered',
     fetch: async (request) => {
       try {
         const catalog = await modelCatalog(ctx);
@@ -370,6 +371,7 @@ async function apply(ctx) {
   ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.update',
     methods: ['GET'],
+    requestBody: 'buffered',
     fetch: async (request) => {
       try {
         const info = await checkUpdate(fetch, PACKAGE, request.signal);
