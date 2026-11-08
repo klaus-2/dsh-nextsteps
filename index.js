@@ -308,16 +308,27 @@ async function apply(ctx) {
   let settings = settingsLoad();
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
   const isExternal = (next) => typeof next.model === 'string' && next.model !== '';
-  const reapplyTool = (next) => {
-    settings = next;
-    try {
-      try { ctx.tools.unregister(TOOL_NAME); } catch { /* not registered yet */ }
-      if (!isExternal(next)) ctx.tools.register(toolSpec(settings));
-    } catch (error) {
-      console.error('dsh-nextsteps: tool re-registration failed:', error);
+  let reapply = (next) => { settings = next; };
+  const reapplyTool = (next) => reapply(next);
+  reapply(settings);
+  try {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['tools'], (toolsService) => {
+        reapply = (next) => {
+          settings = next;
+          try {
+            try { toolsService.unregister(TOOL_NAME); } catch { /* not registered yet */ }
+            if (!isExternal(next)) toolsService.register(toolSpec(settings));
+          } catch (error) {
+            console.error('dsh-nextsteps: tool re-registration failed:', error);
+          }
+        };
+        reapply(settings);
+      });
     }
-  };
-  reapplyTool(settings);
+  } catch (error) {
+    console.error('dsh-nextsteps: tools service unavailable, language changes need a restart:', error);
+  }
   ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.settings',
     methods: ['GET', 'POST'],
