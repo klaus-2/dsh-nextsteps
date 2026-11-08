@@ -124,17 +124,13 @@ const PARAMETER_SCHEMA = {
   required: ['followups']
 };
 
-function toolDescription(settings) {
-  const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
-  const languageRule = settings.lang === 'auto'
-    ? 'Write every prompt and label in the same language the conversation has been using.'
-    : `LANGUAGE OVERRIDE, applies to this tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
+function toolDescription() {
   return [
     'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
-    `Suggest exactly ${settings.maxFollowups} followup prompts the user is likely to want next.`,
+    'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt.',
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
-    languageRule,
+    'Write every prompt and label in the language the nextsteps section of the system prompt states.',
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
     'This never waits for an answer: its result only confirms the suggestions were recorded.',
     'Example input:',
@@ -142,12 +138,25 @@ function toolDescription(settings) {
   ].join('\n');
 }
 
+function nextstepsSectionText() {
+  const settings = settingsLoad();
+  const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
+  const languageRule = settings.lang === 'auto'
+    ? `Write every prompt and label in the same language the conversation has been using.`
+    : `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
+  return [
+    'nextsteps (the followup suggestion cards):',
+    `- Suggest exactly ${settings.maxFollowups} followup prompts when you call suggest_followups.`,
+    `- ${languageRule}`
+  ].join('\n');
+}
+
 const PLUGIN_REV = 'sf-2';
 
-function toolSpec(settings) {
+function toolSpec() {
   return {
     name: TOOL_NAME,
-    description: toolDescription(settings),
+    description: toolDescription(),
     parameters: PARAMETER_SCHEMA,
     output: {
       schema: { type: 'string' },
@@ -308,26 +317,28 @@ async function apply(ctx) {
   let settings = settingsLoad();
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
   const isExternal = (next) => typeof next.model === 'string' && next.model !== '';
-  let reapply = (next) => { settings = next; };
-  const reapplyTool = (next) => reapply(next);
-  reapply(settings);
-  try {
-    if (typeof ctx.inject === 'function') {
-      ctx.inject(['tools'], (toolsService) => {
-        reapply = (next) => {
-          settings = next;
-          try {
-            try { toolsService.unregister(TOOL_NAME); } catch { /* not registered yet */ }
-            if (!isExternal(next)) toolsService.register(toolSpec(settings));
-          } catch (error) {
-            console.error('dsh-nextsteps: tool re-registration failed:', error);
-          }
-        };
-        reapply(settings);
-      });
+  const reapplyTool = (next) => {
+    settings = next;
+    try {
+      try { ctx.tools.unregister(TOOL_NAME); } catch { /* not registered yet */ }
+      if (!isExternal(next)) ctx.tools.register(toolSpec());
+    } catch (error) {
+      console.error('dsh-nextsteps: tool re-registration failed:', error);
     }
+  };
+  try {
+    if (!isExternal(settings)) ctx.tools.register(toolSpec());
   } catch (error) {
-    console.error('dsh-nextsteps: tools service unavailable, language changes need a restart:', error);
+    console.error('dsh-nextsteps: tool registration failed:', error);
+  }
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['systemPrompt'], (systemPrompt) => {
+      try {
+        systemPrompt.section({ name: 'dsh-nextsteps', order: 640, interpolate: false, text: () => nextstepsSectionText() });
+      } catch (error) {
+        console.error('dsh-nextsteps: system prompt section rejected:', error);
+      }
+    });
   }
   ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.settings',
