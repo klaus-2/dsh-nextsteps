@@ -126,12 +126,15 @@ const PARAMETER_SCHEMA = {
 
 function toolDescription(settings) {
   const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
+  const languageRule = settings.lang === 'auto'
+    ? 'Write every prompt and label in the same language the conversation has been using.'
+    : `LANGUAGE OVERRIDE, applies to this tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
   return [
     'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
     `Suggest exactly ${settings.maxFollowups} followup prompts the user is likely to want next.`,
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
-    `Write every prompt in ${language}.`,
+    languageRule,
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
     'This never waits for an answer: its result only confirms the suggestions were recorded.',
     'Example input:',
@@ -205,11 +208,14 @@ function turnTranscript(events, afterSeq) {
 
 function generateSystem(settings) {
   const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
+  const languageRule = settings.lang === 'auto'
+    ? 'Write every prompt and label in the same language the conversation has been using.'
+    : `LANGUAGE OVERRIDE, applies to this answer only: write every prompt and label in ${language} — even if the transcript is in another language. Never copy the transcript's language here.`;
   return [
     'You suggest followup prompts the user of a coding-agent chat may want next. You answer with JSON only — no prose, no code fence.',
     `Output shape: {"followups":[{"prompt":"...","label":"..."}]} with exactly ${settings.maxFollowups} items.`,
     'Each prompt is one short sentence in the user\'s first-person voice, goal-oriented, standing alone without the transcript; each label is 2-5 words.',
-    `Write every prompt and label in ${language}.`,
+    languageRule,
     'Good suggestions: alternatives to the latest change, related features, cleanup, tests, verification steps. If the transcript shows remaining plan steps, one suggestion may continue the next step.'
   ].join('\n');
 }
