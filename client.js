@@ -226,11 +226,9 @@ window.__ModuleLoader__.load({
     function captureForTurn(sessionId, turn) {
       const entries = captures.get(sessionId);
       if (entries === undefined) return null;
-      const external = typeof pluginSettings.model === 'string' && pluginSettings.model !== '';
       let best = null;
       for (const [callId, entry] of entries.entries()) {
         if (entry.turn !== turn) continue;
-        if (external && !callId.startsWith('generated-')) continue;
         best = entry;
       }
       return best;
@@ -492,7 +490,7 @@ window.__ModuleLoader__.load({
         }, []);
         const generatedRef = React.useRef(null);
         React.useEffect(() => {
-          if (pluginSettings.model === '' || sessionId === '' || turn === undefined || afterSeq === undefined) return undefined;
+          if (sessionId === '' || turn === undefined || afterSeq === undefined) return undefined;
           const key = sessionId + '|' + turn;
           if (generatedRef.current === key) return undefined;
           if (captureForTurn(sessionId, turn) !== null) return undefined;

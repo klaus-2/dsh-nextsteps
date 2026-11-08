@@ -173,6 +173,35 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.check("the card shows the followup label", findElements(card.tree, (element) => element.props?.children === "Add tests").length === 1);
   }
 
+  harness.section("client: the tail always asks the host");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const calls = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        calls.push(String(url));
+        if (String(url).includes("generate")) {
+          return new Response(JSON.stringify({ ok: true, followups: [{ prompt: "gerado pelo host", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const rendered = renderOnce(stub, tail, { sessionId: "session-auto", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    harness.check("the tail asks the host even in the automatic mode", calls.some((url) => url.includes("dsh-nextsteps.generate")), calls.join(", "));
+    const card = renderOnce(stub, tail, { sessionId: "session-auto", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const renderedCard = renderOnce(stub, card.tree.type, card.tree.props);
+    harness.check("the tail renders the card the host generated", findByClass(renderedCard.tree, "dsh-sf-card").length === 1, JSON.stringify(renderedCard.tree).slice(0, 140));
+  }
+
   harness.section("client: the followups survive a restart");
   {
     const localStorage = makeLocalStorage();

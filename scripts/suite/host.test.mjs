@@ -79,7 +79,7 @@ test("the description survives a host without a system prompt service", async ()
   const mod = await import(moduleUrl.href);
   await mod.apply(ctx);
   const description = registered[0].description;
-  assertIncludes(description, "when there is no such section, use the language of the conversation", "the description must fall back to the conversation language");
+  assertMatch(description, /write every prompt and label in/i, "the description must carry the language rule without the system prompt section");
 });
 
 test("the bundle does not require optional host services to load", async () => {

@@ -124,7 +124,16 @@ const PARAMETER_SCHEMA = {
   required: ['followups']
 };
 
-function toolDescription(external = false) {
+function languageRuleOf(settings) {
+  const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
+  if (settings.lang === 'auto') {
+    return 'Write every prompt and label in the same language the conversation has been using.';
+  }
+  return `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
+}
+
+function toolDescription(settings = { lang: 'auto', maxFollowups: 3, model: '' }) {
+  const external = typeof settings.model === 'string' && settings.model !== '';
   if (external) {
     return [
       'This tool is not used any more: the host generates the followup suggestions after your turn with a separate model.',
@@ -133,10 +142,10 @@ function toolDescription(external = false) {
   }
   return [
     'MANDATORY in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it.',
-    'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt; when there is no such section, suggest three.',
+    `Suggest exactly ${settings.maxFollowups} followup prompts when you call suggest_followups.`,
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
     `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
-    'Write every prompt and label in the language the nextsteps section of the system prompt states; when there is no such section, use the language of the conversation.',
+    languageRuleOf(settings),
     'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
     'This never waits for an answer: its result only confirms the suggestions were recorded.',
     'Example input:',
@@ -144,21 +153,22 @@ function toolDescription(external = false) {
   ].join('\n');
 }
 
+const CURRENT_STATEMENT = 'This is the current setting for this turn; if an earlier message in this conversation stated a different one, ignore that earlier statement.';
+
 function nextstepsSectionText() {
   const settings = settingsLoad();
   if (typeof settings.model === 'string' && settings.model !== '') {
     return [
-      'nextsteps (the followup suggestion cards): the host generates them after your turn with a separate model, so you must not call any followup tool. Just finish your answer as usual.'
+      'nextsteps (the followup suggestion cards):',
+      `- ${CURRENT_STATEMENT}`,
+      '- The host generates them after your turn with a separate model, so you must not call any followup tool. Just finish your answer as usual.'
     ].join('\n');
   }
-  const language = LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
-  const languageRule = settings.lang === 'auto'
-    ? `Write every prompt and label in the same language the conversation has been using.`
-    : `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language} — even if the conversation or the session history is in another language. Never copy the conversation's language here.`;
   return [
     'nextsteps (the followup suggestion cards):',
+    `- ${CURRENT_STATEMENT}`,
     `- Suggest exactly ${settings.maxFollowups} followup prompts when you call suggest_followups.`,
-    `- ${languageRule}`
+    `- ${languageRuleOf(settings)}`
   ].join('\n');
 }
 
@@ -168,7 +178,7 @@ function toolSpec(settings = { lang: 'auto', maxFollowups: 3, model: '' }) {
   const external = typeof settings.model === 'string' && settings.model !== '';
   return {
     name: TOOL_NAME,
-    description: toolDescription(external),
+    description: toolDescription(settings),
     parameters: PARAMETER_SCHEMA,
     output: {
       schema: { type: 'string' },
@@ -283,8 +293,15 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   let transcript;
   try {
     const events = observation.events ?? [];
-    const last = events.at(-1)?.event ?? events.at(-1);
-    if (last?.type !== 'turn/end' || last.data?.reason?.kind !== 'completed' || last.seq !== afterSeq) {
+    const turnEnd = events.find((entry) => {
+      const event = entry?.event ?? entry;
+      return event?.type === 'turn/end' && event.seq === afterSeq;
+    });
+    const newerTurn = events.some((entry) => {
+      const event = entry?.event ?? entry;
+      return event?.type === 'turn/end' && Number.isSafeInteger(event.seq) && event.seq > afterSeq;
+    });
+    if (turnEnd === undefined || newerTurn || turnEnd.data?.reason?.kind !== 'completed') {
       throw Object.assign(new Error('the chat moved on'), { status: 409 });
     }
     transcript = turnTranscript(events, afterSeq);
@@ -292,6 +309,7 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
     observation[Symbol.dispose]?.();
   }
   if (transcript.trim() === '') return { followups: [] };
+  if (typeof settings.model !== 'string' || settings.model === '') return { followups: [] };
   const catalog = await modelCatalog(ctx);
   const route = settings.model !== ''
     ? (() => {
