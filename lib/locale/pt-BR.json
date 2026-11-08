@@ -1,7 +1,9 @@
 {
+  "setModel": "Modelo",
+  "setModelTip": "O modelo que gera as sugestões. Automático as mantém no turno principal.",
+  "optModelAuto": "Automático (mesmo modelo da conversa)",
+  "modelUnavailable": "Nenhuma lista de modelos disponível nesta instalação",
   "header": "Sugestões de acompanhamento",
-  "showEarlier": "Mostrar sugestões anteriores",
-  "hideEarlier": "Ocultar sugestões anteriores",
   "srFollowupSent": "Follow-up enviado",
   "sendFailed": "Não consegui enviar: ",
   "meta": {
@@ -12,9 +14,6 @@
   "setLanguage": "Idioma",
   "setLanguageTip": "Os followups são gerados neste idioma. Automático segue a conversa.",
   "optAuto": "Automático (segue a conversa)",
-  "optEn": "English",
-  "optPt": "Português (Brasil)",
-  "optZh": "简体中文",
   "setMax": "Followups por turno",
   "setMaxTip": "Quantas sugestões o modelo deve produzir (1-6).",
   "setHeader": "Mostrar cabeçalho",

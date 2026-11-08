@@ -144,7 +144,7 @@ window.__ModuleLoader__.load({
 
     const captures = new Map();
     const captureListeners = new Set();
-    const CAPTURES_KEY = 'dsh.nextsteps.captures.v1';
+    const CAPTURES_KEY = 'dsh-nextsteps.captures.v1';
     const CAPTURE_LIMIT = 400;
 
     function readStoredCaptures() {

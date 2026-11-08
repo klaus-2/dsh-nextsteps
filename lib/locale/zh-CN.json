@@ -1,7 +1,9 @@
 {
+  "setModel": "模型",
+  "setModelTip": "生成建议的模型。自动会跟随对话所用的模型。",
+  "optModelAuto": "自动（与对话相同的模型）",
+  "modelUnavailable": "此安装没有可用的模型列表",
   "header": "建议的后续操作",
-  "showEarlier": "显示较早的建议",
-  "hideEarlier": "隐藏较早的建议",
   "srFollowupSent": "后续操作已发送",
   "sendFailed": "发送失败：",
   "meta": {
@@ -12,9 +14,6 @@
   "setLanguage": "语言",
   "setLanguageTip": "后续操作提示将以此语言生成。“自动”会跟随对话语言。",
   "optAuto": "自动（跟随对话）",
-  "optEn": "English",
-  "optPt": "Português (Brasil)",
-  "optZh": "简体中文",
   "setMax": "每回合提示数",
   "setMaxTip": "模型应生成的建议提示数量（1-6）。",
   "setHeader": "显示标题",

@@ -17,6 +17,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Regression suite
+        run: npm test
       - name: Guard v-tag
         id: guard
         run: |
@@ -26,9 +28,6 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "release $GITHUB_REF_NAME is not a v-tag; publish skipped"
           fi
-      - name: Regression suite
-        if: steps.guard.outputs.publish == 'true'
-        run: npm test
       - name: Publish
         if: steps.guard.outputs.publish == 'true'
         run: |

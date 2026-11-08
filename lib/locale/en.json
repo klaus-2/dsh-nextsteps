@@ -1,7 +1,9 @@
 {
+  "setModel": "Model",
+  "setModelTip": "The model that generates the suggestions. Auto keeps them inside the main turn.",
+  "optModelAuto": "Auto (same model as the chat)",
+  "modelUnavailable": "No model list available in this install",
   "header": "Suggested followups",
-  "showEarlier": "Show earlier suggestions",
-  "hideEarlier": "Hide earlier suggestions",
   "srFollowupSent": "Followup sent",
   "sendFailed": "Could not send: ",
   "meta": {
@@ -12,9 +14,6 @@
   "setLanguage": "Language",
   "setLanguageTip": "Followups are generated in this language. Auto follows the conversation.",
   "optAuto": "Auto (follow the conversation)",
-  "optEn": "English",
-  "optPt": "Português (Brasil)",
-  "optZh": "简体中文",
   "setMax": "Followups per turn",
   "setMaxTip": "How many suggested prompts the model should produce (1-6).",
   "setHeader": "Show header",

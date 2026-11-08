@@ -16,7 +16,8 @@
     "README.md",
     "LICENSE",
     "README.pt-BR.md",
-    "README.zh-CN.md"
+    "README.zh-CN.md",
+    "scripts"
   ],
   "dsh": {
     "bundle": {
