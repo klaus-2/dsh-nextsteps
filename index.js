@@ -332,7 +332,14 @@ async function apply(ctx) {
     console.error('dsh-nextsteps: tool registration failed:', error);
   }
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['systemPrompt'], (systemPrompt) => {
+    ctx.inject(['tools', 'systemPrompt'], (services) => {
+      const [toolsService, systemPrompt] = services;
+      try {
+        try { toolsService.unregister(TOOL_NAME); } catch { /* not registered yet */ }
+        if (!isExternal(settings)) toolsService.register(toolSpec());
+      } catch (error) {
+        console.error('dsh-nextsteps: tool registration via inject failed:', error);
+      }
       try {
         systemPrompt.section({ name: 'dsh-nextsteps', order: 640, interpolate: false, text: () => nextstepsSectionText() });
       } catch (error) {
