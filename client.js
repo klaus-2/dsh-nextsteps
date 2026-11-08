@@ -574,6 +574,14 @@ window.__ModuleLoader__.load({
           setUpdate({ status: 'installing', info });
           try {
             const requestId = NS + '-update-' + info.latest + '-' + Date.now();
+            const recoverInstall = async (manager, id) => {
+              if (typeof manager.waitForInstall !== 'function') return undefined;
+              try {
+                const reply = await manager.waitForInstall(id);
+                if (reply === null || typeof reply !== 'object' || reply.ok !== true) return undefined;
+                return reply.value ?? undefined;
+              } catch { return undefined; }
+            };
             const attempt = async (spec) => {
               const reply = await pluginManager.installBundle(spec, { enabled: true, requestId });
               if (reply === null || typeof reply !== 'object' || reply.ok !== true) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
@@ -582,8 +590,13 @@ window.__ModuleLoader__.load({
             let result;
             if (typeof pluginManager.updateBundle === 'function') {
               const reply = await pluginManager.updateBundle(NPM_NAME, info.latest, { requestId });
-              if (reply === null || typeof reply !== 'object' || reply.ok !== true) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
-              result = reply.value;
+              if (reply === null || typeof reply !== 'object' || reply.ok !== true) {
+                const recovered = await recoverInstall(pluginManager, requestId);
+                if (recovered === undefined) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
+                result = recovered;
+              } else {
+                result = reply.value;
+              }
             } else {
               result = await attempt(NPM_NAME + '@' + info.latest);
               if (result !== null && typeof result === 'object' && result.error?.code === 'already-installed') result = await attempt('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');

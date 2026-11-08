@@ -250,6 +250,55 @@ export async function runClientSuite(harness, { pluginDir }) {
     }
   }
 
+  harness.section("client: the update button recovers a lost answer");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const calls = [];
+    const pluginManager = {
+      async updateBundle() {
+        calls.push("updateBundle");
+        return { ok: false, error: { message: "the reply was lost" } };
+      },
+      async waitForInstall(requestId) {
+        calls.push("waitForInstall");
+        return { ok: true, value: { application: "restart-required", version: "1.0.1", requestId } };
+      },
+      async installBundle() {
+        calls.push("installBundle");
+        return { ok: true, value: { application: "applied", version: "1.0.1" } };
+      }
+    };
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        if (String(url).includes("update")) {
+          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx({ remote: { pluginManager } });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    const withButton = renderOnce(stub, settings, { t: (key) => key });
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(6);
+      harness.check("the plugin manager is asked for the lost answer", calls.includes("waitForInstall"), calls.join(" | "));
+      const after = renderOnce(stub, settings, { t: (key) => key });
+      const restart = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("restartMsg"));
+      harness.eq("the recovered result is shown", restart.length, 1);
+    }
+  }
+
   harness.section("client: the update button reports a missing plugin manager");
   {
     const stub = createReactStub();
