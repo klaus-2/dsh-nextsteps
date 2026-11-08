@@ -390,6 +390,7 @@ export function loadClientModule(file, options = {}) {
       removeEventListener() {}
     },
     console: options.console ?? { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+    navigator: options.navigator ?? { language: "en-US", userAgent: "dsh-regression" },
     fetch: options.fetch ?? (async () => { throw new Error("fetch was not stubbed"); }),
     localStorage,
     setTimeout,
