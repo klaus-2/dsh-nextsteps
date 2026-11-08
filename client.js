@@ -10,6 +10,8 @@ window.__ModuleLoader__.load({
     const MAX_FOLLOWUPS = 6;
     const PROMPT_TRUNCATE = 60;
     const CLICKED_KEY = 'dsh-nextsteps.clicked';
+    const UPDATE_KEY = 'dsh-nextsteps.updated';
+    const remembered = () => { try { return localStorage.getItem(UPDATE_KEY); } catch { return null; } };
 
 
     const CSS = `
@@ -371,14 +373,6 @@ window.__ModuleLoader__.load({
     let pluginSettings = { lang: 'auto', maxFollowups: 3, showHeader: true };
     let updateManager = undefined;
 
-    function compareVersions(a, b) {
-      const pa = String(a ?? '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
-      const pb = String(b ?? '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
-      for (let index = 0; index < Math.max(pa.length, pb.length); index += 1) {
-        if ((pa[index] ?? 0) !== (pb[index] ?? 0)) return (pa[index] ?? 0) < (pb[index] ?? 0) ? -1 : 1;
-      }
-      return 0;
-    }
     let pluginVersion;
 
     async function responseJson(response) {
@@ -565,8 +559,7 @@ window.__ModuleLoader__.load({
             const response = await fetch(UPDATE_ROUTE, { cache: 'no-store' });
             const info = await responseJson(response);
             if (!response.ok || info === null || typeof info !== 'object' || info.error !== undefined) throw new Error(info?.error ?? 'HTTP ' + response.status);
-            const installedNewer = compareVersions(info.installed, info.current) > 0;
-            const status = installedNewer ? 'restart' : info.newer !== true ? 'current' : info.managed ? 'available' : 'manual';
+            const status = info.newer !== true ? 'current' : remembered() === info.latest ? 'restart' : info.managed ? 'available' : 'manual';
             setUpdate({ status, info });
           } catch (error) {
             setUpdate((previous) => previous.status === 'restart' ? previous : { status: 'error', info: previous.info, error: String(error?.message ?? error) });
@@ -592,6 +585,7 @@ window.__ModuleLoader__.load({
             const live = result?.application === 'applied';
             if (!live && result?.application !== 'restart-required' && result?.version !== info.latest) throw new Error(firstLine());
             if (result?.application === 'failed') console.warn(`dsh-nextsteps: ${info.latest} is installed; dsh could not start it before a restart: ${firstLine()}`);
+            try { localStorage.setItem(UPDATE_KEY, info.latest); } catch { }
             setUpdate(live
               ? { status: 'current', info: { ...info, current: info.latest, newer: false } }
               : { status: 'restart', info });
