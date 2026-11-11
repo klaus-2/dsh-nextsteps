@@ -195,7 +195,7 @@ test("the system prompt section asks for drafts in host mode", async () => {
     body: JSON.stringify({ lang: "zh-CN" })
   }));
   const text = sections[0].text();
-  assertIncludes(text, "Call suggest_followups once", "the host mode section asks for the drafts");
+  assertIncludes(text, "Call suggest_followups exactly once", "the host mode section asks for the drafts");
   assertIncludes(text, "host rewrites", "the host mode section explains the rewrite");
   assertIncludes(text, "Simplified Chinese", "the host mode section names the target language");
 });
@@ -528,7 +528,7 @@ test("an explicit model alone selects host mode", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ lang: "auto", model: "demo/demo-model" })
   }));
-  assertIncludes(sections[0].text(), "Call suggest_followups once", "the section asks for the drafts");
+  assertIncludes(sections[0].text(), "Call suggest_followups exactly once", "the section asks for the drafts");
   const recorded = await registered[0].execute({ followups: [{ prompt: "x" }] });
   assertIncludes(recorded, "Followups recorded", "the tool records the drafts");
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
