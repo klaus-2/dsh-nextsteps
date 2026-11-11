@@ -12,6 +12,7 @@ export const isDevCopy = pluginId.endsWith("-dev");
 
 export const results = [];
 let currentSuite = "";
+const queued = [];
 
 export function suite(name) {
   currentSuite = name;
@@ -22,22 +23,15 @@ export function test(name, fn) {
   const entry = results.at(-1);
   const caseEntry = { name, ok: true, error: undefined };
   entry.cases.push(caseEntry);
-  try {
-    const outcome = fn();
-    if (outcome && typeof outcome.then === "function") {
-      return outcome.then(
-        () => {},
-        (error) => {
-          caseEntry.ok = false;
-          caseEntry.error = error;
-        }
-      );
+  queued.push(async () => {
+    try {
+      const outcome = fn();
+      if (outcome && typeof outcome.then === "function") await outcome;
+    } catch (error) {
+      caseEntry.ok = false;
+      caseEntry.error = error;
     }
-  } catch (error) {
-    caseEntry.ok = false;
-    caseEntry.error = error;
-  }
-  return undefined;
+  });
 }
 
 export function assert(condition, message) {
@@ -76,6 +70,13 @@ export async function run() {
   const files = readdirSync(suiteDir).filter((name) => name.endsWith(".test.mjs")).sort();
   for (const file of files) {
     await import(pathToFileURL(path.join(suiteDir, file)).href);
+  }
+  const realFetch = globalThis.fetch;
+  const realWarn = console.warn;
+  for (const job of queued) {
+    await job();
+    globalThis.fetch = realFetch;
+    console.warn = realWarn;
   }
   let passed = 0;
   let failed = 0;

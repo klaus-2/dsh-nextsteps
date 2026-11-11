@@ -228,9 +228,11 @@ window.__ModuleLoader__.load({
     function captureForTurn(sessionId, turn) {
       const entries = captures.get(sessionId);
       if (entries === undefined) return null;
+      const host = hostMode(pluginSettings);
       let best = null;
       for (const [callId, entry] of entries.entries()) {
         if (entry.turn !== turn) continue;
+        if (host && !callId.startsWith('generated-')) continue;
         best = entry;
       }
       return best;
@@ -348,6 +350,7 @@ window.__ModuleLoader__.load({
     const NPM_NAME = 'dsh-nextsteps';
     const MODELS_ROUTE = '/api/dsh-nextsteps.models';
     const GENERATE_ROUTE = '/api/dsh-nextsteps.generate';
+    const GENERATE_TIMEOUT_MS = 30000;
     let modelCatalogCache = undefined;
 
     async function loadModelCatalog(force) {
@@ -366,14 +369,18 @@ window.__ModuleLoader__.load({
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
     const UPDATE_ROUTE = '/api/dsh-nextsteps.update';
     const DICTIONARIES = {
-      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto keeps them inside the main turn.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","updates":"Updates","current":"Version","checking":"Checking…","upToDate":"up to date","available":"{v} is available","manualCopy":"Development or renamed copy — update it manually.","installing":"Installing {v}…","restartMsg":"Version {v} was installed. Restart the dsh to use it.","noReleases":"No releases published yet","checkFailed":"Update check failed ({e})","updateNow":"Update now","check":"Check for updates","openRelease":"Open release page","repo":"GitHub repository","issues":"Report an issue"},
-      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático as mantém no turno principal.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","updates":"Atualizações","current":"Versão","checking":"Verificando…","upToDate":"em dia","available":"{v} disponível","manualCopy":"Cópia de desenvolvimento ou renomeada — atualize manualmente.","installing":"Instalando {v}…","restartMsg":"Versão {v} instalada. Reinicie o dsh para usá-la.","noReleases":"Nenhum release publicado ainda","checkFailed":"Falha ao verificar atualizações ({e})","updateNow":"Atualizar agora","check":"Verificar atualizações","openRelease":"Abrir página do release","repo":"Repositório no GitHub","issues":"Reportar um problema"},
-      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”会跟随对话语言。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。自动会跟随对话所用的模型。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","repo":"GitHub 仓库","issues":"反馈问题"}
+      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","updates":"Updates","current":"Version","checking":"Checking…","upToDate":"up to date","available":"{v} is available","manualCopy":"Development or renamed copy — update it manually.","installing":"Installing {v}…","restartMsg":"Version {v} was installed. Restart the dsh to use it.","noReleases":"No releases published yet","checkFailed":"Update check failed ({e})","updateNow":"Update now","check":"Check for updates","openRelease":"Open release page","repo":"GitHub repository","issues":"Report an issue"},
+      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","updates":"Atualizações","current":"Versão","checking":"Verificando…","upToDate":"em dia","available":"{v} disponível","manualCopy":"Cópia de desenvolvimento ou renomeada — atualize manualmente.","installing":"Instalando {v}…","restartMsg":"Versão {v} instalada. Reinicie o dsh para usá-la.","noReleases":"Nenhum release publicado ainda","checkFailed":"Falha ao verificar atualizações ({e})","updateNow":"Atualizar agora","check":"Verificar atualizações","openRelease":"Abrir página do release","repo":"Repositório no GitHub","issues":"Reportar um problema"},
+      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","repo":"GitHub 仓库","issues":"反馈问题"}
     };
     let pluginSettings = { lang: 'auto', maxFollowups: 3, showHeader: true };
     let updateManager = undefined;
 
     let pluginVersion;
+
+    const hostMode = (settings) => !(settings.lang === 'auto' && (typeof settings.model !== 'string' || settings.model === ''));
+
+    const warnedTurns = new Set();
 
     async function responseJson(response) {
       try {
@@ -493,27 +500,53 @@ window.__ModuleLoader__.load({
           };
         }, []);
         const generatedRef = React.useRef(null);
+        const host = hostMode(pluginSettings);
         React.useEffect(() => {
-          if (sessionId === '' || turn === undefined || afterSeq === undefined) return undefined;
+          if (!hostMode(pluginSettings) || sessionId === '' || turn === undefined || afterSeq === undefined) return undefined;
           const key = sessionId + '|' + turn;
           if (generatedRef.current === key) return undefined;
           if (captureForTurn(sessionId, turn) !== null) return undefined;
           generatedRef.current = key;
           let alive = true;
+          let warned = false;
+          const warnKey = sessionId + '|' + turn;
+          const warnOnce = (error) => {
+            if (warned || warnedTurns.has(warnKey)) return;
+            warned = true;
+            warnedTurns.add(warnKey);
+            if (warnedTurns.size > 200) warnedTurns.delete(warnedTurns.values().next().value);
+            console.warn('dsh-nextsteps: generation failed:', error);
+          };
+          const controller = new AbortController();
+          const expiry = window.setTimeout(() => controller.abort(), GENERATE_TIMEOUT_MS + 5000);
           (async () => {
             try {
-              const response = await fetch(GENERATE_ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, afterSeq }) });
+              const response = await fetch(GENERATE_ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, afterSeq }), signal: controller.signal });
               const data = await responseJson(response);
-              if (!alive || !response.ok || data === null || typeof data !== 'object' || !Array.isArray(data.followups) || data.followups.length === 0) return;
-              rememberCapture(sessionId, 'generated-' + turn, turn, validateFollowups(data.followups));
+              if (!alive) return;
+              if (!response.ok || data === null || typeof data !== 'object' || !Array.isArray(data.followups)) {
+                warnOnce(new Error('the generator answered without suggestions'));
+                return;
+              }
+              const followups = validateFollowups(data.followups);
+              if (followups === null) {
+                warnOnce(new Error('the generator answered without suggestions'));
+                return;
+              }
+              rememberCapture(sessionId, 'generated-' + turn, turn, followups);
             } catch (error) {
-              console.warn('dsh-nextsteps: generation failed:', error);
+              if (alive) warnOnce(error);
+            } finally {
+              window.clearTimeout(expiry);
             }
           })();
-          return () => { alive = false; };
-        }, [sessionId, turn, afterSeq]);
-        let entry = turn !== undefined ? captureForTurn(sessionId, turn) : newestCapture(sessionId);
-        if (entry === null) {
+          return () => {
+            alive = false;
+            if (generatedRef.current === key) generatedRef.current = null;
+          };
+        }, [sessionId, turn, afterSeq, host]);
+        let entry = turn !== undefined ? captureForTurn(sessionId, turn) : hostMode(pluginSettings) ? null : newestCapture(sessionId);
+        if (entry === null && !hostMode(pluginSettings)) {
           const unclaimed = unclaimedCaptures(sessionId, turn);
           if (unclaimed !== null) entry = unclaimed;
         }

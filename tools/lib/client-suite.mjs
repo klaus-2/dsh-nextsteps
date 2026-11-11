@@ -173,7 +173,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.check("the card shows the followup label", findElements(card.tree, (element) => element.props?.children === "Add tests").length === 1);
   }
 
-  harness.section("client: the tail always asks the host");
+  harness.section("client: the tail asks the host only when a language is enforced");
   {
     const stub = createReactStub();
     const localStorage = makeLocalStorage();
@@ -196,10 +196,82 @@ export async function runClientSuite(harness, { pluginDir }) {
     const rendered = renderOnce(stub, tail, { sessionId: "session-auto", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
     for (const effect of rendered.effects) effect();
     await flush(6);
-    harness.check("the tail asks the host even in the automatic mode", calls.some((url) => url.includes("dsh-nextsteps.generate")), calls.join(", "));
-    const card = renderOnce(stub, tail, { sessionId: "session-auto", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    harness.check("the inline tail never asks the host to generate", !calls.some((url) => url.includes("dsh-nextsteps.generate")), calls.join(", "));
+  }
+
+  harness.section("client: the tail renders the card the host generated");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const calls = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        calls.push(String(url));
+        if (String(url).includes("generate")) {
+          return new Response(JSON.stringify({ ok: true, followups: [{ prompt: "gerado pelo host", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (String(url).includes("models")) {
+          return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    await flush(6);
+    const rendered = renderOnce(stub, tail, { sessionId: "session-host", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    harness.check("the host tail asks the host once", calls.filter((url) => url.includes("dsh-nextsteps.generate")).length === 1, calls.join(", "));
+    const card = renderOnce(stub, tail, { sessionId: "session-host", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
     const renderedCard = renderOnce(stub, card.tree.type, card.tree.props);
     harness.check("the tail renders the card the host generated", findByClass(renderedCard.tree, "dsh-sf-card").length === 1, JSON.stringify(renderedCard.tree).slice(0, 140));
+  }
+
+  harness.section("client: host mode ignores model-authored captures");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        if (String(url).includes("generate")) {
+          return new Response(JSON.stringify({ error: "no model" }), { status: 502, headers: { "content-type": "application/json" } });
+        }
+        if (String(url).includes("models")) {
+          return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, {
+      sessionId: "session-tool",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Run the tests", label: "Tests" }] }) }] }
+    });
+    const unclaimed = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, unclaimed, {
+      sessionId: "session-tool",
+      callId: "call-unclaimed",
+      block: { kind: "tool-result", callId: "call-unclaimed", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Also run the tests", label: "Tests" }] }) }] }
+    });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    await flush(6);
+    const rendered = renderOnce(stub, tail, { sessionId: "session-tool", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(6);
+    const card = renderOnce(stub, tail, { sessionId: "session-tool", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const renderedCard = renderOnce(stub, card.tree.type, card.tree.props);
+    harness.check("a tool capture never renders in host mode", findByClass(renderedCard.tree, "dsh-sf-card").length === 0, JSON.stringify(renderedCard.tree).slice(0, 140));
   }
 
   harness.section("client: the update button reaches the plugin manager");

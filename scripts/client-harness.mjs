@@ -6,10 +6,21 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A React-shaped stub good enough to render the plugin's function components. */
 export function fakeReact() {
-  const state = [];
+  const stores = new Map();
+  const effects = [];
+  let active = null;
   let cursor = 0;
+  const storeFor = () => {
+    let store = stores.get(active);
+    if (store === undefined) {
+      store = [];
+      stores.set(active, store);
+    }
+    return store;
+  };
   const hooks = {
     useState(initial) {
+      const state = storeFor();
       const index = cursor++;
       if (state.length <= index) state[index] = typeof initial === "function" ? initial() : initial;
       const setValue = (next) => {
@@ -18,6 +29,7 @@ export function fakeReact() {
       return [state[index], setValue];
     },
     useReducer(reducer, initial) {
+      const state = storeFor();
       const index = cursor++;
       if (state.length <= index) state[index] = initial;
       const dispatch = (action) => {
@@ -26,6 +38,7 @@ export function fakeReact() {
       return [state[index], dispatch];
     },
     useRef(initial) {
+      const state = storeFor();
       const index = cursor++;
       if (state.length <= index) state[index] = { current: initial };
       return state[index];
@@ -36,7 +49,9 @@ export function fakeReact() {
     useCallback(fn) {
       return fn;
     },
-    useEffect() {},
+    useEffect(effect) {
+      effects.push(effect);
+    },
     useSyncExternalStore(subscribe, getSnapshot) {
       return getSnapshot();
     }
@@ -54,7 +69,13 @@ export function fakeReact() {
     for (const child of children) push(child);
     return { type, props: props ?? {}, children: flat };
   };
-  return { ...hooks, createElement, __reset: () => { cursor = 0; }, __state: state };
+  return {
+    ...hooks,
+    createElement,
+    __reset: () => { cursor = 0; effects.length = 0; },
+    __setComponent: (component) => { active = component; },
+    __effects: effects
+  };
 }
 
 export function memoryStorage(initial = {}) {
@@ -111,6 +132,7 @@ export function fakeSlotHost(react) {
   const wrap = (component) => {
     if (typeof component !== "function") return component;
     return (props) => {
+      react?.__setComponent?.(component);
       react?.__reset?.();
       return component(props);
     };

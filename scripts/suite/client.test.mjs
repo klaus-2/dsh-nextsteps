@@ -1,4 +1,4 @@
-import { suite, test, assert, assertEqual, assertIncludes, assertMatch } from "../harness.mjs";
+import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId } from "../harness.mjs";
 import { loadClient, fakeSlotHost, stubFetch, walk, textOf, memoryStorage } from "../client-harness.mjs";
 
 suite("client: rendering, dictionaries and persistence");
@@ -13,7 +13,7 @@ function settingsTree(client, props = {}) {
 
 test("the client module registers itself under its own id", () => {
   const { moduleId } = loadClient();
-  assertEqual(moduleId, "dsh-nextsteps");
+  assertEqual(moduleId, pluginId);
 });
 
 test("the client asks for the services it uses", () => {
@@ -188,15 +188,111 @@ test("the client asks the host for its settings and its model catalog", async ()
     "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
   } });
   try {
-    const { ctx } = fakeSlotHost(client.react);
+    const { ctx, registrations } = fakeSlotHost(client.react);
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const urls = fetchStub.calls.map((call) => call.url);
-    assert(urls.some((url) => url.includes("/settings")), "the client reads the settings");
-    assert(urls.some((url) => url.includes("/models")), "the client reads the model catalog");
-    assert(urls.every((url) => url.startsWith("/api/dsh-nextsteps.")), "the client only calls its own routes");
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    settings.component({ t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const urls = client.fetchStub.calls.map((call) => call.url);
+    assert(urls.some((url) => url.includes(".settings")), `the client reads the settings: ${JSON.stringify(urls)}`);
+    assert(urls.some((url) => url.includes(".models")), `the client reads the model catalog: ${JSON.stringify(urls)}`);
+    assert(urls.every((url) => url.startsWith("/api/dsh-nextsteps.")), `the client only calls its own routes: ${JSON.stringify(urls)}`);
   } finally {
-    fetchStub.restore();
+    client.fetchStub.restore();
+  }
+});
+
+test("the inline tail makes no generation request", async () => {
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
+    assertEqual(generated.length, 0, "the inline tail never asks the host to generate");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the host tail asks once and renders only the generated cards", async () => {
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "修复解析器", label: "修复" }] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Run the tests", label: "Tests" }] }) }] }
+    });
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
+    assertEqual(generated.length, 1, "the host tail asks exactly once");
+    const key = Object.keys(client.storage._data).find((name) => name.includes("captures"));
+    const store = JSON.parse(client.storage._data[key]);
+    const keys = Object.keys(store.s1);
+    assert(keys.includes("generated-1"), "the generated capture is stored");
+    const stored = store.s1["generated-1"];
+    assertEqual(stored.followups[0].prompt, "修复解析器", "the generated card wins over the tool capture");
+    const tree = tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    client.react.__setComponent(tree.type);
+    client.react.__reset();
+    const rendered = tree.type(tree.props);
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards.length, 1, "only the generated card renders in host mode");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the host tail warns once and shows no card when the generator fails", async () => {
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] }
+  } });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const generationWarnings = warnings.filter((line) => line.includes("generation failed"));
+    assertEqual(generationWarnings.length, 1, "the failure warns exactly once");
+    const key = Object.keys(client.storage._data).find((name) => name.includes("captures"));
+    const store = key === undefined ? {} : JSON.parse(client.storage._data[key]);
+    assertEqual(Object.keys(store.s1 ?? {}).length, 0, "a failed generation stores no card");
+    const tree = tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    client.react.__setComponent(tree.type);
+    client.react.__reset();
+    const rendered = tree.type(tree.props);
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards.length, 0, "a failed generation renders no card");
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
   }
 });
 

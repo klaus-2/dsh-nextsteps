@@ -1,6 +1,6 @@
 {
   "setModel": "Model",
-  "setModelTip": "The model that generates the suggestions. Auto keeps them inside the main turn.",
+  "setModelTip": "The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.",
   "optModelAuto": "Auto (same model as the chat)",
   "modelUnavailable": "No model list available in this install",
   "header": "Suggested followups",
@@ -12,7 +12,7 @@
   },
   "intro": "Suggested next-step prompts under every finished agent turn — one click sends the followup.",
   "setLanguage": "Language",
-  "setLanguageTip": "Followups are generated in this language. Auto follows the conversation.",
+  "setLanguageTip": "Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.",
   "optAuto": "Auto (follow the conversation)",
   "setMax": "Followups per turn",
   "setMaxTip": "How many suggested prompts the model should produce (1-6).",

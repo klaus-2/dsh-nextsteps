@@ -5,17 +5,6 @@ import { fakeHostCtx, withIsolatedHome } from "./harness.mjs";
 
 const LANGUAGES = ["auto", "en", "pt-BR", "zh-CN", "es", "fr", "de", "it", "ja", "ko", "ru", "ar", "hi", "id", "tr", "vi"];
 
-const languageNames = new Map();
-
-function languageNameOf(pluginDir, code) {
-  if (languageNames.size === 0) {
-    const source = readFileSync(path.join(pluginDir, "index.js"), "utf8");
-    const block = /const LANGUAGE_NAMES = \{([\s\S]*?)\n\};/.exec(source)?.[1] ?? "";
-    for (const match of block.matchAll(/'?([a-zA-Z-]+)'?\s*:\s*"([^"]+)"/g)) languageNames.set(match[1], match[2]);
-  }
-  return languageNames.get(code) ?? "";
-}
-
 function fakeLlm({ text = '{"followups":[]}', providers, models } = {}) {
   const calls = [];
   return {
@@ -125,28 +114,36 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.eq("the settings route accepts the count", body.settings.maxFollowups, 5);
 
       const after = section.text();
-      harness.includes("the section text follows the new language", after, "Brazilian Portuguese");
-      harness.includes("the section text carries the override", after, "LANGUAGE OVERRIDE");
-      harness.includes("the section text follows the new count", after, "exactly 5 followup prompts");
+      harness.includes("the section stops the tool in host mode", after, "must not call any followup tool");
       harness.check("the section text changed without a restart", before !== after);
       harness.includes("the section says the current statement wins over an earlier one", after, "ignore that earlier statement");
 
       const stored = JSON.parse(readFileSync(settingsFile, "utf8"));
       harness.eq("the change is written to disk", stored.lang, "pt-BR");
+
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", maxFollowups: 5 })
+      }));
+      const inline = section.text();
+      harness.includes("the inline section follows the conversation", inline, "same language the conversation");
+      harness.includes("the inline section follows the new count", inline, "exactly 5 followup prompts");
+      harness.excludes("the inline section has no override", inline, "must not call any followup tool");
     }
 
     harness.section("host: the settings route");
     {
       const get = await (await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings"))).json();
       harness.check("the settings come back", get.ok === true && typeof get.version === "string");
-      harness.eq("the language comes back", get.settings.lang, "pt-BR");
+      harness.eq("the language comes back", get.settings.lang, "auto");
 
       const invalid = await (await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ lang: "klingon", maxFollowups: 99, showHeader: "yes", model: "no-slash" })
       }))).json();
-      harness.eq("an unknown language is ignored", invalid.settings.lang, "pt-BR");
+      harness.eq("an unknown language is ignored", invalid.settings.lang, "auto");
       harness.eq("a count out of range is ignored", invalid.settings.maxFollowups, 5);
       harness.eq("a non-boolean header flag is ignored", invalid.settings.showHeader, true);
       harness.eq("a model without a provider is ignored", invalid.settings.model, "");
@@ -175,10 +172,14 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.eq("the tool is named", tool.name, "suggest_followups");
       harness.eq("the tool requires the followups", tool.parameters.required, ["followups"]);
       harness.check("the tool description states the order", tool.description.includes("BEFORE writing your final answer"));
-      const current = (await (await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings"))).json()).settings;
-      harness.check("the tool description states the count", tool.description.includes(`Suggest exactly ${current.maxFollowups} followup prompts`), tool.description.slice(0, 90));
       harness.check("the tool description states the language rule", /write every prompt and label in/i.test(tool.description), tool.description.slice(0, 90));
-      harness.check("the tool description states the chosen language", current.lang === "auto" || tool.description.includes(languageNameOf(pluginDir, current.lang)), `${current.lang} → ${languageNameOf(pluginDir, current.lang)}`);
+      harness.check("the tool description delegates the count", tool.description.includes("stated in the nextsteps section"), tool.description.slice(0, 90));
+
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", model: "" })
+      }));
 
       const cases = [
         { name: "a missing argument", args: {}, problem: /non-empty array/ },
@@ -224,9 +225,10 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.eq("the model is stored", body.settings.model, "deepseek/deepseek-chat");
       const tool = host.tools.get("suggest_followups");
       harness.check("the tool stays registered in the external mode", tool !== undefined);
-      harness.check("the tool stops asking to be called", tool.description.includes("not used any more"), tool.description.slice(0, 80));
       const refused = await tool.execute({ followups: [{ prompt: "x" }] });
       harness.check("the tool refuses to record in the external mode", refused.includes("The host generates"), refused);
+      const refusedRender = tool.output.render({ followups: [{ prompt: "x" }] }, refused);
+      harness.check("the external render hides the card bytes", refusedRender.length === 1 && refusedRender[0].text === refused, JSON.stringify(refusedRender).slice(0, 90));
       harness.includes("the section tells the agent not to call the tool", section.text(), "must not call any followup tool");
 
       llm.calls.length = 0;
@@ -239,7 +241,8 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.eq("the selected model is used", llm.calls[0]?.route, { provider: "deepseek", model: "deepseek-chat" });
       harness.eq("the token budget is capped", llm.calls[0]?.controls.maxTokens, 500);
       harness.includes("the generator is told the language", llm.calls[0]?.system ?? "", "English");
-      harness.includes("the generator carries the override", llm.calls[0]?.system ?? "", "LANGUAGE OVERRIDE");
+      harness.includes("the generator carries the override", llm.calls[0]?.system ?? "", "ABSOLUTE LANGUAGE RULE");
+      harness.includes("the generator treats the transcript as data", llm.calls[0]?.system ?? "", "DATA");
     }
     {
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
@@ -259,6 +262,136 @@ export async function runHostSuite(harness, { pluginDir }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "" })
       }));
+    }
+
+    harness.section("host: the generator survives a malformed model reply");
+    {
+      const malformed = fakeLlm({ text: JSON.stringify({ followups: [null, { label: "sem prompt" }, { prompt: "   " }, { prompt: "Rodar o build", label: "Rodar build" }] }) });
+      host.setService("llm", malformed);
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "pt-BR", model: "" })
+      }));
+      const response = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }));
+      const body = await response.json();
+      harness.check("a malformed reply answers 200", response.status === 200, JSON.stringify(body).slice(0, 120));
+      harness.eq("only the usable followup survives", body.followups.length, 1);
+      host.setService("llm", llm);
+    }
+
+    harness.section("host: the tool is registered once across a settings change");
+    {
+      const tool = host.tools.get("suggest_followups");
+      let unregisterCalls = 0;
+      host.ctx.tools.unregister = () => { unregisterCalls += 1; };
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "pt-BR" })
+      }));
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto" })
+      }));
+      harness.check("the tool survives the settings change", host.tools.get("suggest_followups") === tool);
+      harness.eq("only one tool is registered", host.tools.size, 1);
+      harness.eq("the plugin never unregisters the tool", unregisterCalls, 0);
+    }
+
+    harness.section("host: a failed generation warns exactly once");
+    {
+      host.setService("sessionQuery", undefined);
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => { warnings.push(args.join(" ")); };
+      try {
+        const response = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-warn", afterSeq: 12 })
+        }));
+        harness.check("the failure answers 502", response.status === 502, String(response.status));
+      } finally {
+        console.warn = originalWarn;
+        host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+      }
+      harness.eq("the host warns exactly once", warnings.filter((line) => line.includes("generation failed")).length, 1);
+    }
+
+    harness.section("host: an explicit model alone selects host mode");
+    {
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", model: "deepseek/deepseek-chat" })
+      }));
+      harness.includes("the section stops the tool", section.text(), "must not call any followup tool");
+      const refused = await host.tools.get("suggest_followups").execute({ followups: [{ prompt: "x" }] });
+      harness.check("the tool refuses", refused.includes("The host generates"), refused);
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "" })
+      }));
+    }
+
+    harness.section("host: the script guard keeps the target script and discards latin");
+    {
+      const cases = [
+        { lang: "ja", keep: "デプロイする", drop: "Deploy it" },
+        { lang: "ko", keep: "테스트 실행", drop: "Run tests" },
+        { lang: "hi", keep: "परीक्षण चलाएँ", drop: "Run tests" }
+      ];
+      for (const entry of cases) {
+        host.setService("llm", fakeLlm({ text: JSON.stringify({ followups: [{ prompt: entry.keep, label: "x" }] }) }));
+        await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ lang: entry.lang, model: "" })
+        }));
+        const kept = await (await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+        }))).json();
+        harness.eq(`the ${entry.lang} reply survives the guard`, kept.followups.length, 1);
+        host.setService("llm", fakeLlm({ text: JSON.stringify({ followups: [{ prompt: entry.drop, label: "x" }] }) }));
+        const dropped = await (await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+        }))).json();
+        harness.eq(`a latin reply is discarded for ${entry.lang}`, dropped.followups.length, 0);
+      }
+      host.setService("llm", llm);
+    }
+
+    harness.section("host: the generator trims to the configured count");
+    {
+      host.setService("llm", fakeLlm({ text: JSON.stringify({ followups: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }] }) }));
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "pt-BR", maxFollowups: 2 })
+      }));
+      const body = await (await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      harness.eq("the host trims to maxFollowups", body.followups.length, 2);
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ maxFollowups: 3 })
+      }));
+      host.setService("llm", llm);
     }
 
     harness.section("host: the generator guards the turn");
@@ -281,7 +414,8 @@ export async function runHostSuite(harness, { pluginDir }) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
-      }));      harness.check("a turn that moved on answers 409", moved.status === 409, JSON.stringify(await moved.json()));
+      }));
+      harness.check("a turn that moved on answers 409", moved.status === 409, JSON.stringify(await moved.json()));
       host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
 
@@ -309,42 +443,37 @@ export async function runHostSuite(harness, { pluginDir }) {
       host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
 
-    harness.section("host: the automatic mode does not spend a model call");
+    harness.section("host: a plain conversation with auto answers without suggestions");
     {
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lang: "ja", model: "" })
+        body: JSON.stringify({ lang: "auto", model: "" })
       }));
       llm.calls.length = 0;
+      host.setService("sessionQuery", fakeSessionQuery([{ seq: 12, type: "turn/end", data: { reason: { kind: "completed" } } }]));
       const response = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
       }));
       const body = await response.json();
-      harness.check("the automatic mode answers without suggestions", response.status === 200 && body.followups.length === 0, JSON.stringify(body).slice(0, 120));
-      harness.eq("the automatic mode does not call the model", llm.calls.length, 0);
+      harness.check("an empty transcript answers without suggestions", response.status === 200 && body.followups.length === 0, JSON.stringify(body).slice(0, 120));
+      harness.eq("an empty transcript does not call the model", llm.calls.length, 0);
+      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
 
-    harness.section("host: the language reaches the generator");
+    harness.section("host: an explicit language reaches the clean generator");
     {
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ lang: "ja", model: "" })
       }));
-      harness.includes("the section states the language", section.text(), "Japanese");
-      harness.includes("the tool description states the language", host.tools.get("suggest_followups").description, "Japanese");
-
-      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lang: "ja", model: "deepseek/deepseek-chat" })
-      }));
-      harness.includes("the external section tells the agent not to call the tool", section.text(), "must not call any followup tool");
-      harness.includes("the external section says the current statement wins", section.text(), "ignore that earlier statement");
-      harness.includes("the external tool description says the same", host.tools.get("suggest_followups").description, "not used any more");
+      harness.includes("the explicit section tells the agent not to call the tool", section.text(), "must not call any followup tool");
+      harness.includes("the explicit section says the current statement wins", section.text(), "ignore that earlier statement");
+      harness.includes("the explicit tool description is static", host.tools.get("suggest_followups").description, "BEFORE writing your final answer");
+      harness.excludes("the explicit tool description no longer names a language", host.tools.get("suggest_followups").description, "Japanese");
 
       llm.calls.length = 0;
       await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
@@ -352,8 +481,28 @@ export async function runHostSuite(harness, { pluginDir }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
       }));
-      harness.eq("the model was called", llm.calls.length, 1);
+      harness.eq("the default model is called once without a chosen model", llm.calls.length, 1);
+      harness.eq("the default route comes from the agent model", llm.calls[0]?.route, { provider: "deepseek", model: "deepseek-chat" });
       harness.includes("the generator speaks the chosen language", llm.calls[0]?.system ?? "", "Japanese");
+    }
+
+    harness.section("host: the non-latin script guard discards a wrong-script reply");
+    {
+      const arabic = fakeLlm({ text: JSON.stringify({ followups: [{ prompt: "Check the CI wiring", label: "CI" }] }) });
+      host.setService("llm", arabic);
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "ar", model: "" })
+      }));
+      const response = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }));
+      const body = await response.json();
+      harness.check("a latin reply for an arabic target is discarded", response.status === 200 && body.followups.length === 0, JSON.stringify(body).slice(0, 120));
+      host.setService("llm", llm);
     }
 
     harness.section("host: the plugin survives a missing service");

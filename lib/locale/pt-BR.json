@@ -1,6 +1,6 @@
 {
   "setModel": "Modelo",
-  "setModelTip": "O modelo que gera as sugestões. Automático as mantém no turno principal.",
+  "setModelTip": "O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.",
   "optModelAuto": "Automático (mesmo modelo da conversa)",
   "modelUnavailable": "Nenhuma lista de modelos disponível nesta instalação",
   "header": "Sugestões de acompanhamento",
@@ -12,7 +12,7 @@
   },
   "intro": "Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.",
   "setLanguage": "Idioma",
-  "setLanguageTip": "Os followups são gerados neste idioma. Automático segue a conversa.",
+  "setLanguageTip": "Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.",
   "optAuto": "Automático (segue a conversa)",
   "setMax": "Followups por turno",
   "setMaxTip": "Quantas sugestões o modelo deve produzir (1-6).",
