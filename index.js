@@ -167,7 +167,8 @@ function nextstepsSectionText() {
     return [
       'nextsteps (the followup suggestion cards):',
       `- ${CURRENT_STATEMENT}`,
-      '- The host generates them after your turn with a separate model, so you must not call any followup tool. Just finish your answer as usual.'
+      `- Call suggest_followups once, after the work and before your final answer, with exactly ${settings.maxFollowups} draft prompts.`,
+      `- Write the drafts in whichever language you find natural; the host rewrites every prompt and label into ${settings.lang === 'auto' ? 'the conversation language' : nearLanguage(settings)} before the user sees them, so the drafts' language does not matter.`
     ].join('\n');
   }
   return [
@@ -179,8 +180,87 @@ function nextstepsSectionText() {
 }
 
 const PLUGIN_REV = 'sf-2';
+const REWRITE_TIMEOUT_MS = 15000;
+const REWRITE_CACHE_LIMIT = 100;
+const rewrites = new Map();
 
-function toolSpec(getSettings) {
+function pruneRewrites() {
+  if (rewrites.size <= REWRITE_CACHE_LIMIT) return;
+  const oldest = [...rewrites.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+  if (oldest !== undefined) rewrites.delete(oldest[0]);
+}
+
+function nearLanguage(settings) {
+  return LANGUAGE_NAMES[settings.lang] ?? LANGUAGE_NAMES.auto;
+}
+
+function rewriteSystem(settings) {
+  return [
+    'You rewrite followup suggestion cards into one language. You answer with JSON only — no prose, no code fence.',
+    'Output shape: {"followups":[{"prompt":"...","label":"..."}]} with the same number of items as the input.',
+    `Write every prompt and label in ${nearLanguage(settings)}. Keep the meaning, the first-person voice and the length. Change nothing but the language. Never copy the input's language.`
+  ].join('\n');
+}
+
+async function resolveRoute(ctx, settings) {
+  const catalog = await modelCatalog(ctx);
+  const route = settings.model !== ''
+    ? (() => {
+      const slash = settings.model.indexOf('/');
+      const provider = settings.model.slice(0, slash);
+      const model = settings.model.slice(slash + 1);
+      if (catalog.groups.some((group) => group.id === provider && group.models.some((entry) => entry.id === model))) return { provider, model };
+      throw Object.assign(new Error('the selected model is no longer listed'), { status: 409 });
+    })()
+    : catalog.default;
+  if (route === undefined) throw Object.assign(new Error('no model is selected'), { status: 409 });
+  return route;
+}
+
+async function rewriteDrafts(ctx, settings, drafts) {
+  if (settings.lang === 'auto') return drafts.slice(0, settings.maxFollowups);
+  const route = await resolveRoute(ctx, settings);
+  const llm = get(ctx, 'llm');
+  if (llm?.prepareCall === undefined) throw new Error('the llm service is unavailable');
+  const timeout = AbortSignal.timeout(REWRITE_TIMEOUT_MS);
+  const call = await llm.prepareCall(route, timeout, (controls, model) => {
+    const cap = Number.isSafeInteger(model?.defaultMaxTokens) && model.defaultMaxTokens > 0 ? Math.min(400, model.defaultMaxTokens) : 400;
+    return { ...controls, maxTokens: cap };
+  });
+  let text = '';
+  let finish;
+  for await (const chunk of call.stream({ ...call.config, system: rewriteSystem(settings), signal: timeout, messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ followups: drafts.slice(0, settings.maxFollowups) }) }] }] })) {
+    if (chunk.type === 'text-delta') text += chunk.text;
+    else if (chunk.type === 'finish') finish = chunk.reason;
+  }
+  if (finish?.kind === 'error' || finish?.kind === 'aborted') throw new Error(finish.failure?.message || `the rewrite ended: ${finish.kind}`);
+  const followups = (followupsFromModelText(text) ?? []).slice(0, settings.maxFollowups);
+  const script = SCRIPT_OF[settings.lang];
+  if (script !== undefined && !script.test(followups.map((entry) => String(entry.prompt)).join(' '))) return [];
+  return followups;
+}
+
+function startRewrite(ctx, settings, drafts, sessionId, callId) {
+  const key = `${sessionId}|${callId}`;
+  const promise = rewriteDrafts(ctx, settings, drafts);
+  rewrites.set(key, { promise, at: Date.now() });
+  pruneRewrites();
+  promise.catch((error) => console.warn('dsh-nextsteps: rewrite failed:', error));
+  return promise;
+}
+
+function lastFollowupCallId(events, afterSeq) {
+  let found;
+  for (const entry of events) {
+    const event = entry?.event ?? entry;
+    if (event === null || typeof event !== 'object') continue;
+    if (Number.isSafeInteger(event.seq) && Number.isSafeInteger(afterSeq) && event.seq > afterSeq) continue;
+    if (event.type === 'tool/call' && event.data?.name === TOOL_NAME && typeof event.data?.callId === 'string') found = event.data.callId;
+  }
+  return found;
+}
+
+function toolSpec(ctx, getSettings) {
   return {
     name: TOOL_NAME,
     description: toolDescription(),
@@ -194,11 +274,18 @@ function toolSpec(getSettings) {
           { type: 'text', text: JSON.stringify({ rev: PLUGIN_REV, followups: coerceFollowups(args.followups) ?? [] }) }
         ]
     },
-    async execute(args) {
-      if (hostMode(getSettings())) return 'The host generates the followup suggestions after this turn. Do not call this tool again.';
+    async execute(args, exec) {
+      const settings = getSettings();
       const followups = coerceFollowups(args.followups);
       const problem = validationProblem(followups);
       if (problem !== null) return problem;
+      if (hostMode(settings)) {
+        const sessionId = exec !== undefined && exec.agent !== undefined ? exec.agent.id : undefined;
+        const callId = exec !== undefined ? exec.callId : undefined;
+        if (typeof sessionId === 'string' && typeof callId === 'string') {
+          startRewrite(ctx, settings, followups, sessionId, callId);
+        }
+      }
       return 'Followups recorded. Now write your final answer for this turn (do not call this tool again).';
     }
   };
@@ -303,8 +390,8 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   const callSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
   const observation = await sessionQuery.observeSession(sessionId, { signal: callSignal, projectionMode: 'none' });
   let transcript;
+  const events = observation.events ?? [];
   try {
-    const events = observation.events ?? [];
     const turnEnd = events.find((entry) => {
       const event = entry?.event ?? entry;
       return event?.type === 'turn/end' && event.seq === afterSeq;
@@ -320,18 +407,18 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   } finally {
     observation[Symbol.dispose]?.();
   }
+  const callId = lastFollowupCallId(events, afterSeq);
+  if (callId !== undefined) {
+    const key = `${sessionId}|${callId}`;
+    const entry = rewrites.get(key);
+    if (entry !== undefined) {
+      const rewritten = await raceWithSignal(entry.promise, callSignal).then((value) => value, () => undefined);
+      rewrites.delete(key);
+      if (Array.isArray(rewritten)) return { followups: rewritten, model: 'rewrite', source: 'rewrite' };
+    }
+  }
   if (transcript.trim() === '') return { followups: [] };
-  const catalog = await raceWithSignal(modelCatalog(ctx), callSignal);
-  const route = settings.model !== ''
-    ? (() => {
-      const slash = settings.model.indexOf('/');
-      const provider = settings.model.slice(0, slash);
-      const model = settings.model.slice(slash + 1);
-      if (catalog.groups.some((group) => group.id === provider && group.models.some((entry) => entry.id === model))) return { provider, model };
-      throw Object.assign(new Error('the selected model is no longer listed'), { status: 409 });
-    })()
-    : catalog.default;
-  if (route === undefined) throw Object.assign(new Error('no model is selected'), { status: 409 });
+  const route = await raceWithSignal(resolveRoute(ctx, settings), callSignal);
   const llm = get(ctx, 'llm');
   if (llm?.prepareCall === undefined) throw new Error('the llm service is unavailable');
   const call = await llm.prepareCall(route, callSignal, (controls, model) => {
@@ -349,9 +436,9 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   const followups = (followupsFromModelText(text) ?? []).slice(0, settings.maxFollowups);
   const script = SCRIPT_OF[settings.lang];
   if (script !== undefined && !script.test(followups.map((entry) => String(entry.prompt)).join(' '))) {
-    return { followups: [], model: route.model };
+    return { followups: [], model: route.model, source: 'transcript' };
   }
-  return { followups, model: route.model };
+  return { followups, model: route.model, source: 'transcript' };
 }
 
 function raceWithSignal(promise, signal) {
@@ -417,7 +504,7 @@ async function apply(ctx) {
     settings = next;
   };
   try {
-    ctx.tools.register(toolSpec(() => settings));
+    ctx.tools.register(toolSpec(ctx, () => settings));
   } catch (error) {
     console.error('dsh-nextsteps: tool registration failed:', error);
   }

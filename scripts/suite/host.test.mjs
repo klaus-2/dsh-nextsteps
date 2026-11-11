@@ -20,6 +20,7 @@ function stubContext({ services, llmModels, llmText } = {}) {
   const registered = [];
   const routes = new Map();
   const sections = [];
+  const llmCalls = [];
   const ctx = {
     tools: {
       register: (spec) => {
@@ -44,20 +45,23 @@ function stubContext({ services, llmModels, llmText } = {}) {
         return {
           listProviders: () => [{ id: "demo", name: "Demo" }],
           listModels: async () => llmModels ?? [{ id: "demo-model", name: "Demo Model" }],
-          prepareCall: async (route) => ({
-            config: { provider: route.provider, model: route.model },
-            stream: async function* () {
-              yield { type: "text-delta", text: llmText ?? '{"followups":[{"prompt":"p","label":"l"}]}' };
-              yield { type: "finish", reason: { kind: "stop" } };
-            }
-          })
+          prepareCall: async (route) => {
+            llmCalls.push(route);
+            return {
+              config: { provider: route.provider, model: route.model },
+              stream: async function* () {
+                yield { type: "text-delta", text: llmText ?? '{"followups":[{"prompt":"p","label":"l"}]}' };
+                yield { type: "finish", reason: { kind: "stop" } };
+              }
+            };
+          }
         };
       }
       return resolved[name];
     };
   }
   console.warn = originalWarn;
-  return { ctx, registered, routes, sections, warnings };
+  return { ctx, registered, routes, sections, warnings, llmCalls };
 }
 
 function settingsFileFor(name) {
@@ -181,7 +185,7 @@ test("the system prompt section explains the count in inline mode", async () => 
   assertIncludes(text, "same language the conversation", "the inline section follows the conversation");
 });
 
-test("the system prompt section stops the tool in host mode", async () => {
+test("the system prompt section asks for drafts in host mode", async () => {
   const { ctx, routes, sections } = stubContext();
   const mod = await import(moduleUrl.href);
   await mod.apply(ctx);
@@ -191,11 +195,12 @@ test("the system prompt section stops the tool in host mode", async () => {
     body: JSON.stringify({ lang: "zh-CN" })
   }));
   const text = sections[0].text();
-  assertIncludes(text, "must not call any followup tool", "the host mode section stops the tool");
-  assert(!text.includes("followup prompts"), "the host mode section does not ask for a count");
+  assertIncludes(text, "Call suggest_followups once", "the host mode section asks for the drafts");
+  assertIncludes(text, "host rewrites", "the host mode section explains the rewrite");
+  assertIncludes(text, "Simplified Chinese", "the host mode section names the target language");
 });
 
-test("the tool refuses to record and hides the card bytes in host mode", async () => {
+test("the tool records drafts and hides the card bytes in host mode", async () => {
   const { ctx, routes, registered } = stubContext();
   const mod = await import(moduleUrl.href);
   await mod.apply(ctx);
@@ -205,11 +210,11 @@ test("the tool refuses to record and hides the card bytes in host mode", async (
     body: JSON.stringify({ lang: "zh-CN" })
   }));
   const tool = registered[0];
-  const refused = await tool.execute({ followups: [{ prompt: "x" }] });
-  assertIncludes(refused, "The host generates", "the tool refuses in host mode");
-  const rendered = tool.output.render({ followups: [{ prompt: "x" }] }, refused);
+  const recorded = await tool.execute({ followups: [{ prompt: "x" }] }, { callId: "call-1", agent: { id: "s1" } });
+  assertIncludes(recorded, "Followups recorded", "the tool accepts the drafts in host mode");
+  const rendered = tool.output.render({ followups: [{ prompt: "x" }] }, recorded);
   assertEqual(rendered.length, 1, "the host mode renders only the confirmation");
-  assertEqual(rendered[0].text, refused, "the host mode render echoes only the value");
+  assertEqual(rendered[0].text, recorded, "the host mode render echoes only the value");
 });
 
 test("the settings POST swaps the mode without re-registering the tool", async () => {
@@ -230,8 +235,40 @@ test("the settings POST swaps the mode without re-registering the tool", async (
     body: JSON.stringify({ lang: "pt-BR" })
   }));
   const host = await registered[0].execute({ followups: [{ prompt: "Run the tests", label: "Run tests" }] });
-  assertIncludes(host, "The host generates", "the same registered tool follows the new mode");
+  assertIncludes(host, "Followups recorded", "the same registered tool follows the new mode");
   assertEqual(registered.length, 1, "the tool is registered exactly once");
+});
+
+test("the host serves the rewritten drafts at the end of the turn", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "suggest_followups", arguments: '{"followups":[{"prompt":"Run tests","label":"Tests"}]}' } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes, registered, llmCalls } = stubContext({
+    services: { sessionQuery },
+    llmText: '{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR", model: "" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assert(Array.isArray(body.followups), JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups[0].prompt, "Rodar os testes", "the rewritten card is served");
+  assertEqual(llmCalls.length, 1, "only the rewrite call ran");
 });
 
 test("the explicit language is enforced against a foreign transcript", async () => {
@@ -491,9 +528,9 @@ test("an explicit model alone selects host mode", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ lang: "auto", model: "demo/demo-model" })
   }));
-  assertIncludes(sections[0].text(), "must not call any followup tool", "the section stops the tool");
-  const refused = await registered[0].execute({ followups: [{ prompt: "x" }] });
-  assertIncludes(refused, "The host generates", "the tool refuses");
+  assertIncludes(sections[0].text(), "Call suggest_followups once", "the section asks for the drafts");
+  const recorded = await registered[0].execute({ followups: [{ prompt: "x" }] });
+  assertIncludes(recorded, "Followups recorded", "the tool records the drafts");
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },

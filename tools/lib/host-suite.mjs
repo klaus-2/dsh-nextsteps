@@ -114,7 +114,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.eq("the settings route accepts the count", body.settings.maxFollowups, 5);
 
       const after = section.text();
-      harness.includes("the section stops the tool in host mode", after, "must not call any followup tool");
+      harness.includes("the section asks for the drafts in host mode", after, "Call suggest_followups once");
       harness.check("the section text changed without a restart", before !== after);
       harness.includes("the section says the current statement wins over an earlier one", after, "ignore that earlier statement");
 
@@ -129,7 +129,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       const inline = section.text();
       harness.includes("the inline section follows the conversation", inline, "same language the conversation");
       harness.includes("the inline section follows the new count", inline, "exactly 5 followup prompts");
-      harness.excludes("the inline section has no override", inline, "must not call any followup tool");
+      harness.excludes("the inline section has no override", inline, "Call suggest_followups once");
     }
 
     harness.section("host: the settings route");
@@ -226,10 +226,10 @@ export async function runHostSuite(harness, { pluginDir }) {
       const tool = host.tools.get("suggest_followups");
       harness.check("the tool stays registered in the external mode", tool !== undefined);
       const refused = await tool.execute({ followups: [{ prompt: "x" }] });
-      harness.check("the tool refuses to record in the external mode", refused.includes("The host generates"), refused);
+      harness.check("the tool records the drafts in the external mode", refused.includes("Followups recorded"), refused);
       const refusedRender = tool.output.render({ followups: [{ prompt: "x" }] }, refused);
       harness.check("the external render hides the card bytes", refusedRender.length === 1 && refusedRender[0].text === refused, JSON.stringify(refusedRender).slice(0, 90));
-      harness.includes("the section tells the agent not to call the tool", section.text(), "must not call any followup tool");
+      harness.includes("the section asks for the drafts", section.text(), "Call suggest_followups once");
 
       llm.calls.length = 0;
       const generated = await (await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
@@ -331,9 +331,9 @@ export async function runHostSuite(harness, { pluginDir }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ lang: "auto", model: "deepseek/deepseek-chat" })
       }));
-      harness.includes("the section stops the tool", section.text(), "must not call any followup tool");
+      harness.includes("the section asks for the drafts", section.text(), "Call suggest_followups once");
       const refused = await host.tools.get("suggest_followups").execute({ followups: [{ prompt: "x" }] });
-      harness.check("the tool refuses", refused.includes("The host generates"), refused);
+      harness.check("the tool records the drafts", refused.includes("Followups recorded"), refused);
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -392,6 +392,36 @@ export async function runHostSuite(harness, { pluginDir }) {
         body: JSON.stringify({ maxFollowups: 3 })
       }));
       host.setService("llm", llm);
+    }
+
+    harness.section("host: the drafts are rewritten before the turn ends");
+    {
+      const events = [
+        { seq: 1, type: "user/message", data: { source: { kind: "user" }, content: "corrija o parser" } },
+        { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "suggest_followups", arguments: "{}" } },
+        { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+        { seq: 12, type: "turn/end", data: { reason: { kind: "completed" } } }
+      ];
+      host.setService("sessionQuery", fakeSessionQuery(events));
+      const rewriteLlm = fakeLlm({ text: JSON.stringify({ followups: [{ prompt: "Rodar os testes", label: "Testes" }] }) });
+      host.setService("llm", rewriteLlm);
+      await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "pt-BR", model: "" })
+      }));
+      const tool = host.tools.get("suggest_followups");
+      await tool.execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "session-1" } });
+      const body = await (await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      harness.eq("the rewritten card is served", body.followups[0]?.prompt, "Rodar os testes");
+      harness.eq("the rewrite is the only model call", rewriteLlm.calls.length, 1);
+      harness.eq("the response names the rewrite source", body.source, "rewrite");
+      host.setService("llm", llm);
+      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
 
     harness.section("host: the generator guards the turn");
@@ -470,7 +500,7 @@ export async function runHostSuite(harness, { pluginDir }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ lang: "ja", model: "" })
       }));
-      harness.includes("the explicit section tells the agent not to call the tool", section.text(), "must not call any followup tool");
+      harness.includes("the explicit section asks for the drafts", section.text(), "Call suggest_followups once");
       harness.includes("the explicit section says the current statement wins", section.text(), "ignore that earlier statement");
       harness.includes("the explicit tool description is static", host.tools.get("suggest_followups").description, "BEFORE writing your final answer");
       harness.excludes("the explicit tool description no longer names a language", host.tools.get("suggest_followups").description, "Japanese");
