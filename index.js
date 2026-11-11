@@ -146,7 +146,7 @@ const SCRIPT_OF = {
 
 function toolDescription() {
   return [
-    'Once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it. Skip the tool only when this turn produced no usable answer.',
+    'REQUIRED in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it, and never skip it.',
     'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt; when there is no such section, suggest three.',
     'Try to make different suggestions than you did in past steps. Aim for around three.',
     'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
@@ -167,7 +167,7 @@ function nextstepsSectionText() {
     return [
       'nextsteps (the followup suggestion cards):',
       `- ${CURRENT_STATEMENT}`,
-      `- Call suggest_followups once, after the work and before your final answer, with exactly ${settings.maxFollowups} draft prompts.`,
+      `- Call suggest_followups exactly once, after the work and before your final answer, with exactly ${settings.maxFollowups} draft prompts. Every turn ends with this call, including short questions.`,
       `- Write the drafts in whichever language you find natural; the host rewrites every prompt and label into ${settings.lang === 'auto' ? 'the conversation language' : nearLanguage(settings)} before the user sees them, so the drafts' language does not matter.`
     ].join('\n');
   }
