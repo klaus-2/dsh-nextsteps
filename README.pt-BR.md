@@ -89,6 +89,10 @@ A mesma página de configurações verifica novos releases no GitHub. Quando uma
 - DeepSeek Harness 0.2.x (desktop, perfil web).
 - Node.js 20+.
 
+## Registro de mudanças
+
+O [CHANGELOG.md](CHANGELOG.md) lista todas as mudanças publicadas.
+
 ## Licença
 
 [MIT](LICENSE)

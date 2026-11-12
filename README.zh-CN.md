@@ -89,6 +89,10 @@ dsh plugin --profile web add dsh-nextsteps
 - DeepSeek Harness 0.2.x（桌面版，web profile）。
 - Node.js 20+。
 
+## 更新日志
+
+[CHANGELOG.md](CHANGELOG.md) 列出了每个已发布的变更。
+
 ## 许可证
 
 [MIT](LICENSE)
