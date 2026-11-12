@@ -265,7 +265,7 @@ export function stubFetch(routes = {}) {
   const table = new Map(Object.entries(routes));
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    calls.push({ url, method: init?.method ?? "GET" });
+    calls.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
     const handler = table.get(url);
     if (handler === undefined) {
       return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });

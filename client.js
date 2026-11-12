@@ -985,7 +985,9 @@ window.__ModuleLoader__.load({
       return function SuggestFollowupsTail(props) {
         const sessionId = typeof props.sessionId === 'string' ? props.sessionId : '';
         const turn = turnIdOf(props.turn);
-        const afterSeq = props.turn !== null && typeof props.turn === 'object' && Number.isSafeInteger(props.turn.end?.seq) ? props.turn.end.seq : undefined;
+        const afterSeq = props.turn !== null && typeof props.turn === 'object' && Number.isSafeInteger(props.turn.end?.seq)
+          ? props.turn.end.seq
+          : (Number.isSafeInteger(props.seq) ? props.seq : undefined);
         const t = typeof props.t === 'function' ? props.t : (key) => key;
         const [, refresh] = React.useReducer((count) => count + 1, 0);
         const [visible, setVisible] = React.useState(() => typeof IntersectionObserver !== 'function');

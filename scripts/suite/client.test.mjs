@@ -202,7 +202,7 @@ test("the tail renders no card for a turn without a capture", () => {
   client.instance.apply(ctx);
   const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
   assert(tail !== undefined, "the tail is registered");
-  const tree = tail.component({ sessionId: "s1", turn: { turn: 3, end: { seq: 12 } }, t: (key) => key });
+  const tree = tail.component({ sessionId: "s1", turn: { turn: 3 }, seq: 12, t: (key) => key });
   const cards = walk(tree, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
   assertEqual(cards.length, 0, "a turn without a capture renders no card");
   fetchStub.restore();
@@ -241,7 +241,7 @@ test("the inline tail makes no generation request", async () => {
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
@@ -268,7 +268,7 @@ test("the host tail asks once and renders only the generated cards", async () =>
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Run the tests", label: "Tests" }] }) }] }
     });
     const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
@@ -281,12 +281,59 @@ test("the host tail asks once and renders only the generated cards", async () =>
     assert(keys.includes("generated-1"), "the generated capture is stored");
     const stored = store["generated-1"];
     assertEqual(stored.followups[0].prompt, "修复解析器", "the generated card wins over the tool capture");
-    const tree = tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
     const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "only the generated card renders in host mode");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the tail asks the host for the turn/end seq, not the closing node seq", async () => {
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "修复解析器", label: "修复" }] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 3, end: { type: "turn/end", seq: 139, data: { reason: { kind: "completed" } } } }, seq: 137, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
+    assertEqual(generated.length, 1, `the generation starts once the turn has closed: ${generated.length} calls`);
+    const posted = JSON.parse(generated[0]?.body ?? "{}");
+    assertEqual(posted.afterSeq, 139, "the request carries the turn/end seq, not the closing node seq");
+    client.instance.flushWrites();
+    const store = JSON.parse(client.storage._data["dsh-nextsteps.captures.session.s1"] ?? "{}");
+    assert(store["generated-3"] !== undefined, "the generated capture is stored for the turn");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the tail falls back to the bare seq when the turn carries no end event", async () => {
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "修复解析器", label: "修复" }] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 3 }, seq: 12, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const generated = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
+    assertEqual(generated.length, 1, `the fallback still starts the generation: ${generated.length} calls`);
+    const posted = JSON.parse(generated[0]?.body ?? "{}");
+    assertEqual(posted.afterSeq, 12, "the fallback carries the seq the app handed over");
   } finally {
     client.fetchStub.restore();
   }
@@ -305,7 +352,7 @@ test("the host tail warns once and shows no card when the generator fails", asyn
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const generationWarnings = warnings.filter((line) => line.includes("generation failed"));
@@ -314,7 +361,7 @@ test("the host tail warns once and shows no card when the generator fails", asyn
     const key = Object.keys(client.storage._data).find((name) => name.includes("captures.session.s1"));
     const store = key === undefined ? {} : JSON.parse(client.storage._data[key]);
     assertEqual(Object.keys(store).length, 0, "a failed generation stores no card");
-    const tree = tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
@@ -397,7 +444,7 @@ test("the send control is a button that sends the prompt", async () => {
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const send = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"))[0];
     assert(send !== undefined, "the card renders a send control");
     assertEqual(send.type, "button", "the send control is a button, so Enter activates it natively");
@@ -423,7 +470,7 @@ test("the card shortcuts run the copy, the favourite, the edit and the discard",
     });
     const tail = tailOf(registrations);
     const press = async (key) => {
-      const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key2) => key2 });
+      const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
       client.react.__setComponent(tree.type);
       client.react.__reset();
       const rendered = tree.type(tree.props);
@@ -436,20 +483,20 @@ test("the card shortcuts run the copy, the favourite, the edit and the discard",
     assertEqual(await press("e"), 1, "the edit shortcut runs");
     assertEqual(await press("f"), 1, "the favourite shortcut runs");
     assertEqual(await press("c"), 1, "the copy shortcut runs");
-    const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key2) => key2 });
+    const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
     const item = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"))[0];
     item.props.onKeyDown({ key: "Escape", target: { tagName: "DIV" }, preventDefault: () => {} });
-    const after = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key2) => key2 });
+    const after = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
     client.react.__setComponent(after.type);
     client.react.__reset();
     const afterRendered = after.type(after.props);
     const editors = walk(afterRendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-editor"));
     assertEqual(editors.length, 0, "the escape key closes the editor");
     assertEqual(await press("d"), 1, "the discard shortcut runs");
-    const discarded = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key2) => key2 });
+    const discarded = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
     assertEqual(walk(discarded, (node) => String(node.props?.className ?? "").includes("dsh-sf-item")).length, 0, "the discarded card leaves the list without waiting for the storage write");
   } finally {
     client.fetchStub.restore();
@@ -467,13 +514,13 @@ test("the copy action writes the prompt and announces it in the live region", as
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const copy = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionCopy");
     assert(copy !== undefined, "the card offers the copy action");
     await copy.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
     assertEqual(clipboard.writes, ["Rodar o build"], "the clipboard carries the full prompt");
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const live = walk(after, (node) => node.props?.role === "status");
     assertEqual(live.length, 1, "the card carries one live region");
     assertEqual(live[0].children.join(""), "srCopied", "the live region announces the copy");
@@ -493,7 +540,7 @@ test("the clipboard fallback runs when the clipboard refuses the text", async ()
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const copy = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionCopy");
     await copy.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -513,7 +560,7 @@ test("the live region is the only element with the status role", async () => {
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const live = walk(rendered, (node) => node.props?.role === "status");
     assertEqual(live.length, 1, "the card carries exactly one live region");
     assertEqual(live[0].props["aria-live"], undefined, "the live region carries no aria-live attribute");
@@ -590,7 +637,7 @@ test("the captures survive a restart", async () => {
     const second = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
     try {
       const tail = tailOf(second.registrations);
-      const rendered = renderTail(second.client, tail, { sessionId: "s1", turn: { turn: 3, end: { seq: 9 } }, t: (key) => key });
+      const rendered = renderTail(second.client, tail, { sessionId: "s1", turn: { turn: 3 }, seq: 9, t: (key) => key });
       const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
       assertEqual(cards.length, 1, "the capture comes back after a restart");
     } finally {
@@ -717,7 +764,7 @@ test("the on demand tail waits for the button and asks once when it is pressed",
   try {
     const tail = tailOf(registrations);
     await settled(client);
-    const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const before = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
@@ -731,7 +778,7 @@ test("the on demand tail waits for the button and asks once when it is pressed",
     await new Promise((resolve) => setTimeout(resolve, 60));
     const after = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
     assertEqual(after.length, 1, "the button asks the host exactly once");
-    const again = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const again = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const cards = walk(again, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "the generated card renders");
   } finally {
@@ -752,11 +799,11 @@ test("an aborted generation warns nothing and a conflict warns nothing", async (
   try {
     const tail = tailOf(registrations);
     await settled(client);
-    tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 60));
     assertEqual(warnings.filter((line) => line.includes("generation failed")).length, 0, "a conflict never warns");
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
     assertEqual(cards.length, 0, "a conflict renders no card");
   } finally {
@@ -782,7 +829,7 @@ test("a failed generation warns exactly once across both attempts", async () => 
   try {
     const tail = tailOf(registrations);
     await settled(client);
-    tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 2000));
     assertEqual(warnings.filter((line) => line.includes("generation failed")).length, 1, "the failure warns exactly once");
@@ -807,7 +854,7 @@ test("the deferred rendering waits for the observer and falls back without one",
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const effects = [...(client.react.__effects ?? [])];
     client.react.__setComponent(tree.type);
     client.react.__reset();
@@ -816,7 +863,7 @@ test("the deferred rendering waits for the observer and falls back without one",
     assertEqual(cards.length, 0, "a never firing observer builds no card");
     for (const effect of effects) await effect();
     observer.fire();
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const built = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
     assertEqual(built.length, 1, "firing the observer builds the card");
   } finally {
@@ -832,7 +879,7 @@ test("the deferred rendering waits for the observer and falls back without one",
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(fallback.registrations);
-    const rendered = renderTail(fallback.client, tail, { sessionId: "s2", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(fallback.client, tail, { sessionId: "s2", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "without an observer the card is built immediately");
   } finally {
@@ -867,21 +914,21 @@ test("the manual suggestion persists and renders in host mode", async () => {
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } }, { storage });
   try {
     const tail = tailOf(registrations);
-    let tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    let tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     let rendered = tree.type(tree.props);
     const add = buttonWithText(rendered, "addSuggestion");
     assert(add !== undefined, "the tail offers the add suggestion button");
     await add.props.onClick();
-    tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     rendered = tree.type(tree.props);
     const area = walk(rendered, (node) => node.type === "textarea")[0];
     assert(area !== undefined, "the manual form opens a textarea");
     area.props.onChange({ target: { value: "minha sugestao" } });
-    tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     rendered = tree.type(tree.props);
@@ -897,7 +944,7 @@ test("the manual suggestion persists and renders in host mode", async () => {
 
     const second = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } }, { storage });
     try {
-      const restarted = renderTail(second.client, tailOf(second.registrations), { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      const restarted = renderTail(second.client, tailOf(second.registrations), { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       const cards = walk(restarted, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
       assertEqual(cards.length, 1, "the manual card renders in host mode and survives a restart");
     } finally {
@@ -965,11 +1012,11 @@ test("a discarded card leaves the list before the storage write lands", async ()
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const discard = buttonsOf(before).find((node) => node.props?.["aria-label"] === "actionDiscard");
     assert(discard !== undefined, "the card offers the discard action");
     await discard.props.onClick();
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const items = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
     assertEqual(items.length, 0, "the discarded card leaves the list on the click's own re-render");
     const live = walk(after, (node) => node.props?.role === "status");
@@ -990,12 +1037,12 @@ test("a favourite is reflected on the card before the storage write lands", asyn
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const favorite = buttonsOf(before).find((node) => node.props?.["aria-label"] === "actionFavorite");
     assert(favorite !== undefined, "the card offers the favourite action");
     assertEqual(favorite.children[0], "☆", "the card starts without the favourite");
     await favorite.props.onClick();
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const starred = buttonsOf(after).find((node) => node.props?.["aria-label"] === "actionFavorite");
     assertEqual(starred.children[0], "★", "the card shows the favourite on the click's own re-render");
   } finally {
@@ -1070,10 +1117,10 @@ test("the undo button is labelled", async () => {
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const discard = buttonsOf(before).find((node) => node.props?.["aria-label"] === "actionDiscard");
     await discard.props.onClick();
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const undo = buttonsOf(after).find((node) => node.children.includes("undoDiscard"));
     assert(undo !== undefined, "the card offers the undo");
     assertEqual(undo.props["aria-label"], "undoDiscard", "the undo button carries an accessible name");
@@ -1105,7 +1152,7 @@ test("a generator that never answers is reported once", async () => {
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     const deadline = Date.now() + 25000;
     while (Date.now() < deadline) {
@@ -1218,14 +1265,14 @@ test("a composer that refuses the message is reported to the user", async () => 
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
     const send = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"))[0];
     await send.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const after = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(after.type);
     client.react.__reset();
     const afterRendered = after.type(after.props);
@@ -1318,7 +1365,7 @@ test("a stray tool call in the on demand mode never becomes a card", async () =>
     });
     client.instance.flushWrites();
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
     assertEqual(items.length, 0, "the stray call produces no card");
   } finally {
@@ -1346,7 +1393,7 @@ test("the on demand generation is cancelled when the card goes away", async () =
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const tail = tailOf(registrations);
-    const tree = tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     const rendered = tree.type(tree.props);
     const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
@@ -1377,7 +1424,7 @@ test("a configuration error is not treated as a cancellation", async () => {
       client.instance.apply(ctx);
       await new Promise((resolve) => setTimeout(resolve, 30));
       const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-      tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       for (const effect of client.react.__effects ?? []) await effect();
       await new Promise((resolve) => setTimeout(resolve, 60));
       const generationWarnings = warnings.filter((line) => line.includes("generation failed"));
@@ -1417,7 +1464,7 @@ test("the copy fallback leaves no hidden field behind", async () => {
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const copy = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionCopy");
     await copy.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -1441,11 +1488,11 @@ test("a copy that fails everywhere is reported to the user", async () => {
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const copy = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionCopy");
     await copy.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const live = walk(after, (node) => node.props?.role === "status");
     assertEqual(live[0].children.join(""), "copyFailed", "the failed copy is announced");
     const notice = walk(after, (node) => String(node.props?.className ?? "") === "dsh-sf-notice");
@@ -1467,10 +1514,10 @@ test("the metrics record the persistence, the rendering and the generation", asy
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-    tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 60));
-    const tree = tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const tree = tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     client.react.__setComponent(tree.type);
     client.react.__reset();
     tree.type(tree.props);
@@ -1498,7 +1545,7 @@ test("the client clamps the latency budget when the settings do not carry one", 
       const originalSetTimeout = client.window.setTimeout;
       client.window.setTimeout = (fn, ms) => { timeouts.push(ms); return originalSetTimeout(fn, ms); };
       const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-      tail.component({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       for (const effect of client.react.__effects ?? []) await effect();
       await new Promise((resolve) => setTimeout(resolve, 60));
       return timeouts;
@@ -1527,7 +1574,7 @@ test("the discarded list in the settings page lists and restores the prompt", as
       block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
     });
     const tail = tailOf(registrations);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const discard = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionDiscard");
     await discard.props.onClick();
     client.instance.flushWrites();
@@ -1553,13 +1600,13 @@ test("two manual suggestions in the same turn keep their own identity", async ()
   try {
     const tail = tailOf(registrations);
     const open = async (text) => {
-      const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       const add = buttonsOf(rendered).find((node) => node.children.includes("addSuggestion"));
       await add.props.onClick();
-      const withForm = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      const withForm = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       const area = walk(withForm, (node) => node.type === "textarea")[0];
       area.props.onChange({ target: { value: text } });
-      const withText = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+      const withText = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
       const save = buttonsOf(withText).find((node) => node.children.includes("manualSave"));
       await save.props.onClick();
     };
@@ -1572,7 +1619,7 @@ test("two manual suggestions in the same turn keep their own identity", async ()
     assert(keys[0] !== keys[1], "the two manual suggestions carry different keys");
     const ids = keys.map((key) => stored[key].clickedId);
     assertEqual(new Set(ids).size, 2, `the two manual suggestions carry different identities: ${ids.join(", ")}`);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
     assertEqual(items.length, 2, "both manual suggestions render as cards");
   } finally {
