@@ -35,9 +35,30 @@ test("the settings the client sends are the ones the host reads", () => {
 });
 
 test("the settings the host stores are the ones the client renders", () => {
-  const hostStores = [...hostSource.matchAll(/^\s{6}(lang|maxFollowups|showHeader|model):/gm)].map((match) => match[1]);
+  const hostStores = [...hostSource.matchAll(/^\s+(lang|maxFollowups|showHeader|model|styles|generationMode|latencyBudgetMs|maxSuggestionChars):/gm)].map((match) => match[1]);
+  assertEqual(new Set(hostStores).size, 8, "the host stores the four old and the four new settings");
   for (const key of new Set(hostStores)) {
     assert(clientSource.includes(key), `the client renders the ${key} setting`);
+  }
+});
+
+test("the mode predicate is identical on both halves", () => {
+  const predicate = /const hostMode = \(settings\) => [^\n]+/;
+  const host = hostSource.match(predicate)?.[0];
+  const client = clientSource.match(predicate)?.[0];
+  assert(host !== undefined, "the host declares the mode predicate");
+  assert(client !== undefined, "the client declares the mode predicate");
+  assertEqual(client.replace(/\r$/, ""), host.replace(/\r$/, ""), "a one-character drift would split the two code paths");
+});
+
+test("the client sends the four new settings and nothing the host ignores", () => {
+  const clientSends = [...new Set([...clientSource.matchAll(/save\(\{ ([a-zA-Z]+):/g)].map((match) => match[1]))];
+  for (const key of ["styles", "generationMode", "latencyBudgetMs", "maxSuggestionChars"]) {
+    assert(clientSends.includes(key), `the client sends the ${key} setting`);
+    assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
+  }
+  for (const key of clientSends) {
+    assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
   }
 });
 

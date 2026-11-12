@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export function fakeReact() {
   const stores = new Map();
   const effects = [];
+  const cleanups = [];
   let active = null;
   let cursor = 0;
   const storeFor = () => {
@@ -51,8 +52,11 @@ export function fakeReact() {
     },
     useEffect(effect) {
       effects.push(effect);
-    },
-    useSyncExternalStore(subscribe, getSnapshot) {
+      cleanups.push(async () => {
+        const dispose = await effect();
+        if (typeof dispose === "function") await dispose();
+      });
+    },    useSyncExternalStore(subscribe, getSnapshot) {
       return getSnapshot();
     }
   };
@@ -72,9 +76,16 @@ export function fakeReact() {
   return {
     ...hooks,
     createElement,
-    __reset: () => { cursor = 0; effects.length = 0; },
+    __reset: () => { cursor = 0; effects.length = 0; cleanups.length = 0; },
     __setComponent: (component) => { active = component; },
-    __effects: effects
+    __effects: effects,
+    __cleanup: async () => {
+      for (const dispose of cleanups.splice(0, cleanups.length)) {
+        try {
+          await dispose();
+        } catch {        }
+      }
+    }
   };
 }
 
@@ -92,18 +103,78 @@ export function memoryStorage(initial = {}) {
   };
 }
 
+export function fakeClipboard(options = {}) {
+  const writes = [];
+  return {
+    writes,
+    async writeText(text) {
+      if (options.fail === true) throw new Error("the clipboard refused the text");
+      writes.push(String(text));
+    }
+  };
+}
+
+export function fakeIntersectionObserver() {
+  const instances = [];
+  class FakeIntersectionObserver {
+    constructor(callback, observerOptions) {
+      this.callback = callback;
+      this.options = observerOptions;
+      this.observed = [];
+      this.disconnected = false;
+      instances.push(this);
+    }
+
+    observe(node) {
+      this.observed.push(node);
+    }
+
+    unobserve(node) {
+      this.observed = this.observed.filter((entry) => entry !== node);
+    }
+
+    disconnect() {
+      this.disconnected = true;
+    }
+
+    takeRecords() {
+      return [];
+    }
+  }
+  return {
+    FakeIntersectionObserver,
+    instances,
+    fire(entries = [{ isIntersecting: true }]) {
+      for (const instance of instances) instance.callback(entries, instance);
+    }
+  };
+}
+
 /**
  * Loads client.js the way the dsh module loader does and returns the plugin instance.
  * The client is a browser bundle: it is evaluated with a fake window/document and the
  * captured factory is invoked with a `require` that hands out the fake React.
  */
-export function loadClient({ storage = memoryStorage(), language = "en", routes = {} } = {}) {
+export function loadClient({ storage = memoryStorage(), language = "en", routes = {}, clipboard, intersectionObserver, document: documentOverride, execCommandResult = true, execCommandThrows = false, console: consoleOverride } = {}) {
   const source = readFileSync(path.join(root, "client.js"), "utf8");
   let captured;
   const head = { appendChild() {} };
-  const document = {
+  const execCommands = [];
+  const document = documentOverride ?? {
     head,
-    createElement: () => ({ style: {}, set textContent(value) { this._text = value; }, appendChild() {} })
+    createElement: () => ({
+      style: {},
+      value: "",
+      set textContent(value) { this._text = value; },
+      select() {},
+      remove() {},
+      appendChild() {}
+    }),
+    execCommand: (command) => {
+      execCommands.push(command);
+      if (execCommandThrows === true) throw new Error('the copy command was refused');
+      return execCommandResult;
+    }
   };
   const window = {
     localStorage: storage,
@@ -112,8 +183,19 @@ export function loadClient({ storage = memoryStorage(), language = "en", routes 
   };
   const loader = { load: (module) => { captured = module; } };
   window.__ModuleLoader__ = loader;
-  const evaluate = new Function("window", "document", "navigator", "console", source);
-  evaluate(window, document, { language }, console);
+  const warnings = [];
+  const clientConsole = {
+    log: (...args) => console.log(...args),
+    info: (...args) => console.info(...args),
+    debug: (...args) => console.debug(...args),
+    error: (...args) => console.error(...args),
+    warn: (...args) => {
+      warnings.push(args.map((value) => (value instanceof Error ? String(value) : String(value))).join(" "));
+      console.warn(...args);
+    }
+  };
+  const evaluate = new Function("window", "document", "navigator", "console", "IntersectionObserver", source);
+  evaluate(window, document, { language, clipboard: clipboard ?? fakeClipboard() }, consoleOverride ?? clientConsole, intersectionObserver);
   if (captured === undefined) throw new Error("client.js did not register a module");
   const react = fakeReact();
   const fetchStub = stubFetch(routes);
@@ -122,7 +204,7 @@ export function loadClient({ storage = memoryStorage(), language = "en", routes 
     if (name === "react-dom") return { createPortal: (node) => node };
     throw new Error(`the client requires an unexpected module: ${name}`);
   });
-  return { instance, react, storage, window, document, moduleId: captured.id, fetchStub };
+  return { instance, react, storage, window, document, moduleId: captured.id, fetchStub, execCommands, warnings };
 }
 
 /** Collects the slot registrations a plugin performs, so a test can render a component. */
@@ -189,6 +271,7 @@ export function stubFetch(routes = {}) {
       return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });
     }
     const answer = typeof handler === "function" ? await handler(init) : handler;
+    if (answer instanceof Response) return answer;
     const body = typeof answer === "string" ? answer : JSON.stringify(answer);
     return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
   };

@@ -593,3 +593,172 @@ test("the update route reports the current version", async () => {
     globalThis.fetch = original;
   }
 });
+
+test("the style rule reaches the inline section and the generator, and not the rewrite", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-style", name: "suggest_followups", arguments: "{}" } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const systems = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        systems.push(request.system ?? "");
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, sections, registered } = stubContext({ services: { sessionQuery } });
+  const collected = sections;
+  ctx.get = (name) => {
+    if (name === "llm") return llm;
+    if (name === "sessionQuery") return sessionQuery;
+    if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "demo", model: "demo-model" }) };
+    if (name === "systemPrompt") return { section: (spec) => collected.push(spec) };
+    return undefined;
+  };
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "", styles: ["explore"], maxSuggestionChars: 120 })
+  }));
+
+  const inline = sections[0].text();
+  assertIncludes(inline, "Vary the suggestions across these angles", "the inline section carries the style rule");
+  assertIncludes(inline, "a different direction worth exploring", "the inline section names the chosen angle");
+  assert(!inline.includes("the next concrete action to take"), "the inline section carries no unchosen angle");
+  assertIncludes(inline, "Each prompt is at most 120 characters.", "the inline section carries the length rule");
+
+  await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const generator = systems.at(-1) ?? "";
+  assertIncludes(generator, "Vary the suggestions across these angles", "the generator carries the style rule");
+  assertIncludes(generator, "a different direction worth exploring", "the generator names the chosen angle");
+  assert(!generator.includes("the next concrete action to take"), "the generator carries no unchosen angle");
+  assertIncludes(generator, "Each prompt is at most 120 characters.", "the generator carries the length rule");
+
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR", model: "" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-style", agent: { id: "s1" } });
+  await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const rewrite = systems.at(-1) ?? "";
+  assert(!rewrite.includes("Vary the suggestions across these angles"), "the rewrite prompt carries no style rule");
+  assert(!rewrite.includes("Each prompt is at most"), "the rewrite prompt carries no length rule");
+});
+
+test("the generator truncates the prompt to the configured length", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "me ajuda com o build" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({
+    services: { sessionQuery },
+    llmText: JSON.stringify({ followups: [{ prompt: "z".repeat(500), label: "L" }] })
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "", maxSuggestionChars: 90 })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(body.followups[0].prompt.length, 90, "the prompt is truncated to the configured length");
+});
+
+test("the generation deadline is the latency budget", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "me ajuda com o build" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({ services: { sessionQuery }, llmText: '{"followups":[{"prompt":"p","label":"l"}]}' });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ latencyBudgetMs: 7000 })
+  }));
+  const deadlines = [];
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = (ms) => {
+    deadlines.push(ms);
+    return originalTimeout(ms);
+  };
+  try {
+    await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+    }));
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+  assertEqual(deadlines.length, 1, "the generation arms exactly one deadline");
+  assertEqual(deadlines[0], 7000, "the deadline is the latency budget");
+});
+
+test("the on demand mode refuses the tool and returns one part", async () => {
+  const { ctx, routes, sections, registered } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ generationMode: "on-demand" })
+  }));
+  const text = sections[0].text();
+  assert(!text.includes("Call suggest_followups exactly once"), "the on demand section does not ask for the drafts");
+  assertIncludes(text, "Do not call the followup suggestion tool", "the on demand section tells the model to stay quiet");
+  const currentSetting = "This is the current setting for this turn";
+  assertEqual(text.split(currentSetting).length - 1, 1, "the on demand section states the current setting once");
+  const refused = await registered[0].execute({ followups: [{ prompt: "x" }] });
+  assertIncludes(refused, "requested on demand", "the tool refuses in the on demand mode");
+  assert(!refused.includes("Followups recorded"), "the tool records nothing in the on demand mode");
+  const rendered = registered[0].output.render({ followups: [{ prompt: "x" }] }, refused);
+  assertEqual(rendered.length, 1, "the on demand render returns one part");
+  assertEqual(rendered[0].text, refused, "the on demand render echoes only the value");
+});
+
+test("the compacted tool description keeps the four rules and names no language", async () => {
+  const { ctx, registered } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const description = registered[0].description;
+  assertIncludes(description, "BEFORE writing your final answer", "the description states the order");
+  assertMatch(description, /write every prompt and label in/i, "the description states the language rule");
+  assertIncludes(description, "stated in the nextsteps section", "the description delegates the count");
+  assertIncludes(description, "when there is no such section, use the language of the conversation", "the description falls back to the conversation language");
+  for (const language of ["English", "Brazilian Portuguese", "Simplified Chinese", "Japanese", "Arabic", "Hindi"]) {
+    assert(!description.includes(language), `the description names no language: ${language}`);
+  }
+  assert(!description.includes("Example input"), "the description carries no example block");
+});

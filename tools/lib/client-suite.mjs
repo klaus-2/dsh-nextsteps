@@ -10,6 +10,8 @@ import {
   findElements,
   flush,
   loadClientModule,
+  makeClipboard,
+  makeIntersectionObserver,
   makeLocalStorage,
   renderOnce
 } from "./harness.mjs";
@@ -136,7 +138,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true }, version: "1.0.0" }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const client = fakeClientCtx();
     module.apply(client.ctx);
@@ -155,7 +157,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const client = fakeClientCtx();
     module.apply(client.ctx);
@@ -163,6 +165,7 @@ export async function runClientSuite(harness, { pluginDir }) {
 
     const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
     renderOnce(stub, capture, { sessionId: "session-1", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    module.flushWrites();
     harness.check("the capture reaches the local storage", localStorage.size >= 1, `${localStorage.size} key(s)`);
 
     const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
@@ -186,7 +189,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("generate")) {
           return new Response(JSON.stringify({ ok: true, followups: [{ prompt: "gerado pelo host", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx();
@@ -215,7 +218,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("models")) {
           return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx();
@@ -246,7 +249,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("models")) {
           return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx();
@@ -303,7 +306,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("models")) {
           return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx({ remote: { pluginManager } });
@@ -344,7 +347,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("update")) {
           return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx({ remote: { pluginManager } });
@@ -391,7 +394,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("update")) {
           return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx({ remote: { pluginManager } });
@@ -428,7 +431,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         if (String(url).includes("update")) {
           return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "" } }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
       }
     });
     const client = fakeClientCtx({ remote: {} });
@@ -456,19 +459,20 @@ export async function runClientSuite(harness, { pluginDir }) {
     const first = loadClientModule(clientPath, {
       react: createReactStub().React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const firstClient = fakeClientCtx();
     first.module.apply(firstClient.ctx);
     firstClient.resolve();
     const firstCapture = firstClient.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
     renderOnce(createReactStub(), firstCapture, { sessionId: "session-9", callId: "call-9", block: { callId: "call-9", turn: 3, argsRaw: argsRaw() } });
+    first.module.flushWrites();
 
     const stub = createReactStub();
     const second = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const secondClient = fakeClientCtx();
     second.module.apply(secondClient.ctx);
@@ -486,7 +490,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const sent = [];
     const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation(sent) });
@@ -512,7 +516,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const drafts = [];
     let submitted = 0;
@@ -552,7 +556,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation([], { fail: true }) });
     module.apply(client.ctx);
@@ -575,7 +579,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true } }), { status: 200, headers: { "content-type": "application/json" } })
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
     });
     const client = fakeClientCtx();
     module.apply(client.ctx);
@@ -584,9 +588,313 @@ export async function runClientSuite(harness, { pluginDir }) {
     for (let index = 0; index < 450; index += 1) {
       renderOnce(stub, capture, { sessionId: "session-5", callId: `call-${index}`, block: { callId: `call-${index}`, turn: index, argsRaw: argsRaw() } });
     }
-    const stored = Object.values(localStorage.dump()).find((value) => typeof value === "string" && value.includes("followups"));
-    const parsed = stored === undefined ? {} : JSON.parse(stored);
-    const total = Object.values(parsed).reduce((sum, entries) => sum + Object.keys(entries ?? {}).length, 0);
-    harness.check("the stored captures are capped", total <= 400, String(total));
+    module.flushWrites();
+    const sessionKeys = Object.keys(localStorage.dump()).filter((name) => name.includes("captures.session."));
+    const total = sessionKeys.reduce((sum, name) => {
+      const parsed = JSON.parse(localStorage.dump()[name]);
+      return sum + Object.keys(parsed ?? {}).length;
+    }, 0);
+    harness.eq("the stored captures reach the cap exactly", total, 400);
+    harness.check("the cap keeps one session key", sessionKeys.length === 1, `${sessionKeys.length} session key(s)`);
+  }
+
+  harness.section("client: the capture cap holds across several sessions");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    for (let session = 0; session < 3; session += 1) {
+      for (let index = 0; index < 200; index += 1) {
+        renderOnce(stub, capture, { sessionId: `session-cap-${session}`, callId: `call-${index}`, block: { callId: `call-${index}`, turn: index, argsRaw: argsRaw() } });
+      }
+    }
+    module.flushWrites();
+    const sessionKeys = Object.keys(localStorage.dump()).filter((name) => name.includes("captures.session."));
+    const total = sessionKeys.reduce((sum, name) => sum + Object.keys(JSON.parse(localStorage.dump()[name]) ?? {}).length, 0);
+    harness.eq("the captures of several sessions are capped together", total, 400);
+    harness.check("the cap keeps the captures of at least two sessions", sessionKeys.length >= 2, `${sessionKeys.length} session key(s)`);
+    const index = JSON.parse(localStorage.dump()["dsh-nextsteps.captures.index"] ?? "{}");
+    const claimed = Object.values(index.sessions ?? {}).reduce((sum, calls) => sum + Object.keys(calls ?? {}).length, 0);
+    harness.eq("the index and the store agree on the capture count", claimed, total);
+  }
+
+  harness.section("client: the card waits for the viewport when an observer is available");
+  {
+    const observer = makeIntersectionObserver();
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      intersectionObserver: observer.FakeIntersectionObserver,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-defer", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const deferred = renderOnce(stub, tail, { sessionId: "session-defer", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const card = renderOnce(stub, deferred.tree.type, deferred.tree.props);
+    harness.eq("a never firing observer builds no card", findByClass(card.tree, "dsh-sf-card").length, 0);
+    harness.check("the tail waits for the observer", deferred.tree.props.deferred === true);
+    for (const effect of deferred.effects) effect();
+    harness.eq("the tail observes its root", observer.instances.length, 1);
+    observer.fire();
+    const visible = renderOnce(stub, tail, { sessionId: "session-defer", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const built = renderOnce(stub, visible.tree.type, visible.tree.props);
+    harness.eq("firing the observer builds the cards", findByClass(built.tree, "dsh-sf-card").length, FOLLOWUPS.length);
+  }
+
+  harness.section("client: the card is built at once when no observer is available");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module, sandbox } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-fallback", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-fallback", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    harness.check("the default sandbox offers no observer", sandbox.IntersectionObserver === undefined);
+    harness.check("the fallback does not defer the cards", restored.tree.props.deferred === false);
+    harness.eq("the fallback builds the cards at once", findByClass(card.tree, "dsh-sf-card").length, FOLLOWUPS.length);
+  }
+
+  harness.section("client: the card renders one send control and the action buttons");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-actions", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-actions", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const card = renderOnce(stub, restored.tree.type, restored.tree.props);
+    harness.eq("the card renders one send control per suggestion", findByClass(card.tree, "dsh-sf-card").length, FOLLOWUPS.length);
+    harness.eq("the card renders one item per suggestion", findByClass(card.tree, "dsh-sf-item").length, FOLLOWUPS.length);
+    const actions = findByClass(card.tree, "dsh-sf-action");
+    harness.check("the card renders the action buttons", actions.length >= FOLLOWUPS.length * 4, String(actions.length));
+    const labels = actions.map((element) => element.props["aria-label"]);
+    for (const expected of ["actionCopy", "actionFavorite", "actionEdit", "actionDiscard"]) {
+      harness.check(`the ${expected} action is rendered`, labels.includes(expected), labels.join(", "));
+    }
+    harness.check("the action buttons never nest a send control", findElements(card.tree, (element) => element.props?.className === "dsh-sf-card" && element.props?.children !== undefined).every((element) => findByClass(element, "dsh-sf-action").length === 0));
+  }
+
+  harness.section("client: the copy action writes the prompt and announces it");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const clipboard = makeClipboard();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      clipboard,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-copy", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-copy", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    const card = renderOnce(stub, Card, restored.tree.props);
+    const copyButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionCopy");
+    await copyButton.props.onClick();
+    await flush(4);
+    harness.eq("the clipboard carries the full prompt", clipboard.writes, ["Add the missing tests"]);
+    const after = renderOnce(stub, Card, restored.tree.props);
+    const live = findElements(after.tree, (element) => element.props?.role === "status");
+    harness.eq("the live region carries the copy notice", live[0]?.props?.children, "srCopied");
+  }
+
+  harness.section("client: the clipboard fallback runs when the clipboard refuses");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const clipboard = makeClipboard({ fail: true });
+    const { module, execCommands } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      clipboard,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-fallback", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-fallback", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    const card = renderOnce(stub, Card, restored.tree.props);
+    const copyButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionCopy");
+    await copyButton.props.onClick();
+    await flush(4);
+    harness.eq("the execCommand fallback runs once", execCommands.length, 1);
+    harness.eq("the fallback asks for a copy", execCommands[0], "copy");
+    const after = renderOnce(stub, Card, restored.tree.props);
+    const live = findElements(after.tree, (element) => element.props?.role === "status");
+    harness.eq("the live region announces the copied prompt", live[0]?.props?.children, "srCopied");
+  }
+
+  harness.section("client: the discard hides the item and the undo restores it");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-discard", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-discard", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    let card = renderOnce(stub, Card, restored.tree.props);
+    const discardButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionDiscard");
+    discardButton.props.onClick();
+    module.flushWrites();
+    const discarded = JSON.parse(localStorage.getItem("dsh-nextsteps.discarded") ?? "{}");
+    const discardKeys = Object.keys(discarded);
+    harness.eq("the discarded store carries the item", discardKeys.length, 1);
+    harness.eq("the discarded entry carries the prompt", discarded[discardKeys[0]]?.prompt, "Add the missing tests");
+    card = renderOnce(stub, Card, restored.tree.props);
+    harness.eq("the discarded item is hidden", findByClass(card.tree, "dsh-sf-card").length, FOLLOWUPS.length - 1);
+    const undo = findByClass(card.tree, "dsh-sf-action").find((element) => element.props?.children === "undoDiscard");
+    harness.check("the card offers the undo", undo !== undefined);
+    undo.props.onClick();
+    module.flushWrites();
+    harness.eq("the undo empties the discarded store", Object.keys(JSON.parse(localStorage.getItem("dsh-nextsteps.discarded") ?? "{}")).length, 0);
+    card = renderOnce(stub, Card, restored.tree.props);
+    harness.eq("the restored item comes back", findByClass(card.tree, "dsh-sf-card").length, FOLLOWUPS.length);
+  }
+
+  harness.section("client: the favourite carries the prompt and toggles");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-favorite", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-favorite", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    let card = renderOnce(stub, Card, restored.tree.props);
+    const favoriteButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionFavorite");
+    favoriteButton.props.onClick();
+    module.flushWrites();
+    const favorites = JSON.parse(localStorage.getItem("dsh-nextsteps.favorites") ?? "{}");
+    const favoriteKeys = Object.keys(favorites);
+    harness.eq("the favourite is stored", favoriteKeys.length, 1);
+    harness.eq("the favourite carries the prompt", favorites[favoriteKeys[0]]?.prompt, "Add the missing tests");
+    card = renderOnce(stub, Card, restored.tree.props);
+    const second = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionFavorite");
+    second.props.onClick();
+    module.flushWrites();
+    harness.eq("the favourite is removed", Object.keys(JSON.parse(localStorage.getItem("dsh-nextsteps.favorites") ?? "{}")).length, 0);
+  }
+
+  harness.section("client: the expansion reveals the prompt without sending");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const sent = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation(sent) });
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-expand", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-expand", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    let card = renderOnce(stub, Card, restored.tree.props);
+    const nameBefore = findByClass(card.tree, "dsh-sf-card")[0].props["aria-label"];
+    const expandButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionExpand");
+    harness.check("the expansion is offered when the prompt is longer than the label", expandButton !== undefined);
+    expandButton.props.onClick();
+    card = renderOnce(stub, Card, restored.tree.props);
+    const prompts = findByClass(card.tree, "dsh-sf-prompt");
+    harness.check("the expansion reveals the prompt", prompts.length >= 1 && prompts[0].props.children === "Add the missing tests", JSON.stringify(prompts.map((entry) => entry.props.children)));
+    harness.eq("the expansion sends nothing", sent, []);
+    harness.eq("the accessible name does not change", findByClass(card.tree, "dsh-sf-card")[0].props["aria-label"], nameBefore);
+  }
+
+  harness.section("client: the edit sends the edited text and leaves the capture alone");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const sent = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async () => new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } })
+    });
+    const client = fakeClientCtx({ sessions: { binding: (id) => ({ id }) }, conversation: fakeConversation(sent) });
+    module.apply(client.ctx);
+    client.resolve();
+    const capture = client.slots.find((slot) => slot.spec.name === "tool.call.toolview").component;
+    renderOnce(stub, capture, { sessionId: "session-edit", callId: "call-1", block: { callId: "call-1", turn: 7, argsRaw: argsRaw() } });
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const restored = renderOnce(stub, tail, { sessionId: "session-edit", turn: { turn: 7, end: { seq: 12 } }, t: (key) => key });
+    const Card = restored.tree.type;
+    let card = renderOnce(stub, Card, restored.tree.props);
+    const editButton = findByClass(card.tree, "dsh-sf-action").find((element) => element.props["aria-label"] === "actionEdit");
+    editButton.props.onClick();
+    card = renderOnce(stub, Card, restored.tree.props);
+    const textarea = findByClass(card.tree, "dsh-sf-textarea")[0];
+    harness.check("the editor opens with the prompt", textarea !== undefined && textarea.props.value === "Add the missing tests", String(textarea?.props?.value));
+    textarea.props.onChange({ target: { value: "Write the missing tests" } });
+    card = renderOnce(stub, Card, restored.tree.props);
+    const confirm = findByClass(card.tree, "dsh-sf-action").find((element) => element.props?.children === "editConfirm");
+    confirm.props.onClick();
+    await flush(4);
+    harness.eq("the edited text is sent", sent, ["Write the missing tests"]);
+    module.flushWrites();
+    const stored = JSON.parse(localStorage.getItem("dsh-nextsteps.captures.session.session-edit") ?? "{}");
+    const storedEntry = Object.values(stored)[0];
+    harness.eq("the stored capture keeps the original prompt", storedEntry?.followups[0].prompt, "Add the missing tests");
   }
 }

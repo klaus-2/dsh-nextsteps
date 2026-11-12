@@ -18,12 +18,15 @@ function fakeLlm({ text = '{"followups":[]}', providers, models } = {}) {
     },
     async prepareCall(route, signal, controls) {
       const capped = controls({ maxTokens: 1000 }, { defaultMaxTokens: 4000 });
-      calls.push({ route, signal, controls: capped, system: "" });
+      calls.push({ route, signal, controls: capped, system: "", messages: [] });
       return {
         config: { provider: route.provider, model: route.model },
         async *stream(request) {
           const entry = calls[calls.length - 1];
-          if (entry !== undefined) entry.system = request.system;
+          if (entry !== undefined) {
+            entry.system = request.system;
+            entry.messages = request.messages;
+          }
           yield { type: "text-delta", text };
           yield { type: "finish", reason: { kind: "stop" } };
         }
@@ -256,12 +259,33 @@ export async function runHostSuite(harness, { pluginDir }) {
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
       }));
       const body = await response.json();
-      harness.check("a model that is gone is refused", response.status === 409 && /no longer listed/.test(body.error), JSON.stringify(body));
+      harness.check("a model that is gone is refused with a configuration error", response.status === 400 && /no longer listed/.test(body.error), JSON.stringify(body));
+      harness.includes("the configuration error names the model", String(body.error), "no longer listed");
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "" })
       }));
+    }
+    {
+      host.setService("agentDefaultModel", undefined);
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => { warnings.push(args.join(" ")); };
+      try {
+        const response = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-no-model", afterSeq: 12 })
+        }));
+        const body = await response.json();
+        harness.eq("no model is a configuration error, not a cancellation", response.status, 400);
+        harness.includes("the error names the missing model", String(body.error), "no model is selected");
+        harness.check("the configuration error is reported", warnings.some((line) => line.includes("generation failed")), warnings.join(" | "));
+      } finally {
+        console.warn = originalWarn;
+        host.setService("agentDefaultModel", { currentSelection: () => ({ provider: "deepseek", model: "deepseek-chat" }) });
+      }
     }
 
     harness.section("host: the generator survives a malformed model reply");
@@ -439,14 +463,30 @@ export async function runHostSuite(harness, { pluginDir }) {
       }));
       harness.check("a bad sequence answers 400", badSeq.status === 400);
 
-      host.setService("sessionQuery", fakeSessionQuery([{ seq: 1, type: "user/message", data: { source: { kind: "user" }, content: "hi" } }]));
-      const moved = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
-      }));
-      harness.check("a turn that moved on answers 409", moved.status === 409, JSON.stringify(await moved.json()));
-      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => { warnings.push(args.join(" ")); };
+      try {
+        host.setService("sessionQuery", fakeSessionQuery([{ seq: 1, type: "user/message", data: { source: { kind: "user" }, content: "hi" } }]));
+        const moved = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-409-silence", afterSeq: 12 })
+        }));
+        harness.check("a turn that moved on answers 409", moved.status === 409, JSON.stringify(await moved.json()));
+        harness.check("a routine 409 is silent", warnings.every((line) => !line.includes("generation failed")), warnings.join(" | "));
+        host.setService("sessionQuery", undefined);
+        const failed = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-409-silence", afterSeq: 12 })
+        }));
+        harness.check("a later genuine failure still answers", failed.status === 502, String(failed.status));
+        harness.check("a later genuine failure is warned", warnings.some((line) => line.includes("generation failed")), warnings.join(" | "));
+      } finally {
+        console.warn = originalWarn;
+        host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+      }
     }
 
     harness.section("host: the generator survives the events that arrive after the turn");
@@ -579,6 +619,199 @@ export async function runHostSuite(harness, { pluginDir }) {
         return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
       }).then(() => undefined, (error) => error);
       harness.check("a release without a version is refused", untagged !== undefined && /no x\.y\.z version/.test(String(untagged.message)), String(untagged?.message));
+    }
+
+    harness.section("host: the four new settings are loaded, validated and persisted");
+    {
+      const route = host.routes.get("/api/dsh-nextsteps.settings");
+      const defaults = (await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings"))).json()).settings;
+      harness.eq("the styles default to the three angles", defaults.styles, ["next-action", "explore", "deep-dive"]);
+      harness.eq("the generation mode defaults to auto", defaults.generationMode, "auto");
+      harness.eq("the latency budget defaults to thirty seconds", defaults.latencyBudgetMs, 30000);
+      harness.eq("the suggestion length defaults to two hundred", defaults.maxSuggestionChars, 200);
+
+      const accepted = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ styles: ["explore", "deep-dive"], generationMode: "on-demand", latencyBudgetMs: 45000, maxSuggestionChars: 320 })
+      }))).json();
+      harness.eq("the styles are persisted", accepted.settings.styles, ["explore", "deep-dive"]);
+      harness.eq("the generation mode is persisted", accepted.settings.generationMode, "on-demand");
+      harness.eq("the latency budget is persisted", accepted.settings.latencyBudgetMs, 45000);
+      harness.eq("the suggestion length is persisted", accepted.settings.maxSuggestionChars, 320);
+
+      const stored = JSON.parse(readFileSync(settingsFile, "utf8"));
+      harness.eq("the styles reach the disk", stored.styles, ["explore", "deep-dive"]);
+      harness.eq("the generation mode reaches the disk", stored.generationMode, "on-demand");
+      harness.eq("the latency budget reaches the disk", stored.latencyBudgetMs, 45000);
+      harness.eq("the suggestion length reaches the disk", stored.maxSuggestionChars, 320);
+
+      const invalid = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ styles: ["not-a-style"], generationMode: "whenever", latencyBudgetMs: 10, maxSuggestionChars: 9000 })
+      }))).json();
+      harness.eq("an unknown style keeps the current styles", invalid.settings.styles, ["explore", "deep-dive"]);
+      harness.eq("an unknown generation mode keeps the current one", invalid.settings.generationMode, "on-demand");
+      harness.eq("a budget below the floor keeps the current one", invalid.settings.latencyBudgetMs, 45000);
+      harness.eq("a length above the ceiling keeps the current one", invalid.settings.maxSuggestionChars, 320);
+
+      const duplicated = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ styles: ["explore", "explore"] })
+      }))).json();
+      harness.eq("a duplicated style is stored once", duplicated.settings.styles, ["explore"]);
+
+      const emptied = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ styles: [] })
+      }))).json();
+      harness.eq("an empty style selection keeps the current styles", emptied.settings.styles, ["explore"]);
+
+      await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 })
+      }));
+    }
+
+    harness.section("host: the style and the length rule reach the model facing surfaces");
+    {
+      const route = host.routes.get("/api/dsh-nextsteps.settings");
+      await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", model: "", styles: ["explore"], maxSuggestionChars: 120 })
+      }));
+
+      const inline = section.text();
+      harness.includes("the inline section carries the style rule", inline, "Vary the suggestions across these angles");
+      harness.includes("the inline section names the chosen angle", inline, "a different direction worth exploring");
+      harness.excludes("the inline section does not carry an unchosen angle", inline, "the next concrete action to take");
+      harness.includes("the inline section carries the length rule", inline, "Each prompt is at most 120 characters.");
+
+      llm.calls.length = 0;
+      const generateRoute = host.routes.get("/api/dsh-nextsteps.generate");
+      await (await generateRoute.fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      const generator = llm.calls.at(-1)?.system ?? "";
+      harness.includes("the generator carries the style rule", generator, "Vary the suggestions across these angles");
+      harness.includes("the generator names the chosen angle", generator, "a different direction worth exploring");
+      harness.excludes("the generator does not carry an unchosen angle", generator, "the next concrete action to take");
+      harness.includes("the generator carries the length rule", generator, "Each prompt is at most 120 characters.");
+
+      const rewriteEvents = [
+        { seq: 1, type: "user/message", data: { source: { kind: "user" }, content: "corrija o parser" } },
+        { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-style", name: "suggest_followups", arguments: "{}" } },
+        { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+        { seq: 12, type: "turn/end", data: { reason: { kind: "completed" } } }
+      ];
+      host.setService("sessionQuery", fakeSessionQuery(rewriteEvents));
+      const rewriteLlm = fakeLlm({ text: JSON.stringify({ followups: [{ prompt: "Rodar os testes", label: "Testes" }] }) });
+      host.setService("llm", rewriteLlm);
+      await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "pt-BR", model: "" })
+      }));
+      await host.tools.get("suggest_followups").execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-style", agent: { id: "session-1" } });
+      await (await generateRoute.fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      const rewrite = rewriteLlm.calls.at(-1)?.system ?? "";
+      harness.excludes("the rewrite prompt carries no style rule", rewrite, "Vary the suggestions across these angles");
+      harness.excludes("the rewrite prompt carries no length rule", rewrite, "Each prompt is at most");
+      host.setService("llm", llm);
+      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+    }
+
+    harness.section("host: the transcript is capped and the last line survives");
+    {
+      const settingsRoute = host.routes.get("/api/dsh-nextsteps.settings");
+      const generateRoute = host.routes.get("/api/dsh-nextsteps.generate");
+      await settingsRoute.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", model: "", maxSuggestionChars: 60 })
+      }));
+      const long = "x".repeat(4000);
+      const events = [
+        { seq: 1, type: "user/message", data: { source: { kind: "user" }, content: `${long} first` } },
+        { seq: 2, type: "assistant/message", data: { message: { content: [{ type: "text", text: `${long} second` }] } } },
+        { seq: 3, type: "user/message", data: { source: { kind: "user" }, content: "the last question" } },
+        { seq: 4, type: "assistant/message", data: { message: { content: [{ type: "text", text: "the last answer" }] } } },
+        { seq: 12, type: "turn/end", data: { reason: { kind: "completed" } } }
+      ];
+      host.setService("sessionQuery", fakeSessionQuery(events));
+      llm.calls.length = 0;
+      await (await generateRoute.fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      const transcript = llm.calls.at(-1)?.messages?.[0]?.content?.[0]?.text ?? "";
+      const budget = 60 * 40;
+      const body = transcript.slice(transcript.indexOf("<transcript>") + "<transcript>".length, transcript.lastIndexOf("</transcript>")).trim();
+      harness.check("the transcript respects the budget", body.length <= budget, `${body.length} > ${budget}`);
+      harness.includes("the transcript keeps the last line", body, "the last answer");
+      harness.excludes("the transcript dropped the oldest line", body, "first");
+      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+    }
+
+    harness.section("host: the generator honours the length and the latency budget");
+    {
+      const settingsRoute = host.routes.get("/api/dsh-nextsteps.settings");
+      const generateRoute = host.routes.get("/api/dsh-nextsteps.generate");
+      const long = "y".repeat(500);
+      host.setService("llm", fakeLlm({ text: JSON.stringify({ followups: [{ prompt: long, label: "L" }] }) }));
+      await settingsRoute.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: "auto", model: "", maxSuggestionChars: 90 })
+      }));
+      const body = await (await generateRoute.fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+      }))).json();
+      harness.eq("the prompt is truncated to the configured length", body.followups[0]?.prompt.length, 90);
+
+      await settingsRoute.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ latencyBudgetMs: 7000 })
+      }));
+      llm.calls.length = 0;
+      const deadlines = [];
+      const originalTimeout = AbortSignal.timeout;
+      AbortSignal.timeout = (ms) => {
+        deadlines.push(ms);
+        return originalTimeout(ms);
+      };
+      try {
+        await (await generateRoute.fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
+        }))).json();
+      } finally {
+        AbortSignal.timeout = originalTimeout;
+      }
+      harness.check("the generation arms one deadline", deadlines.length === 1, JSON.stringify(deadlines));
+      harness.eq("the deadline is the latency budget", deadlines[0], 7000);
+      host.setService("llm", llm);
+      await settingsRoute.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ maxSuggestionChars: 200, latencyBudgetMs: 30000 })
+      }));
     }
   });
 }

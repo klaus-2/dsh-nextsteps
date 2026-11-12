@@ -363,10 +363,59 @@ export function makeLocalStorage(initial = {}) {
   };
 }
 
+export function makeClipboard(options = {}) {
+  const writes = [];
+  return {
+    writes,
+    async writeText(text) {
+      if (options.fail === true) throw new Error("the clipboard refused the text");
+      writes.push(String(text));
+    }
+  };
+}
+
+export function makeIntersectionObserver() {
+  const instances = [];
+  class FakeIntersectionObserver {
+    constructor(callback, observerOptions) {
+      this.callback = callback;
+      this.options = observerOptions;
+      this.observed = [];
+      this.disconnected = false;
+      instances.push(this);
+    }
+
+    observe(node) {
+      this.observed.push(node);
+    }
+
+    unobserve(node) {
+      this.observed = this.observed.filter((entry) => entry !== node);
+    }
+
+    disconnect() {
+      this.disconnected = true;
+    }
+
+    takeRecords() {
+      return [];
+    }
+  }
+  return {
+    FakeIntersectionObserver,
+    instances,
+    fire(entries = [{ isIntersecting: true }]) {
+      for (const instance of instances) instance.callback(entries, instance);
+    }
+  };
+}
+
 export function loadClientModule(file, options = {}) {
   const source = readFileSync(file, "utf8");
   let loaded = null;
   const localStorage = options.localStorage ?? makeLocalStorage();
+  const clipboard = options.clipboard ?? makeClipboard();
+  const execCommands = [];
   const windowStub = {
     __ModuleLoader__: {
       load(spec) {
@@ -381,7 +430,18 @@ export function loadClientModule(file, options = {}) {
   const sandbox = {
     window: windowStub,
     document: options.document ?? {
-      createElement: () => ({ style: {}, setAttribute() {}, appendChild() {}, remove() {} }),
+      createElement: () => ({
+        style: {},
+        value: "",
+        setAttribute() {},
+        select() {},
+        remove() {},
+        appendChild() {}
+      }),
+      execCommand: (command) => {
+        execCommands.push(command);
+        return options.execCommandResult ?? true;
+      },
       head: { appendChild() {} },
       body: { appendChild() {} },
       querySelector: () => null,
@@ -390,7 +450,8 @@ export function loadClientModule(file, options = {}) {
       removeEventListener() {}
     },
     console: options.console ?? { log() {}, warn() {}, error() {}, info() {}, debug() {} },
-    navigator: options.navigator ?? { language: "en-US", userAgent: "dsh-regression" },
+    navigator: options.navigator ?? { language: "en-US", userAgent: "dsh-regression", clipboard },
+    ...(options.intersectionObserver === undefined ? {} : { IntersectionObserver: options.intersectionObserver }),
     fetch: options.fetch ?? (async () => { throw new Error("fetch was not stubbed"); }),
     localStorage,
     setTimeout,
@@ -417,7 +478,7 @@ export function loadClientModule(file, options = {}) {
     }
     throw new Error(`unexpected require("${name}") in ${file}`);
   });
-  return { spec: loaded, module, window: windowStub, sandbox };
+  return { spec: loaded, module, window: windowStub, sandbox, clipboard, execCommands };
 }
 
 export function extractObjectLiteral(source, marker) {

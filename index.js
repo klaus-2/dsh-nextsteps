@@ -13,6 +13,24 @@ const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.ur
 const GENERATE_TIMEOUT_MS = 30000;
 const GENERATE_MAX_TOKENS = 500;
 
+const STYLE_IDS = ['next-action', 'explore', 'deep-dive'];
+const STYLE_ANGLES = {
+  'next-action': 'the next concrete action to take',
+  'explore': 'a different direction worth exploring',
+  'deep-dive': 'going deeper into what was just discussed'
+};
+
+const GENERATION_MODES = ['auto', 'on-demand'];
+const DEFAULT_STYLES = [...STYLE_IDS];
+const DEFAULT_GENERATION_MODE = 'auto';
+const DEFAULT_MAX_SUGGESTION_CHARS = 200;
+const MIN_MAX_SUGGESTION_CHARS = 60;
+const MAX_MAX_SUGGESTION_CHARS = 600;
+const MIN_LATENCY_BUDGET_MS = 5000;
+const MAX_LATENCY_BUDGET_MS = 120000;
+const TRANSCRIPT_BUDGET_FACTOR = 40;
+const DEFAULT_TRANSCRIPT_LIMIT = DEFAULT_MAX_SUGGESTION_CHARS * TRANSCRIPT_BUDGET_FACTOR;
+
 const LANGUAGE_NAMES = {
   auto: "the same language as the conversation",
   'en': "English",
@@ -40,6 +58,31 @@ function modelKeyOf(stored) {
   return provider !== '' && model !== '' ? `${provider}/${model}` : '';
 }
 
+function stylesOf(stored) {
+  if (!Array.isArray(stored)) return undefined;
+  const ids = [];
+  for (const entry of stored) {
+    if (typeof entry !== 'string') continue;
+    if (!STYLE_IDS.includes(entry)) continue;
+    if (ids.includes(entry)) continue;
+    ids.push(entry);
+  }
+  if (ids.length === 0) return undefined;
+  return ids;
+}
+
+function generationModeOf(stored) {
+  return typeof stored === 'string' && GENERATION_MODES.includes(stored) ? stored : undefined;
+}
+
+function latencyBudgetOf(stored) {
+  return Number.isInteger(stored) && stored >= MIN_LATENCY_BUDGET_MS && stored <= MAX_LATENCY_BUDGET_MS ? stored : undefined;
+}
+
+function maxSuggestionCharsOf(stored) {
+  return Number.isInteger(stored) && stored >= MIN_MAX_SUGGESTION_CHARS && stored <= MAX_MAX_SUGGESTION_CHARS ? stored : undefined;
+}
+
 function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
@@ -47,10 +90,23 @@ function settingsLoad() {
       lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(stored.lang) ? stored.lang : 'auto',
       maxFollowups: Number.isInteger(stored.maxFollowups) && stored.maxFollowups >= 1 && stored.maxFollowups <= 6 ? stored.maxFollowups : 3,
       showHeader: stored.showHeader !== false,
-      model: typeof stored.model === 'string' ? (stored.model.includes('/') ? stored.model : '') : modelKeyOf(stored)
+      model: typeof stored.model === 'string' ? (stored.model.includes('/') ? stored.model : '') : modelKeyOf(stored),
+      styles: stylesOf(stored.styles) ?? [...DEFAULT_STYLES],
+      generationMode: generationModeOf(stored.generationMode) ?? DEFAULT_GENERATION_MODE,
+      latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
+      maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS
     };
   } catch {
-    return { lang: 'auto', maxFollowups: 3, showHeader: true, model: '' };
+    return {
+      lang: 'auto',
+      maxFollowups: 3,
+      showHeader: true,
+      model: '',
+      styles: [...DEFAULT_STYLES],
+      generationMode: DEFAULT_GENERATION_MODE,
+      latencyBudgetMs: GENERATE_TIMEOUT_MS,
+      maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS
+    };
   }
 }
 
@@ -101,19 +157,19 @@ const PARAMETER_SCHEMA = {
   properties: {
     followups: {
       type: 'array',
-      description: 'List of suggested followup prompts the user can click to send.',
+      description: 'The followup prompts the user can click to send.',
       items: {
         type: 'object',
         additionalProperties: false,
-        description: 'One suggested followup card.',
+        description: 'One followup card.',
         properties: {
           prompt: {
             type: 'string',
-            description: 'The message sent verbatim when the user clicks; short, goal-oriented, first-person.'
+            description: 'The message sent when the user clicks.'
           },
           label: {
             type: 'string',
-            description: 'Short display label for the card, 2-5 words; defaults to a truncated prompt.'
+            description: 'Short display label for the card.'
           }
         },
         required: ['prompt']
@@ -131,6 +187,21 @@ function languageRuleOf(settings) {
   return `LANGUAGE OVERRIDE, applies to the suggest_followups tool only: write every prompt and label in ${language}. The user chose this language for these cards on purpose: the language of the conversation, of the session history and of any saved preference about how the user usually writes do not apply here, and the prompts and labels must not follow them.`;
 }
 
+function styleRuleOf(settings) {
+  const ids = Array.isArray(settings.styles) ? settings.styles.filter((id) => STYLE_IDS.includes(id)) : [];
+  if (ids.length === 0) return '';
+  const angles = ids.map((id) => STYLE_ANGLES[id]);
+  return `Vary the suggestions across these angles: ${angles.join('; ')}.`;
+}
+
+function lengthRuleOf(settings) {
+  return `Each prompt is at most ${maxSuggestionCharsOf(settings.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS} characters.`;
+}
+
+function guidanceLines(settings) {
+  return [styleRuleOf(settings), lengthRuleOf(settings)].filter((line) => line !== '');
+}
+
 const hostMode = (settings) => !(settings.lang === 'auto' && (typeof settings.model !== 'string' || settings.model === ''));
 
 const warnedGenerations = new Set();
@@ -146,36 +217,42 @@ const SCRIPT_OF = {
 
 function toolDescription() {
   return [
-    'REQUIRED in every turn: once all real work and other tool calls are done, call this tool BEFORE writing your final answer — the answer must come after this tool returns, so the turn ends cleanly right after it. Never write your final answer before calling it, and never skip it.',
+    'Call this tool once, BEFORE writing your final answer — the answer must come after this tool returns.',
     'Suggest exactly the number of followup prompts stated in the nextsteps section of the system prompt; when there is no such section, suggest three.',
-    'Try to make different suggestions than you did in past steps. Aim for around three.',
-    'Good suggestions include alternatives to the latest implementation, related features, cleanup opportunities, tests to add, or verification steps you could run yourself; if plan steps remain, one suggestion may be continuing with the next step.',
-    `Each prompt must be short (usually one sentence), goal-oriented — name the outcome, not the steps — stand alone without conversation context, and be phrased in the user's first-person voice.`,
+    'Each prompt is one short, goal-oriented sentence in the user\'s first-person voice, standing alone without conversation context.',
     'Write every prompt and label in the language the nextsteps section of the system prompt states; when there is no such section, use the language of the conversation.',
-    'Never suggest actions the user would carry out themselves outside this session (e.g. "commit these changes"); judge by the tools you actually have.',
-    'This never waits for an answer: its result only confirms the suggestions were recorded.',
-    'Example input:',
-    '{"followups":[{"prompt":"Show me how to run the test suite","label":"Run tests"},{"prompt":"Add error handling for empty uploads","label":"Handle empty uploads"},{"prompt":"What about handling streaming updates?","label":"Streaming updates"}]}'
+    'Avoid repeating the suggestions of past steps. Never suggest actions the user would carry out outside this session.',
+    'This tool never waits for an answer; its result only confirms that the suggestions were recorded.'
   ].join('\n');
 }
 
 const CURRENT_STATEMENT = 'This is the current setting for this turn; if an earlier message in this conversation stated a different one, ignore that earlier statement.';
+const ON_DEMAND_REFUSAL = 'The suggestions are requested on demand; do not call this tool.';
 
 function nextstepsSectionText() {
   const settings = settingsLoad();
+  if (settings.generationMode === 'on-demand') {
+    return [
+      'nextsteps (the followup suggestion cards):',
+      `- ${CURRENT_STATEMENT}`,
+      '- Do not call the followup suggestion tool in this turn. The user requests the suggestions with a button under the answer, after they read your answer.'
+    ].join('\n');
+  }
   if (hostMode(settings)) {
     return [
       'nextsteps (the followup suggestion cards):',
       `- ${CURRENT_STATEMENT}`,
       `- Call suggest_followups exactly once, after the work and before your final answer, with exactly ${settings.maxFollowups} draft prompts. Every turn ends with this call, including short questions.`,
-      `- Write the drafts in whichever language you find natural; the host rewrites every prompt and label into ${settings.lang === 'auto' ? 'the conversation language' : nearLanguage(settings)} before the user sees them, so the drafts' language does not matter.`
+      `- Write the drafts in whichever language you find natural; the host rewrites every prompt and label into ${settings.lang === 'auto' ? 'the conversation language' : nearLanguage(settings)} before the user sees them, so the drafts' language does not matter.`,
+      ...guidanceLines(settings)
     ].join('\n');
   }
   return [
     'nextsteps (the followup suggestion cards):',
     `- ${CURRENT_STATEMENT}`,
     `- Suggest exactly ${settings.maxFollowups} followup prompts when you call suggest_followups.`,
-    `- ${languageRuleOf(settings)}`
+    `- ${languageRuleOf(settings)}`,
+    ...guidanceLines(settings)
   ].join('\n');
 }
 
@@ -210,10 +287,10 @@ async function resolveRoute(ctx, settings) {
       const provider = settings.model.slice(0, slash);
       const model = settings.model.slice(slash + 1);
       if (catalog.groups.some((group) => group.id === provider && group.models.some((entry) => entry.id === model))) return { provider, model };
-      throw Object.assign(new Error('the selected model is no longer listed'), { status: 409 });
+      throw Object.assign(new Error('the selected model is no longer listed'), { status: 400 });
     })()
     : catalog.default;
-  if (route === undefined) throw Object.assign(new Error('no model is selected'), { status: 409 });
+  if (route === undefined) throw Object.assign(new Error('no model is selected'), { status: 400 });
   return route;
 }
 
@@ -234,7 +311,7 @@ async function rewriteDrafts(ctx, settings, drafts) {
     else if (chunk.type === 'finish') finish = chunk.reason;
   }
   if (finish?.kind === 'error' || finish?.kind === 'aborted') throw new Error(finish.failure?.message || `the rewrite ended: ${finish.kind}`);
-  const followups = (followupsFromModelText(text) ?? []).slice(0, settings.maxFollowups);
+  const followups = (followupsFromModelText(text, settings.maxSuggestionChars) ?? []).slice(0, settings.maxFollowups);
   const script = SCRIPT_OF[settings.lang];
   if (script !== undefined && !script.test(followups.map((entry) => String(entry.prompt)).join(' '))) return [];
   return followups;
@@ -267,15 +344,18 @@ function toolSpec(ctx, getSettings) {
     parameters: PARAMETER_SCHEMA,
     output: {
       schema: { type: 'string' },
-      render: (args, value) => hostMode(getSettings())
-        ? [{ type: 'text', text: value }]
-        : [
+      render: (args, value) => {
+        const settings = getSettings();
+        if (hostMode(settings) || settings.generationMode === 'on-demand') return [{ type: 'text', text: value }];
+        return [
           { type: 'text', text: value },
           { type: 'text', text: JSON.stringify({ rev: PLUGIN_REV, followups: coerceFollowups(args.followups) ?? [] }) }
-        ]
+        ];
+      }
     },
     async execute(args, exec) {
       const settings = getSettings();
+      if (settings.generationMode === 'on-demand') return ON_DEMAND_REFUSAL;
       const followups = coerceFollowups(args.followups);
       const problem = validationProblem(followups);
       if (problem !== null) return problem;
@@ -331,7 +411,7 @@ function textOf(content) {
   return parts.join('\n');
 }
 
-function turnTranscript(events, afterSeq) {
+function turnTranscript(events, afterSeq, limit = DEFAULT_TRANSCRIPT_LIMIT) {
   const lines = [];
   for (const entry of events) {
     const event = entry?.event ?? entry;
@@ -347,7 +427,15 @@ function turnTranscript(events, afterSeq) {
       lines.push(`Tool call: ${event.data.name}`);
     }
   }
-  return lines.join('\n\n');
+  const budget = Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_TRANSCRIPT_LIMIT;
+  const separator = '\n\n';
+  let total = lines.join(separator).length;
+  let first = 0;
+  while (first < lines.length - 1 && total > budget) {
+    total -= lines[first].length + separator.length;
+    first += 1;
+  }
+  return lines.slice(first).join(separator);
 }
 
 function generateSystem(settings) {
@@ -360,11 +448,12 @@ function generateSystem(settings) {
     `Output shape: {"followups":[{"prompt":"...","label":"..."}]} with exactly ${settings.maxFollowups} items.`,
     'Each prompt is one short sentence in the user\'s first-person voice, goal-oriented, standing alone without the transcript; each label is 2-5 words.',
     languageRule,
-    'Good suggestions: alternatives to the latest change, related features, cleanup, tests, verification steps. If the transcript shows remaining plan steps, one suggestion may continue the next step.'
+    'Good suggestions: alternatives to the latest change, related features, cleanup, tests, verification steps. If the transcript shows remaining plan steps, one suggestion may continue the next step.',
+    ...guidanceLines(settings)
   ].join('\n');
 }
 
-function followupsFromModelText(text) {
+function followupsFromModelText(text, maxChars = DEFAULT_MAX_SUGGESTION_CHARS) {
   if (typeof text !== 'string' || text === '') return undefined;
   let parsed;
   try {
@@ -377,16 +466,18 @@ function followupsFromModelText(text) {
   }
   const followups = coerceFollowups(parsed);
   if (followups === undefined) return undefined;
+  const cap = Number.isInteger(maxChars) && maxChars > 0 ? maxChars : DEFAULT_MAX_SUGGESTION_CHARS;
   return followups
     .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.prompt === 'string' && entry.prompt.trim() !== '')
     .slice(0, 6)
-    .map((entry) => ({ prompt: entry.prompt.slice(0, 200), label: typeof entry.label === 'string' && entry.label.trim() !== '' ? entry.label.slice(0, 40) : null }));
+    .map((entry) => ({ prompt: entry.prompt.slice(0, cap), label: typeof entry.label === 'string' && entry.label.trim() !== '' ? entry.label.slice(0, 40) : null }));
 }
 
 async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   const sessionQuery = get(ctx, 'sessionQuery');
   if (sessionQuery?.observeSession === undefined) throw new Error('the sessionQuery service is unavailable');
-  const deadline = AbortSignal.timeout(GENERATE_TIMEOUT_MS);
+  const budget = latencyBudgetOf(settings.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS;
+  const deadline = AbortSignal.timeout(budget);
   const callSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
   const observation = await sessionQuery.observeSession(sessionId, { signal: callSignal, projectionMode: 'none' });
   let transcript;
@@ -403,7 +494,7 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
     if (turnEnd === undefined || newerTurn || turnEnd.data?.reason?.kind !== 'completed') {
       throw Object.assign(new Error('the chat moved on'), { status: 409 });
     }
-    transcript = turnTranscript(events, afterSeq);
+    transcript = turnTranscript(events, afterSeq, settings.maxSuggestionChars * TRANSCRIPT_BUDGET_FACTOR);
   } finally {
     observation[Symbol.dispose]?.();
   }
@@ -433,7 +524,7 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
     else if (chunk.type === 'finish') finish = chunk.reason;
   }
   if (finish?.kind === 'error' || finish?.kind === 'aborted') throw new Error(finish.failure?.message || `the model call ended: ${finish.kind}`);
-  const followups = (followupsFromModelText(text) ?? []).slice(0, settings.maxFollowups);
+  const followups = (followupsFromModelText(text, settings.maxSuggestionChars) ?? []).slice(0, settings.maxFollowups);
   const script = SCRIPT_OF[settings.lang];
   if (script !== undefined && !script.test(followups.map((entry) => String(entry.prompt)).join(' '))) {
     return { followups: [], model: route.model, source: 'transcript' };
@@ -531,7 +622,11 @@ async function apply(ctx) {
         lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(body?.lang) ? body.lang : current.lang,
         maxFollowups: Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : current.maxFollowups,
         showHeader: typeof body?.showHeader === 'boolean' ? body.showHeader : current.showHeader,
-        model: typeof body?.model === 'string' && body.model.includes('/') ? body.model : body?.model === '' || body?.model === undefined || body?.model === null ? '' : current.model
+        model: typeof body?.model === 'string' && body.model.includes('/') ? body.model : body?.model === '' || body?.model === undefined || body?.model === null ? '' : current.model,
+        styles: stylesOf(body?.styles) ?? current.styles,
+        generationMode: generationModeOf(body?.generationMode) ?? current.generationMode,
+        latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
+        maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars
       };
       await settingsSave(next);
       reapplyTool(next);
@@ -565,13 +660,14 @@ async function apply(ctx) {
         const result = await generateForTurn(ctx, settings, body.sessionId, body.afterSeq, request.signal);
         return json({ ok: true, rev: PLUGIN_REV, ...result });
       } catch (error) {
+        const status = error?.status === 409 || error?.status === 400 ? error.status : 502;
+        if (status === 409) return json({ error: String(error?.message ?? error) }, status);
         const warnKey = body.sessionId + '|' + body.afterSeq;
         if (!warnedGenerations.has(warnKey)) {
           warnedGenerations.add(warnKey);
           if (warnedGenerations.size > 200) warnedGenerations.delete(warnedGenerations.values().next().value);
           console.warn('dsh-nextsteps: generation failed:', error);
         }
-        const status = error?.status === 409 || error?.status === 400 ? error.status : 502;
         return json({ error: String(error?.message ?? error) }, status);
       }
     }
