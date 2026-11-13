@@ -40,8 +40,10 @@ dsh plugin --profile web add dsh-nextsteps
 - **Export** the favourites as a Markdown download, ordered by the date each one was saved.
 - **New conversation with this suggestion** — a card action that opens a fresh conversation with the prompt prefilled in the composer; nothing is sent for you.
 - **Conversation options** — every conversation can override the global language and followups count from a panel in its header; the override rides the generate request and the global settings stay untouched.
-- **Move earlier / Move later** — drag the grip handle onto another card or use the two move buttons; the order persists per conversation and turn.
+- **Move earlier / Move later** — drag the grip handle on the left of a card onto another card or use the two move buttons; the drag starts after a small movement and lands above or below the target. The order persists per conversation and turn.
 - **Try again** — a failed generation shows the error under the cards with a retry button that re-runs exactly one fresh generation round.
+- **Card actions on demand** — copy, favourite, edit, discard, move, expand and new-conversation appear when the pointer or the keyboard focus reaches the card; touch devices keep them visible.
+- **Nothing under an incomplete turn** — a stopped or failed answer shows no header and no buttons; in on-demand mode a lightweight host probe decides whether the generate button makes sense.
 - **Add a suggestion** by hand under the answer, next to the header.
 - **Keyboard shortcuts**, local to the card: `c` copies, `f` favourites, `e` edits, `d` discards and `Esc` closes the editor or the expansion. The hints appear when the card has the focus; `Enter` and `Space` send the card as usual.
 - **A live region** announces each action to screen readers, and the same text is shown next to the cards so nothing is announced silently.

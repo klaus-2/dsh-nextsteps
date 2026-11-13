@@ -40,8 +40,10 @@ dsh plugin --profile web add dsh-nextsteps
 - **Exportar** os favoritos como um download em Markdown, na ordem em que cada um foi salvo.
 - **Nova conversa com esta sugestão** — uma ação do card que abre uma conversa nova com o prompt pré-preenchido no composer; nada é enviado por você.
 - **Opções da conversa** — cada conversa pode sobrescrever o idioma global e a contagem de followups num painel no próprio cabeçalho; a sobrescrita vai na requisição de geração e as configurações globais ficam intactas.
-- **Mover para antes / Mover para depois** — arraste a alça sobre outro card ou use os dois botões de movimento; a ordem persiste por conversa e por turno.
+- **Mover para antes / Mover para depois** — arraste a alça à esquerda do card sobre outro card ou use os dois botões de movimento; o arrasto começa após um pequeno movimento e cai acima ou abaixo do alvo. A ordem persiste por conversa e por turno.
 - **Tentar novamente** — uma geração que falhou mostra o erro sob os cards com um botão de retry que reexecuta exatamente uma nova rodada de geração.
+- **Ações do card sob demanda** — copiar, favoritar, editar, descartar, mover, expandir e nova conversa aparecem quando o ponteiro ou o foco do teclado chega ao card; dispositivos de toque as mantêm visíveis.
+- **Nada sob um turno incompleto** — uma resposta interrompida ou falha não mostra cabeçalho nem botões; no modo sob demanda, uma sonda leve do host decide se o botão de geração faz sentido.
 - **Adicionar uma sugestão** à mão sob a resposta, ao lado do cabeçalho.
 - **Atalhos de teclado**, locais do card: `c` copia, `f` favorita, `e` edita, `d` descarta e `Esc` fecha o editor ou a expansão. As dicas aparecem quando o card tem o foco; `Enter` e `Space` enviam o card como sempre.
 - **Uma região viva** anuncia cada ação para leitores de tela, e o mesmo texto aparece ao lado dos cards — nada é anunciado em silêncio.
