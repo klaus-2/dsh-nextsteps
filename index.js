@@ -12,6 +12,9 @@ const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.js
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const GENERATE_TIMEOUT_MS = 30000;
 const GENERATE_MAX_TOKENS = 500;
+const MODEL_TEST_MAX_TOKENS = 8;
+const MODEL_TEST_TIMEOUT_MS = 15000;
+const LANGUAGES = ['auto', 'en', 'pt-BR', 'zh-CN', 'es', 'fr', 'de', 'it', 'ja', 'ko', 'ru', 'ar', 'hi', 'id', 'tr', 'vi'];
 
 const STYLE_IDS = ['next-action', 'explore', 'deep-dive'];
 const STYLE_ANGLES = {
@@ -87,7 +90,7 @@ function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
     return {
-      lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(stored.lang) ? stored.lang : 'auto',
+      lang: LANGUAGES.includes(stored.lang) ? stored.lang : 'auto',
       maxFollowups: Number.isInteger(stored.maxFollowups) && stored.maxFollowups >= 1 && stored.maxFollowups <= 6 ? stored.maxFollowups : 3,
       showHeader: stored.showHeader !== false,
       model: typeof stored.model === 'string' ? (stored.model.includes('/') ? stored.model : '') : modelKeyOf(stored),
@@ -392,7 +395,8 @@ async function modelCatalog(ctx) {
     try {
       const models = (await llm.listModels(provider.id)).map((entry) => ({ id: entry.id, name: entry.name }));
       if (models.length > 0) out.groups.push({ id: provider.id, name: provider.name ?? provider.id, models });
-    } catch {
+    } catch (error) {
+      console.warn('dsh-nextsteps: the model list for', provider.id, 'is unavailable:', error);
       continue;
     }
   }
@@ -619,7 +623,7 @@ async function apply(ctx) {
       try { body = await request.json(); } catch { return json({ ok: false, error: 'bad request' }, 400); }
       const current = settingsLoad();
       const next = {
-        lang: ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"].includes(body?.lang) ? body.lang : current.lang,
+        lang: LANGUAGES.includes(body?.lang) ? body.lang : current.lang,
         maxFollowups: Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : current.maxFollowups,
         showHeader: typeof body?.showHeader === 'boolean' ? body.showHeader : current.showHeader,
         model: typeof body?.model === 'string' && body.model.includes('/') ? body.model : body?.model === '' || body?.model === undefined || body?.model === null ? '' : current.model,
@@ -647,6 +651,40 @@ async function apply(ctx) {
     }
   });
   ctx.connection?.fetch?.register({
+    path: '/api/dsh-nextsteps.model-test',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: 'bad request' }, 400); }
+      if (body?.model !== undefined && body?.model !== null && typeof body?.model !== 'string') return json({ ok: false, error: 'bad request' }, 400);
+      const base = settingsLoad();
+      const probeSettings = typeof body?.model === 'string' && body.model !== '' ? { ...base, model: body.model } : base;
+      try {
+        const route = await resolveRoute(ctx, probeSettings);
+        const llm = get(ctx, 'llm');
+        if (llm?.prepareCall === undefined) throw new Error('the llm service is unavailable');
+        const signal = AbortSignal.any([request.signal, AbortSignal.timeout(MODEL_TEST_TIMEOUT_MS)]);
+        const started = Date.now();
+        const call = await llm.prepareCall(route, signal, (controls, model) => {
+          const cap = Number.isSafeInteger(model?.defaultMaxTokens) && model.defaultMaxTokens > 0 ? Math.min(MODEL_TEST_MAX_TOKENS, model.defaultMaxTokens) : MODEL_TEST_MAX_TOKENS;
+          return { ...controls, maxTokens: cap };
+        });
+        let latencyMs;
+        let finish;
+        for await (const chunk of call.stream({ ...call.config, system: 'You are a connectivity probe. Reply with the word: ok.', signal, messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }] })) {
+          if (chunk.type === 'text-delta') { if (latencyMs === undefined) latencyMs = Date.now() - started; }
+          else if (chunk.type === 'finish') finish = chunk.reason;
+        }
+        if (finish === undefined) throw new Error('the model call ended without a finish');
+        if (finish?.kind === 'error' || finish?.kind === 'aborted') throw new Error(finish.failure?.message || `the model call ended: ${finish.kind}`);
+        return json({ ok: true, model: route.provider + '/' + route.model, latencyMs: latencyMs ?? Date.now() - started });
+      } catch (error) {
+        return json({ ok: false, error: String(error?.message ?? error), model: probeSettings.model }, 200);
+      }
+    }
+  });
+  ctx.connection?.fetch?.register({
     path: '/api/dsh-nextsteps.generate',
     methods: ['POST'],
     requestBody: 'buffered',
@@ -656,8 +694,13 @@ async function apply(ctx) {
       if (typeof body?.sessionId !== 'string' || body.sessionId === '' || !Number.isSafeInteger(body?.afterSeq) || body.afterSeq < 0) {
         return json({ error: 'bad request' }, 400);
       }
+      const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
+      const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;
+      const derived = overrideLang !== undefined || overrideCount !== undefined
+        ? { ...settings, ...(overrideLang !== undefined ? { lang: overrideLang } : {}), ...(overrideCount !== undefined ? { maxFollowups: overrideCount } : {}) }
+        : settings;
       try {
-        const result = await generateForTurn(ctx, settings, body.sessionId, body.afterSeq, request.signal);
+        const result = await generateForTurn(ctx, derived, body.sessionId, body.afterSeq, request.signal);
         return json({ ok: true, rev: PLUGIN_REV, ...result });
       } catch (error) {
         const status = error?.status === 409 || error?.status === 400 ? error.status : 502;

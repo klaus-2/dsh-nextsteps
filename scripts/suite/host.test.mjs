@@ -519,6 +519,253 @@ test("a failed generation warns exactly once", async () => {
   assertEqual(warnings.filter((line) => line.includes("generation failed")).length, 1, "the host warns exactly once");
 });
 
+test("the model test route probes the selected model and reports the latency", async () => {
+  const { ctx, routes, llmCalls } = stubContext({ llmModels: [{ id: "demo-model", name: "Demo Model" }] });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "demo/demo-model" })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.ok, true);
+  assert(typeof body.latencyMs === "number", `the latency is a number: ${body.latencyMs}`);
+  assertEqual(body.model, "demo/demo-model");
+  assertEqual(llmCalls.length, 1, "exactly one probe call ran");
+});
+
+test("the model test caps the probe tokens", async () => {
+  const seen = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route, signal, controlsFn) => {
+      seen.push(controlsFn({ maxTokens: 4096 }, { defaultMaxTokens: 100 }));
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          yield { type: "text-delta", text: "ok" };
+          yield { type: "finish", reason: { kind: "stop" } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext();
+  ctx.get = (name) => (name === "llm" ? llm : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "demo/demo-model" })
+  }));
+  const body = await response.json();
+  assertEqual(body.ok, true);
+  assertEqual(seen.length, 1, "the controls callback ran once");
+  assertEqual(seen[0].maxTokens, 8, `the probe caps the tokens: ${seen[0]?.maxTokens}`);
+});
+
+test("a model test failure answers ok:false with HTTP 200 and warns nothing", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  try {
+    const gone = await routes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "demo/gone" })
+    }));
+    assertEqual(gone.status, 200, "a missing model is an expected failure, not an HTTP error");
+    const goneBody = await gone.json();
+    assertEqual(goneBody.ok, false);
+    assertIncludes(goneBody.error, "the selected model is no longer listed");
+    const { ctx: bareCtx, routes: bareRoutes } = stubContext({ services: { agentDefaultModel: undefined } });
+    await mod.apply(bareCtx);
+    const unselected = await bareRoutes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "" })
+    }));
+    assertEqual(unselected.status, 200);
+    const unselectedBody = await unselected.json();
+    assertEqual(unselectedBody.ok, false);
+    assertIncludes(unselectedBody.error, "no model is selected");
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEqual(warnings.length, 0, `the model test warns nothing: ${JSON.stringify(warnings)}`);
+});
+
+test("the model test never retries", async () => {
+  const llmCalls = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          yield { type: "finish", reason: { kind: "error", failure: { message: "boom" } } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext();
+  ctx.get = (name) => (name === "llm" ? llm : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "demo/demo-model" })
+  }));
+  const body = await response.json();
+  assertEqual(body.ok, false);
+  assertIncludes(body.error, "boom");
+  assertEqual(llmCalls.length, 1, "a failed probe runs exactly one call, no retry");
+});
+
+test("a probe stream that ends without a finish answers ok:false", async () => {
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* () {
+        yield { type: "text-delta", text: "ok" };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext();
+  ctx.get = (name) => (name === "llm" ? llm : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.model-test`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "demo/demo-model" })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.ok, false);
+  assertIncludes(body.error, "the model call ended without a finish");
+});
+
+test("the generate route merges per-session language and count into the one settings object", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  let seenSystem = "";
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        seenSystem = request.system;
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Rodar os testes","label":"Testes"},{"prompt":"Revisar o build","label":"Build"},{"prompt":"Abrir uma issue","label":"Issue"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, lang: "pt-BR", maxFollowups: 1 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertIncludes(seenSystem, "Brazilian Portuguese", "the override language reaches the one system prompt");
+  assertIncludes(seenSystem, "exactly 1 items", `the override count reaches the one system prompt: ${seenSystem}`);
+  assertEqual(body.followups.length, 1, "the slice ran on the derived settings");
+});
+
+test("an invalid override falls back to the global settings", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  let seenSystem = "";
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        seenSystem = request.system;
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Run the tests","label":"Tests"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", maxFollowups: 2 })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, lang: "klingon", maxFollowups: 99 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertIncludes(seenSystem, "English", "the global language survives the invalid override");
+  assertIncludes(seenSystem, "exactly 2 items", "the global count survives the invalid override");
+  assertEqual(body.followups.length, 1, "the generation answers normally");
+});
+
+test("an override language runs the script guard against the override", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  let seenSystem = "";
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        seenSystem = request.system;
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Run the tests","label":"Tests"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, lang: "zh-CN" })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertIncludes(seenSystem, "Simplified Chinese", "the override language reached the generator");
+  assertEqual(body.followups.length, 0, "the latin reply is discarded against the override language");
+});
+
 test("an explicit model alone selects host mode", async () => {
   const { ctx, routes, sections, registered } = stubContext();
   const mod = await import(moduleUrl.href);

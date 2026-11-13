@@ -36,6 +36,12 @@ dsh plugin --profile web add dsh-nextsteps
 - **Discard** a suggestion you do not want, and **restore** the most recent discard; the discard list lives in the settings page too.
 - **Edit** a suggestion before sending it: the edited text is what gets sent, and the stored card is left untouched.
 - **Expand** a suggestion to read the full prompt without sending it.
+- **Test model** — a button next to the Model setting probes the selected model with one tiny streaming call and shows the time to the first token, or the failure inline.
+- **Export** the favourites as a Markdown download, ordered by the date each one was saved.
+- **New conversation with this suggestion** — a card action that opens a fresh conversation with the prompt prefilled in the composer; nothing is sent for you.
+- **Conversation options** — every conversation can override the global language and followups count from a panel in its header; the override rides the generate request and the global settings stay untouched.
+- **Move earlier / Move later** — drag the grip handle onto another card or use the two move buttons; the order persists per conversation and turn.
+- **Try again** — a failed generation shows the error under the cards with a retry button that re-runs exactly one fresh generation round.
 - **Add a suggestion** by hand under the answer, next to the header.
 - **Keyboard shortcuts**, local to the card: `c` copies, `f` favourites, `e` edits, `d` discards and `Esc` closes the editor or the expansion. The hints appear when the card has the focus; `Enter` and `Space` send the card as usual.
 - **A live region** announces each action to screen readers, and the same text is shown next to the cards so nothing is announced silently.

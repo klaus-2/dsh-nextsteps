@@ -36,6 +36,12 @@ dsh plugin --profile web add dsh-nextsteps
 - **Descartar** uma sugestão que você não quer, e **restaurar** o descarte mais recente; a lista de descartes também vive na página de configurações.
 - **Editar** uma sugestão antes de enviá-la: o texto editado é o que é enviado, e o card guardado continua intacto.
 - **Expandir** uma sugestão para ler o prompt completo sem enviar nada.
+- **Testar modelo** — um botão ao lado da configuração de Modelo que sonda o modelo escolhido com uma única chamada de streaming mínima e mostra o tempo até o primeiro token, ou a falha inline.
+- **Exportar** os favoritos como um download em Markdown, na ordem em que cada um foi salvo.
+- **Nova conversa com esta sugestão** — uma ação do card que abre uma conversa nova com o prompt pré-preenchido no composer; nada é enviado por você.
+- **Opções da conversa** — cada conversa pode sobrescrever o idioma global e a contagem de followups num painel no próprio cabeçalho; a sobrescrita vai na requisição de geração e as configurações globais ficam intactas.
+- **Mover para antes / Mover para depois** — arraste a alça sobre outro card ou use os dois botões de movimento; a ordem persiste por conversa e por turno.
+- **Tentar novamente** — uma geração que falhou mostra o erro sob os cards com um botão de retry que reexecuta exatamente uma nova rodada de geração.
 - **Adicionar uma sugestão** à mão sob a resposta, ao lado do cabeçalho.
 - **Atalhos de teclado**, locais do card: `c` copia, `f` favorita, `e` edita, `d` descarta e `Esc` fecha o editor ou a expansão. As dicas aparecem quando o card tem o foco; `Enter` e `Space` enviam o card como sempre.
 - **Uma região viva** anuncia cada ação para leitores de tela, e o mesmo texto aparece ao lado dos cards — nada é anunciado em silêncio.

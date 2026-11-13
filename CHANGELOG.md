@@ -4,6 +4,17 @@ All notable changes to `dsh-nextsteps` are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Test model.** A button next to the Model setting probes the selected model with one tiny streaming call (a fixed 15 s bound and a small token cap) and shows the time to the first text token, or the failure inline — no settings write, no retries.
+- **Export favourites as Markdown.** The settings page downloads the favourites list as a `.md` file ordered by the date each one was saved; prompts that carry their own code fence render as indented blocks.
+- **New conversation with this suggestion.** A card action opens a fresh conversation with the prompt prefilled in the composer via `uiWorkspace.startSession`; nothing is sent for you, the source card stays untouched, and a missing workspace service degrades to a notice.
+- **Per-conversation language and count.** A panel in the card header overrides the global language and followups count for one conversation (stored in `dsh-nextsteps.session-overrides`); any override engages host generation for that session and rides the `/generate` request, where the host merges it into one derived settings object. Global settings and revisions are untouched.
+- **Drag to reorder cards.** A grip handle on each card (HTML5 drag-and-drop) plus move-earlier/move-later buttons reorder the suggestions; the order persists per conversation and turn in `dsh-nextsteps.card-order` (capped at 40 keys) and stale ids degrade to the natural order.
+- **Retry after a generation failure.** A terminally failed generation shows the error under the cards with a "Try again" button that re-runs exactly one fresh generation round; conflicts, aborts and settings changes never offer a retry.
+
 ## [1.6.1] — 2026-11-12
 
 ### Fixed

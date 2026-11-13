@@ -73,7 +73,7 @@ export async function runHostSuite(harness, { pluginDir }) {
     await apply(host.ctx);
     harness.eq("the plugin name", name, "dsh-nextsteps");
     harness.eq("the declared services", inject, ["tools", "connection"]);
-    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.update"]) {
+    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.model-test", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.update"]) {
       harness.check(`the route ${route} is registered`, host.routes.has(route));
     }
     for (const [route, spec] of host.routes) {
@@ -81,6 +81,7 @@ export async function runHostSuite(harness, { pluginDir }) {
     }
     harness.eq("the settings route answers GET and POST", host.routes.get("/api/dsh-nextsteps.settings").methods, ["GET", "POST"]);
     harness.eq("the models route answers GET", host.routes.get("/api/dsh-nextsteps.models").methods, ["GET"]);
+    harness.eq("the model-test route answers POST", host.routes.get("/api/dsh-nextsteps.model-test").methods, ["POST"]);
     harness.eq("the generate route answers POST", host.routes.get("/api/dsh-nextsteps.generate").methods, ["POST"]);
     harness.eq("the update route answers GET", host.routes.get("/api/dsh-nextsteps.update").methods, ["GET"]);
     harness.check("the tool is registered", host.tools.has("suggest_followups"));

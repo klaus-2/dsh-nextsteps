@@ -8,7 +8,7 @@ suite("contract: host and client agree");
 const clientSource = readFileSync(path.join(root, "client.js"), "utf8");
 const hostSource = readFileSync(path.join(root, "index.js"), "utf8");
 const escaped = pluginId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const routePattern = new RegExp(`'/api/${escaped}\\.([a-z]+)'`, "g");
+const routePattern = new RegExp(`'/api/${escaped}\\.([a-z-]+)'`, "g");
 
 const CLIENT_ROUTES = [...clientSource.matchAll(routePattern)].map((match) => match[1]);
 const HOST_ROUTES = [...hostSource.matchAll(routePattern)].map((match) => match[1]);

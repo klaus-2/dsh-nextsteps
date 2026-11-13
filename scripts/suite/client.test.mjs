@@ -840,6 +840,611 @@ test("a failed generation warns exactly once across both attempts", async () => 
   }
 });
 
+function retryNodeOf(rendered) {
+  return walk(rendered, (node) => node.props?.className === "dsh-sf-retry")[0];
+}
+
+test("a failed generation offers a retry that asks the host once more", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, ctx, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  });
+  try {
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: ctx.locale.bind("dsh-nextsteps") };
+    tail(props);
+    await settled(client);
+    const rendered = renderTail(client, tail, props);
+    const retry = retryNodeOf(rendered);
+    assert(retry !== undefined, "the failed generation renders the retry block");
+    assert(textOf(retry).includes("Generation failed: the generator answered with HTTP 400"), `the retry line carries the failure message: ${textOf(retry)}`);
+    const retryButton = buttonsOf(retry)[0];
+    assert(retryButton !== undefined && retryButton.type === "button", "the retry block carries the try-again button");
+    assertEqual(retryButton.children[0], "Try again", "the button reads the retry label");
+    client.fetchStub.set("/api/dsh-nextsteps.generate", { ok: true, rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }], model: "demo", source: "transcript" });
+    await retryButton.props.onClick();
+    await settled(client);
+    const after = renderTail(client, tail, props);
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 2, `the retry asks the host exactly once more: ${generateCalls.length}`);
+    const firstBody = JSON.parse(generateCalls[0].body);
+    const retryBody = JSON.parse(generateCalls[1].body);
+    assertEqual(retryBody, firstBody, "the retry repeats the same session and sequence");
+    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assert(cards.length === 1, `the retried generation renders the card: ${cards.length}`);
+    assert(retryNodeOf(after) === undefined, "the retry block disappears after the retry succeeds");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a conflict keeps no retry offer", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "the chat moved on" }), { status: 409, headers: { "content-type": "application/json" } })
+  });
+  try {
+    const tail = tailOf(registrations);
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assert(retryNodeOf(rendered) === undefined, "a conflict never offers the retry block");
+    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the conflict ends the round");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an aborted generation keeps no retry offer", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": (init) => new Promise((resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    })
+  });
+  try {
+    const tail = tailOf(registrations);
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    await client.react.__cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assert(retryNodeOf(rendered) === undefined, "an aborted generation never offers the retry block");
+    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the abort ends the round");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the retry button disappears once the turn has cards", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  });
+  try {
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    const failed = renderTail(client, tail, props);
+    assert(retryNodeOf(failed) !== undefined, "the failed generation shows the retry block");
+    const withForm = renderTail(client, tail, props);
+    const add = buttonsOf(withForm).find((node) => node.children.includes("addSuggestion"));
+    await add.props.onClick();
+    const formTree = renderTail(client, tail, props);
+    const area = walk(formTree, (node) => node.type === "textarea")[0];
+    area.props.onChange({ target: { value: "sugestao manual" } });
+    const saveTree = renderTail(client, tail, props);
+    const save = buttonsOf(saveTree).find((node) => node.children.includes("manualSave"));
+    await save.props.onClick();
+    const after = renderTail(client, tail, props);
+    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assert(cards.length === 1, `the manual card renders: ${cards.length}`);
+    assert(retryNodeOf(after) === undefined, "the retry block disappears once the turn has cards");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the retry button is visible but disabled while a generation runs", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  });
+  try {
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    client.fetchStub.set("/api/dsh-nextsteps.generate", () => new Promise(() => {}));
+    const failed = renderTail(client, tail, props);
+    const retryButton = buttonsOf(retryNodeOf(failed)).find((node) => node.props?.["aria-label"] === "retryGeneration");
+    assert(retryButton !== undefined, "the retry block is present before the retry");
+    retryButton.props.onClick();
+    const running = renderTail(client, tail, props);
+    const runningNode = retryNodeOf(running);
+    assert(runningNode !== undefined, "the retry block stays visible while the retry round runs");
+    const runningButton = buttonsOf(runningNode).find((node) => node.props?.["aria-label"] === "retryGeneration");
+    assertEqual(runningButton.props.disabled, true, "the retry button is disabled while the generation runs");
+    runningButton.props.onClick();
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 2, `no second retry round fires while the first is pending: ${generateCalls.length}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a session override renders only generated cards and triggers the generate fetch in a globally inline mode", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ "sess-1": { lang: "zh-CN" } }) });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  }, { storage });
+  try {
+    await settled(client);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    const tail = tailOf(registrations);
+    tail({ sessionId: "sess-1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 1, `the override session asks the host once: ${generateCalls.length}`);
+    assertEqual(JSON.parse(generateCalls[0].body).lang, "zh-CN", "the override language rides the generate body");
+    capture.component({
+      sessionId: "sess-1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Stray","label":"Stray"}]}' }] }
+    });
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, { sessionId: "sess-1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards.length, 0, "the model-authored capture never renders for an override session");
+    tail({ sessionId: "sess-2", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the session without the override stays inline");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a count-only override engages the host generation and carries maxFollowups", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { maxFollowups: 2 } }) });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 1, `the count-only override asks the host once: ${generateCalls.length}`);
+    const body = JSON.parse(generateCalls[0].body);
+    assertEqual(body.maxFollowups, 2, `the generate body carries the override count: ${JSON.stringify(body)}`);
+    assert(body.lang === undefined, `the body carries no language key: ${JSON.stringify(body)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the session options editor writes only the override store", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" }
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const open = renderTail(client, tail, props);
+    const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+    assert(optionsButton !== undefined, "the header offers the session options button");
+    await optionsButton.props.onClick();
+    const panel = renderTail(client, tail, props);
+    const select = walk(panel, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    assert(select !== undefined, "the panel offers the language select");
+    select.props.onChange({ target: { value: "zh-CN" } });
+    client.instance.flushWrites();
+    const panelAgain = renderTail(client, tail, props);
+    const input = walk(panelAgain, (node) => node.type === "input" && node.props?.["aria-label"] === "setMax")[0];
+    assert(input !== undefined, "the panel offers the count input");
+    input.props.onChange({ target: { value: "2" } });
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.session-overrides"] ?? "{}");
+    assertEqual(stored, { s1: { lang: "zh-CN", maxFollowups: 2 } }, `only the override store was written: ${JSON.stringify(stored)}`);
+    const settingsPosts = client.fetchStub.calls.filter((call) => call.method === "POST" && call.url.includes(".settings"));
+    assertEqual(settingsPosts.length, 0, "the editor never touches the global settings route");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("resetting the session options restores the global behaviour", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { lang: "zh-CN" } }) });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }], model: "demo", source: "transcript" }
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the override session generated once");
+    const open = renderTail(client, tail, props);
+    const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+    await optionsButton.props.onClick();
+    const panel = renderTail(client, tail, props);
+    const reset = buttonsOf(panel).find((node) => node.props?.["aria-label"] === "sessionReset");
+    assert(reset !== undefined, "the panel offers the reset button");
+    await reset.props.onClick();
+    client.instance.flushWrites();
+    assert(storage._data["dsh-nextsteps.session-overrides"] === undefined, "the reset removes the override entry");
+    tail(props);
+    await settled(client);
+    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the session stays inline after the reset");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an override change engages the host generation without any manual flush", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } })
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "sess-1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const open = renderTail(client, tail, props);
+    const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+    await optionsButton.props.onClick();
+    const panel = renderTail(client, tail, props);
+    const select = walk(panel, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    select.props.onChange({ target: { value: "pt-BR" } });
+    const after = renderTail(client, tail, props);
+    const selectAfter = walk(after, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    assertEqual(selectAfter.props.value, "pt-BR", "the panel keeps the override on a fresh render with no manual flush");
+    tail(props);
+    await settled(client);
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 1, `the generation gate re-fires for the override session with no flush: ${generateCalls.length}`);
+    assertEqual(JSON.parse(generateCalls[0].body).lang, "pt-BR", "the generate body carries the override language");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the session options editor drops a junk count instead of storing it", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const open = renderTail(client, tail, props);
+    const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+    await optionsButton.props.onClick();
+    const panel = renderTail(client, tail, props);
+    const select = walk(panel, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    select.props.onChange({ target: { value: "pt-BR" } });
+    const panelAgain = renderTail(client, tail, props);
+    const input = walk(panelAgain, (node) => node.type === "input" && node.props?.["aria-label"] === "setMax")[0];
+    input.props.onChange({ target: { value: "9" } });
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.session-overrides"] ?? "{}");
+    assertEqual(stored, { s1: { lang: "pt-BR" } }, `the junk count is never persisted: ${JSON.stringify(stored)}`);
+    assert(!JSON.stringify(stored).includes("9"), "no trace of the junk value reaches the store");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+async function addManualSuggestion(client, tail, props, text) {
+  const withForm = renderTail(client, tail, props);
+  const add = buttonsOf(withForm).find((node) => node.children.includes("addSuggestion"));
+  await add.props.onClick();
+  const formTree = renderTail(client, tail, props);
+  const area = walk(formTree, (node) => node.type === "textarea")[0];
+  area.props.onChange({ target: { value: text } });
+  const saveTree = renderTail(client, tail, props);
+  const save = buttonsOf(saveTree).find((node) => node.children.includes("manualSave"));
+  await save.props.onClick();
+}
+
+function manualItemIds(storage, sessionId) {
+  const captures = JSON.parse(storage._data[`dsh-nextsteps.captures.session.${sessionId}`] ?? "{}");
+  return Object.keys(captures).filter((key) => key.startsWith("manual-")).map((key) => `${captures[key].clickedId}:0`);
+}
+
+test("the move buttons reorder the cards and persist the order", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    client.instance.flushWrites();
+    const ids = manualItemIds(storage, "s1");
+    assertEqual(ids.length, 2, "two manual items were seeded");
+    const rendered = renderTail(client, tail, props);
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    assertEqual(items.length, 2, "both cards render before the reorder");
+    const moveEarlier = buttonsOf(items[1]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
+    assert(moveEarlier !== undefined, "the second item offers the move-earlier button");
+    moveEarlier.props.onClick();
+    client.instance.flushWrites();
+    const reordered = renderTail(client, tail, props);
+    const cards = walk(reordered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards[0].props["aria-label"], "segunda sugestao", "the second suggestion moved earlier");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0]] }, "the order persisted for the session and turn");
+    const liveRegion = walk(reordered, (node) => node.props?.className === "dsh-sf-sr")[0];
+    assert(liveRegion !== undefined && liveRegion.children[0] === "srReordered", `the reorder is announced: ${liveRegion?.children?.[0]}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("unknown stored order ids degrade to the natural order", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    client.instance.flushWrites();
+    const ids = manualItemIds(storage, "s1");
+    storage._data["dsh-nextsteps.card-order"] = JSON.stringify({ "s1|1": ["stale-a", ids[0], "stale-b"] });
+    const rendered = renderTail(client, tail, props);
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards.length, 2, "both real cards render despite stale ids");
+    assertEqual(cards[0].props["aria-label"], "primeira sugestao", "the unknown ids are ignored and the natural order holds");
+    assertEqual(cards[1].props["aria-label"], "segunda sugestao", "the second card follows in natural order");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("no order entry is written when the turn is undefined", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Unica","label":"Unica"}]}' }] }
+    });
+    client.instance.flushWrites();
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: undefined, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    assert(items.length >= 1, "the fallback path renders the newest capture");
+    const moveEarlier = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
+    assert(moveEarlier !== undefined, "the fallback item offers the move button");
+    moveEarlier.props.onClick();
+    client.instance.flushWrites();
+    assertEqual(storage._data["dsh-nextsteps.card-order"], undefined, "no order entry is written without a turn");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the order map is capped at 40 keys", async () => {
+  const seed = {};
+  for (let index = 0; index < 40; index += 1) seed[`s${index}|0`] = ["id-a", "id-b"];
+  const storage = memoryStorage({ "dsh-nextsteps.card-order": JSON.stringify(seed) });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s40", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    const rendered = renderTail(client, tail, props);
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const moveEarlier = buttonsOf(items[1]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
+    moveEarlier.props.onClick();
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}");
+    assertEqual(Object.keys(stored).length, 40, `the map stays at the cap: ${Object.keys(stored).length}`);
+    assert(stored["s0|0"] === undefined, "the oldest preseeded key was pruned");
+    assert(Array.isArray(stored["s40|1"]), "the new order key was kept");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the grip handle drags one card onto another", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    client.instance.flushWrites();
+    const ids = manualItemIds(storage, "s1");
+    const rendered = renderTail(client, tail, props);
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    assertEqual(items.length, 2, "both cards render before the drag");
+    const grips = walk(rendered, (node) => node.props?.className === "dsh-sf-grip");
+    assertEqual(grips.length, 2, "every item carries the grip handle");
+    let captured = "";
+    grips[0].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
+    assertEqual(captured, ids[0], "the grip writes the dragged item id");
+    items[1].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0]] }, "the downward drag of the first card onto the second inserts it after the target (2-item fixture; the full directional semantics are pinned separately with a 3-item fixture)");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("reorder semantics are directional: insert-after below, insert-before above, with boundary no-ops", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    await addManualSuggestion(client, tail, props, "terceira sugestao");
+    client.instance.flushWrites();
+    const ids = manualItemIds(storage, "s1");
+    assertEqual(ids.length, 3, "three manual items were seeded");
+    const labelsOf = (tree) => walk(tree, (node) => String(node.props?.className ?? "").includes("dsh-sf-card")).map((node) => node.props["aria-label"]);
+    let rendered = renderTail(client, tail, props);
+    let items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    assertEqual(items.length, 3, "all three cards render");
+    assertEqual(labelsOf(rendered), ["primeira sugestao", "segunda sugestao", "terceira sugestao"], "the natural order holds before any reorder");
+
+    const grips = () => walk(rendered, (node) => node.props?.className === "dsh-sf-grip");
+    let captured = "";
+    grips()[0].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
+    items[2].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(labelsOf(rendered), ["segunda sugestao", "terceira sugestao", "primeira sugestao"], "the downward drag onto the last card inserts after it (a swap would place the dragged card where the target was)");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[2], ids[0]] }, "the insert-after order persisted");
+
+    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    captured = "";
+    grips()[2].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
+    items[0].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(labelsOf(rendered), ["primeira sugestao", "segunda sugestao", "terceira sugestao"], "the upward drag inserts before the target (a swap would leave the middle card last)");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[0], ids[1], ids[2]] }, "the insert-before order persisted");
+
+    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const moveLater = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveLater");
+    assert(moveLater !== undefined, "the first item offers the move-later button");
+    moveLater.props.onClick();
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(labelsOf(rendered), ["segunda sugestao", "primeira sugestao", "terceira sugestao"], "the move-later button shifts the first card one position down");
+
+    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const moveEarlier = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
+    assert(moveEarlier !== undefined, "the first item offers the move-earlier button");
+    moveEarlier.props.onClick();
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(labelsOf(rendered), ["segunda sugestao", "primeira sugestao", "terceira sugestao"], "the boundary no-op leaves the order untouched");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0], ids[2]] }, "the boundary no-op writes nothing new");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the new-conversation action opens a session with the suggestion prefilled", async () => {
+  const storage = memoryStorage();
+  const calls = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    ctx.get = (name) => (name === "uiWorkspace" ? { startSession: (workspaceId, options) => { calls.push([workspaceId, options]); } } : undefined);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
+    assert(newChat !== undefined, "the card offers the new-conversation action");
+    newChat.props.onClick();
+    assertEqual(calls.length, 1, `exactly one session start: ${calls.length}`);
+    assertEqual(calls[0], [undefined, { prompt: "primeira sugestao", whenDraftExists: "replace" }], "the suggestion is prefilled into a fresh session draft");
+    client.instance.flushWrites();
+    const renderedAfter = renderTail(client, tail, props);
+    const cards = walk(renderedAfter, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assert(cards.length === 1 && !String(cards[0].props.className).includes("is-sent"), "the source card is not marked sent");
+    assertEqual(storage._data["dsh-nextsteps.clicked"], undefined, "no click was recorded for the source card");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the new-conversation action degrades to a notice when the service is missing", async () => {
+  const storage = memoryStorage();
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  try {
+    await settled(client);
+    ctx.get = () => undefined;
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
+    newChat.props.onClick();
+    const after = renderTail(client, tail, props);
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice !== undefined && notice.children[0] === "newChatUnavailable", `the failure notice is shown: ${notice?.children?.[0]}`);
+    assertEqual(warnings.length, 1, `exactly one warning fired: ${warnings.length}`);
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
+  }
+});
+
+test("the new-conversation action survives a throwing service", async () => {
+  const storage = memoryStorage();
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  try {
+    await settled(client);
+    ctx.get = (name) => (name === "uiWorkspace" ? { startSession: () => { throw new Error("the workspace exploded"); } } : undefined);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
+    newChat.props.onClick();
+    const after = renderTail(client, tail, props);
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice !== undefined && notice.children[0] === "newChatUnavailable", `the failure notice is shown: ${notice?.children?.[0]}`);
+    assertEqual(warnings.length, 1, `exactly one warning fired: ${warnings.length}`);
+    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    assertEqual(cards.length, 1, "the card still renders after the throw");
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
+  }
+});
+
 test("the deferred rendering waits for the observer and falls back without one", async () => {
   const observer = fakeIntersectionObserver();
   const { client, registrations } = clientWithRoutes(
@@ -1562,6 +2167,172 @@ test("the client clamps the latency budget when the settings do not carry one", 
   assert(junk.every((ms) => Number.isFinite(ms)), `every armed deadline is finite: ${JSON.stringify(junk)}`);
   const tiny = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 1 });
   assert(tiny.includes(10000), `a budget below the floor is clamped: ${JSON.stringify(tiny)}`);
+});
+
+function favoritesExportClient(storageSeed) {
+  const createdAnchors = [];
+  const capturedBlobs = [];
+  const storage = memoryStorage(storageSeed);
+  const documentOverride = {
+    head: { appendChild() {} },
+    createElement: (tag) => {
+      if (tag === "a") {
+        const anchor = { href: "", download: "", clicked: false, click() { this.clicked = true; } };
+        createdAnchors.push(anchor);
+        return anchor;
+      }
+      return { style: {}, value: "", set textContent(value) { this._text = value; }, select() {}, remove() {}, appendChild() {} };
+    }
+  };
+  const client = loadClient({
+    storage,
+    document: documentOverride,
+    routes: {
+      "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+      "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+      "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    }
+  });
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = (blob) => { capturedBlobs.push(blob); return "blob:fake"; };
+  URL.revokeObjectURL = () => {};
+  return {
+    client,
+    storage,
+    createdAnchors,
+    capturedBlobs,
+    async close() {
+      if (originalCreate === undefined) delete URL.createObjectURL;
+      else URL.createObjectURL = originalCreate;
+      if (originalRevoke === undefined) delete URL.revokeObjectURL;
+      else URL.revokeObjectURL = originalRevoke;
+      client.fetchStub.restore();
+    }
+  };
+}
+
+test("the export button downloads the favourites as markdown in insertion-date order", async () => {
+  const setup = favoritesExportClient({
+    "dsh-nextsteps.favorites": JSON.stringify({ fav1: { prompt: "Run the full suite", label: "Run suite", at: 2000 }, fav2: { prompt: "Wire the retry path", label: "Retry", at: 1000 } })
+  });
+  try {
+    const { tree } = settingsTree(setup.client);
+    const exportButton = buttonsOf(tree).find((node) => node.children.includes("favoritesExport"));
+    assert(exportButton !== undefined, "the export button renders when favourites exist");
+    exportButton.props.onClick();
+    await settled(setup.client);
+    setup.client.instance.flushWrites();
+    assertEqual(setup.capturedBlobs.length, 1, "one blob was created");
+    const blob = setup.capturedBlobs[0];
+    assert(blob instanceof Blob, `the captured download is a blob: ${typeof blob}`);
+    const markdown = await blob.text();
+    assert(markdown.includes("Wire the retry path") && markdown.includes("Run the full suite"), `both prompts are exported: ${markdown.slice(0, 200)}`);
+    assert(markdown.indexOf("Wire the retry path") < markdown.indexOf("Run the full suite"), "the earlier-at favourite comes first");
+    assert(markdown.includes("## Retry") && markdown.includes("## Run suite"), `the labels render as headings: ${markdown.slice(0, 200)}`);
+    assert(markdown.startsWith("# Favourite suggestions"), "the document carries the title heading");
+    assertEqual(setup.createdAnchors.length, 1, "one anchor was created");
+    const anchor = setup.createdAnchors[0];
+    assertMatch(anchor.download, /^dsh-nextsteps-favorites-\d{4}-\d{2}-\d{2}\.md$/, `the download name is dated: ${anchor.download}`);
+    assertEqual(anchor.clicked, true, "the anchor click fired");
+  } finally {
+    await setup.close();
+  }
+});
+
+test("the export button is hidden when there are no favourites", () => {
+  const setup = favoritesExportClient({});
+  try {
+    const { tree } = settingsTree(setup.client);
+    const exportButton = buttonsOf(tree).find((node) => node.children.includes("favoritesExport"));
+    assert(exportButton === undefined, "the export button is absent without favourites");
+    assertEqual(setup.createdAnchors.length, 0, "no anchor was created");
+  } finally {
+    setup.close();
+  }
+});
+
+test("the export indents prompts that carry their own code fence", async () => {
+  const setup = favoritesExportClient({
+    "dsh-nextsteps.favorites": JSON.stringify({ fav1: { prompt: "Look at this:\n```js\nconsole.log(1)\n```", label: "Fenced", at: 1000 } })
+  });
+  try {
+    const { tree } = settingsTree(setup.client);
+    const exportButton = buttonsOf(tree).find((node) => node.children.includes("favoritesExport"));
+    assert(exportButton !== undefined, "the export button renders for the fenced favourite");
+    exportButton.props.onClick();
+    await settled(setup.client);
+    setup.client.instance.flushWrites();
+    assertEqual(setup.capturedBlobs.length, 1, "one blob was created");
+    const markdown = await setup.capturedBlobs[0].text();
+    assert(!/\n```/.test(markdown) && !markdown.startsWith("```"), `no bare fence line is emitted: ${markdown}`);
+    assert(markdown.includes("    ```js"), "the fence line of the prompt is indented");
+    assert(markdown.includes("    console.log(1)"), "the code line of the prompt is indented");
+    assert(markdown.includes("    Look at this:"), "the prose line of the prompt is indented");
+  } finally {
+    await setup.close();
+  }
+});
+
+test("the export shows a failure notice when the download cannot start", async () => {
+  const setup = favoritesExportClient({
+    "dsh-nextsteps.favorites": JSON.stringify({ fav1: { prompt: "Run the full suite", label: "Run suite", at: 1000 } })
+  });
+  try {
+    URL.createObjectURL = () => { throw new Error("the download is blocked"); };
+    const { registrations } = settingsTree(setup.client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const first = section.component({ t: (key) => key });
+    const exportButton = buttonsOf(first).find((node) => node.children.includes("favoritesExport"));
+    assert(exportButton !== undefined, "the export button renders for the failure case");
+    exportButton.props.onClick();
+    const after = section.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice !== undefined && notice.children[0] === "favoritesExportFailed", `the failure notice is shown: ${notice?.children?.[0]}`);
+    assert(!textOf(after).includes("srFavoritesExported"), "the success notice is not shown");
+    assertEqual(setup.createdAnchors.length, 0, "no anchor was created for a failed export");
+  } finally {
+    await setup.close();
+  }
+});
+
+test("the settings page tests the selected model and shows the latency", async () => {
+  const client = loadClient({
+    routes: {
+      "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+      "/api/dsh-nextsteps.models": { ok: true, groups: [{ id: "demo", name: "Demo", models: [{ id: "demo-model", name: "Demo Model" }] }] },
+      "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false },
+      "/api/dsh-nextsteps.model-test": { ok: true, model: "demo/demo-model", latencyMs: 42 }
+    }
+  });
+  try {
+    const { ctx, registrations } = settingsTree(client);
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const secondTree = section.component({ t: (key) => key });
+    const testButton = buttonsOf(secondTree).find((node) => node.children.includes("testModel"));
+    assert(testButton !== undefined, "the model row renders the test button when the catalog is loaded");
+    await testButton.props.onClick();
+    await settled(client);
+    const realT = ctx.locale.bind("dsh-nextsteps");
+    const statusTree = section.component({ t: realT });
+    const statusText = textOf(statusTree);
+    assert(statusText.includes("Available (42 ms)"), `the status shows the latency: ${statusText.slice(0, 300)}`);
+    client.fetchStub.set("/api/dsh-nextsteps.model-test", { ok: false, error: "boom" });
+    await testButton.props.onClick();
+    await settled(client);
+    const failTree = section.component({ t: realT });
+    const failText = textOf(failTree);
+    assert(failText.includes("Unavailable (boom)"), `the status shows the failure: ${failText.slice(0, 300)}`);
+    const posts = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.model-test" && call.method === "POST");
+    assert(posts.length === 2, `the button posts once per click: ${posts.length}`);
+    for (const post of posts) {
+      const body = JSON.parse(post.body);
+      assertEqual(body.model, "", `the probe posts the current selection: ${JSON.stringify(body)}`);
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
 });
 
 test("the discarded list in the settings page lists and restores the prompt", async () => {

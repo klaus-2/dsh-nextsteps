@@ -235,6 +235,38 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.check("the tail renders the card the host generated", findByClass(renderedCard.tree, "dsh-sf-card").length === 1, JSON.stringify(renderedCard.tree).slice(0, 140));
   }
 
+  harness.section("client: the session override engages host mode for that session only");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage({
+      "dsh-nextsteps.session-overrides": JSON.stringify({ "session-over": { lang: "zh-CN" } })
+    });
+    const calls = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        calls.push(String(url));
+        if (String(url).includes("generate")) {
+          return new Response(JSON.stringify({ ok: true, followups: [{ prompt: "gerado pelo host", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    });
+    const client = fakeClientCtx();
+    module.apply(client.ctx);
+    client.resolve();
+    const tail = client.slots.find((slot) => slot.spec.name === "conversation.chat.turnTail").component;
+    const overridden = renderOnce(stub, tail, { sessionId: "session-over", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of overridden.effects) effect();
+    await flush(6);
+    harness.check("the override session asks the host in a globally inline mode", calls.filter((url) => url.includes("dsh-nextsteps.generate")).length === 1, calls.join(", "));
+    const plain = renderOnce(stub, tail, { sessionId: "session-plain", turn: { turn: 1, end: { seq: 9 } }, t: (key) => key });
+    for (const effect of plain.effects) effect();
+    await flush(6);
+    harness.check("the session without the override stays inline", calls.filter((url) => url.includes("dsh-nextsteps.generate")).length === 1, calls.join(", "));
+  }
+
   harness.section("client: host mode ignores model-authored captures");
   {
     const stub = createReactStub();
