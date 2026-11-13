@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-11-13
+
+### Fixed
+
+- **Cards build again when the suggestions arrive after an empty turn tail.** The 1.7.0 empty-tail rule made the first render return null, so the deferred-render observer never found its root: the header appeared, the cards stayed on the `…` placeholder, and no followup ever rendered in conversations where the generation landed after the tail first mounted. The observer now re-arms when the tail starts rendering, so the cards build as soon as they exist.
+  ([`1b79483`](https://github.com/klaus-2/dsh-nextsteps/commit/1b79483))
+
 ## [1.7.0] — 2026-11-13
 
 ### Added
