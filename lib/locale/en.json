@@ -83,6 +83,7 @@
   "actionMoveEarlier": "Move earlier",
   "actionMoveLater": "Move later",
   "srReordered": "The suggestion was moved.",
+  "dragToReorder": "Drag to reorder",
   "actionNewChat": "New conversation with this suggestion",
   "newChatUnavailable": "Starting a new conversation is not available here.",
   "updates": "Updates",

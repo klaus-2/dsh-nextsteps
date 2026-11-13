@@ -160,8 +160,22 @@ export function loadClient({ storage = memoryStorage(), language = "en", routes 
   let captured;
   const head = { appendChild() {} };
   const execCommands = [];
+  const listeners = new Map();
   const document = documentOverride ?? {
     head,
+    __listeners: listeners,
+    addEventListener: (type, fn) => {
+      const handlers = listeners.get(type) ?? [];
+      handlers.push(fn);
+      listeners.set(type, handlers);
+    },
+    removeEventListener: (type, fn) => {
+      const handlers = listeners.get(type);
+      if (handlers === undefined) return;
+      const index = handlers.indexOf(fn);
+      if (index !== -1) handlers.splice(index, 1);
+    },
+    elementsFromPoint: () => [],
     createElement: () => ({
       style: {},
       value: "",
@@ -205,6 +219,11 @@ export function loadClient({ storage = memoryStorage(), language = "en", routes 
     throw new Error(`the client requires an unexpected module: ${name}`);
   });
   return { instance, react, storage, window, document, moduleId: captured.id, fetchStub, execCommands, warnings };
+}
+
+export function dispatchDocument(document, type, event) {
+  const handlers = [...(document.__listeners?.get(type) ?? [])];
+  for (const handler of handlers) handler(event);
 }
 
 /** Collects the slot registrations a plugin performs, so a test can render a component. */

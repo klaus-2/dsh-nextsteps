@@ -83,6 +83,7 @@
   "actionMoveEarlier": "前移",
   "actionMoveLater": "后移",
   "srReordered": "建议已移动。",
+  "dragToReorder": "拖动以重新排序",
   "actionNewChat": "用此建议新建对话",
   "newChatUnavailable": "此处无法新建对话。",
   "updates": "更新",

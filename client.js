@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
     const RETRY_DELAY_MS = 1200;
     const GENERATION_ATTEMPTS = 2;
     const CLICKED_KEY = 'dsh-nextsteps.clicked';
+    const DRAG_THRESHOLD_PX = 6;
     const UPDATE_KEY = 'dsh-nextsteps.updated';
     const CAPTURES_INDEX_KEY = 'dsh-nextsteps.captures.index';
     const CAPTURE_SESSION_KEY = 'dsh-nextsteps.captures.session';
@@ -41,7 +42,12 @@ window.__ModuleLoader__.load({
 .dsh-sf-header-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dsh-sf-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .dsh-sf-item { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; max-width: 100%; }
-.dsh-sf-grip { cursor: grab; }
+.dsh-sf-grip { cursor: grab; touch-action: none; flex: none; user-select: none; }
+.dsh-sf-cardline { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
+.dsh-sf-cardline.is-dragging { opacity: 0.5; }
+.dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .dsh-sf-item-actions { opacity: 1; pointer-events: auto; } }
 .dsh-sf-card { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: inherit; font-size: 12.5px; line-height: 1.45; padding: 6px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); cursor: pointer; text-align: left; transition: border-color 120ms ease, background 120ms ease, transform 60ms ease; }
 .dsh-sf-card:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-brand-primary); }
 .dsh-sf-card:hover:not(:disabled) .dsh-sf-icon { color: var(--dsw-alias-brand-primary); }
@@ -90,6 +96,7 @@ window.__ModuleLoader__.load({
     const captureCache = new Map();
     let capturesIndex = null;
     const captureListeners = new Set();
+    const discardListeners = new Set();
     const sessionOverrideListeners = new Set();
     const pendingWrites = new Map();
     let writeTimer = null;
@@ -720,11 +727,72 @@ window.__ModuleLoader__.load({
       const [itemState, setItemState] = React.useState(() => ({}));
       const [orderState, setOrderState] = React.useState(() => ({}));
       const [localStores, setLocalStores] = React.useState(() => ({ favorites: readFavorites(), discarded: readDiscarded() }));
+      const [draggingId, setDraggingId] = React.useState(null);
+      const dragRef = React.useRef(null);
       const busyRef = React.useRef(null);
       const clicked = readClickedMap();
       const favorites = localStores.favorites;
       const discarded = localStores.discarded;
       const items = Array.isArray(entries) ? entries : [];
+
+      React.useEffect(() => () => {
+        if (dragRef.current !== null) {
+          dragRef.current.detach();
+          dragRef.current = null;
+        }
+      }, []);
+
+      const startDrag = (event, itemId) => {
+        if (dragRef.current !== null) return;
+        const pointerId = event.pointerId;
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const drag = { pointerId, active: false, targetId: undefined, target: null, detach: null };
+        const onMove = (moveEvent) => {
+          if (moveEvent.pointerId !== drag.pointerId || dragRef.current !== drag) return;
+          if (drag.active === false) {
+            const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+            if (distance < DRAG_THRESHOLD_PX) return;
+            drag.active = true;
+            setDraggingId(itemId);
+          }
+          const hit = typeof document.elementsFromPoint === 'function' ? document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY) : [];
+          let nextTarget;
+          for (const element of hit) {
+            const id = element?.dataset?.itemId;
+            if (typeof id === 'string' && id !== '' && id !== itemId) {
+              nextTarget = [id, element];
+              break;
+            }
+          }
+          if (nextTarget !== undefined) {
+            drag.targetId = nextTarget[0];
+            drag.target = nextTarget[1];
+          }
+        };
+        const settle = (endEvent, commit) => {
+          if (endEvent.pointerId !== drag.pointerId) return;
+          drag.detach();
+          if (dragRef.current === drag) dragRef.current = null;
+          setDraggingId(null);
+          if (commit === true && drag.active === true && typeof drag.targetId === 'string') {
+            const rect = drag.target?.getBoundingClientRect?.();
+            const before = rect !== undefined ? endEvent.clientY < (rect.top + rect.bottom) / 2 : false;
+            moveItem(itemId, drag.targetId, before);
+          }
+        };
+        const onUp = (upEvent) => settle(upEvent, true);
+        const onCancel = (cancelEvent) => settle(cancelEvent, false);
+        drag.detach = () => {
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onCancel);
+        };
+        dragRef.current = drag;
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
+      };
 
       const updateItem = (itemId, patch) => {
         setItemState((previous) => ({ ...previous, [itemId]: { ...(previous[itemId] ?? {}), ...patch } }));
@@ -792,6 +860,7 @@ window.__ModuleLoader__.load({
         scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
         refreshLocalStores(undefined, store);
         setNotice(t('srDiscarded'));
+        for (const listener of discardListeners) listener(sessionId);
       };
 
       const openNewChat = (prompt) => {
@@ -822,6 +891,7 @@ window.__ModuleLoader__.load({
         scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
         refreshLocalStores(undefined, store);
         setNotice(t('srRestored'));
+        for (const listener of discardListeners) listener(sessionId);
       };
 
       const onItemKey = (event, itemId, prompt, label, entry) => {
@@ -892,13 +962,14 @@ window.__ModuleLoader__.load({
         writeCardOrder(orderKey, ids);
         setNotice(t('srReordered'));
       };
-      const moveItem = (draggedId, targetId) => {
+      const moveItem = (draggedId, targetId, before = false) => {
         if (orderKey === undefined || draggedId === targetId) return;
         const ids = [...orderedIds()];
         const from = ids.indexOf(draggedId);
         const to = ids.indexOf(targetId);
         if (from === -1 || to === -1) return;
-        ids.splice(to, 0, ids.splice(from, 1)[0]);
+        const insertAt = before ? (from < to ? to - 1 : to) : to;
+        ids.splice(insertAt, 0, ids.splice(from, 1)[0]);
         commitOrder(ids);
       };
       const moveItemBy = (itemId, delta) => {
@@ -931,64 +1002,33 @@ window.__ModuleLoader__.load({
             className: 'dsh-sf-item',
             role: 'group',
             'aria-label': prompt,
-            onKeyDown: (event) => onItemKey(event, itemId, prompt, label, entry),
-            onDragOver: (event) => {
-              if (typeof event?.preventDefault === 'function') event.preventDefault();
-            },
-            onDrop: (event) => {
-              if (typeof event?.preventDefault === 'function') event.preventDefault();
-              const draggedId = typeof event?.dataTransfer?.getData === 'function' ? event.dataTransfer.getData('text/plain') : '';
-              if (draggedId !== '' && draggedId !== itemId) moveItem(draggedId, itemId);
-            }
+            onKeyDown: (event) => onItemKey(event, itemId, prompt, label, entry)
           },
-            h('span', {
-              className: 'dsh-sf-grip',
-              draggable: true,
-              title: t('actionMoveEarlier') + ' / ' + t('actionMoveLater'),
-              'aria-hidden': true,
-              onDragStart: (event) => {
-                if (typeof event?.dataTransfer?.setData === 'function') event.dataTransfer.setData('text/plain', itemId);
-              }
-            }, '⠿'),
-            h('button', {
-              type: 'button',
-              className: 'dsh-sf-card' + (sent ? ' is-sent' : ''),
-              disabled: sent,
-              title: prompt,
-              'aria-label': prompt,
-              onClick: () => {
-                if (sent) return;
-                send(prompt, itemId, t('srFollowupSent'));
-              }
+            h('div', {
+              className: 'dsh-sf-cardline' + (draggingId === itemId ? ' is-dragging' : ''),
+              'data-item-id': itemId
             },
-              h('span', { className: 'dsh-sf-icon', 'aria-hidden': true }, sent ? '✓' : '→'),
-              h('span', { className: 'dsh-sf-label' }, label),
-              sent ? h('span', { className: 'dsh-sf-sr' }, t('srFollowupSent')) : null),
-            state.expanded === true ? h('div', { className: 'dsh-sf-prompt' }, prompt) : null,
-            state.editing === true ? h('div', { className: 'dsh-sf-editor' },
-              h('textarea', {
-                className: 'dsh-sf-textarea',
-                'aria-label': t('editPrompt'),
-                value: state.draft ?? prompt,
-                onChange: (event) => updateItem(itemId, { draft: event.target.value })
-              }),
-              h('span', { className: 'dsh-sf-actions' },
-                h('button', {
-                  type: 'button',
-                  className: 'dsh-sf-action',
-                  onClick: () => {
-                    const draft = (state.draft ?? prompt).trim();
-                    if (draft === '') return;
-                    send(draft, itemId, t('srEdited'));
-                    updateItem(itemId, { editing: false, draft: '' });
-                  }
-                }, t('editConfirm')),
-                h('button', {
-                  type: 'button',
-                  className: 'dsh-sf-action',
-                  onClick: () => updateItem(itemId, { editing: false, draft: '' })
-                }, t('editCancel')))) : null,
-            h('span', { className: 'dsh-sf-actions' },
+              h('span', {
+                className: 'dsh-sf-grip',
+                title: t('dragToReorder'),
+                'aria-hidden': true,
+                onPointerDown: (event) => startDrag(event, itemId)
+              }, '⠿'),
+              h('button', {
+                type: 'button',
+                className: 'dsh-sf-card' + (sent ? ' is-sent' : ''),
+                disabled: sent,
+                title: prompt,
+                'aria-label': prompt,
+                onClick: () => {
+                  if (sent) return;
+                  send(prompt, itemId, t('srFollowupSent'));
+                }
+              },
+                h('span', { className: 'dsh-sf-icon', 'aria-hidden': true }, sent ? '✓' : '→'),
+                h('span', { className: 'dsh-sf-label' }, label),
+                sent ? h('span', { className: 'dsh-sf-sr' }, t('srFollowupSent')) : null)),
+            h('span', { className: 'dsh-sf-item-actions' },
               h('button', {
                 type: 'button',
                 className: 'dsh-sf-action',
@@ -1048,6 +1088,30 @@ window.__ModuleLoader__.load({
                 title: t('actionNewChat'),
                 onClick: () => openNewChat(prompt)
               }, '↗')),
+            state.expanded === true ? h('div', { className: 'dsh-sf-prompt' }, prompt) : null,
+            state.editing === true ? h('div', { className: 'dsh-sf-editor' },
+              h('textarea', {
+                className: 'dsh-sf-textarea',
+                'aria-label': t('editPrompt'),
+                value: state.draft ?? prompt,
+                onChange: (event) => updateItem(itemId, { draft: event.target.value })
+              }),
+              h('span', { className: 'dsh-sf-actions' },
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-sf-action',
+                  onClick: () => {
+                    const draft = (state.draft ?? prompt).trim();
+                    if (draft === '') return;
+                    send(draft, itemId, t('srEdited'));
+                    updateItem(itemId, { editing: false, draft: '' });
+                  }
+                }, t('editConfirm')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-sf-action',
+                  onClick: () => updateItem(itemId, { editing: false, draft: '' })
+                }, t('editCancel')))) : null,
             h('span', { className: 'dsh-sf-hints' },
               `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionDiscard')} D`)));
         }
@@ -1079,8 +1143,11 @@ window.__ModuleLoader__.load({
     const generationState = new Map();
     const generationAfterSeq = new Map();
     const failedGenerations = new Map();
+    const validatedTurns = new Map();
     const warnedTurns = new Set();
     let settingsRevision = 0;
+    const VALIDATED_TURNS_LIMIT = 200;
+    const PROBE_TIMEOUT_MS = 5000;
 
     function generationKey(sessionId, turn) {
       return `${sessionId}|${turn}`;
@@ -1213,6 +1280,14 @@ window.__ModuleLoader__.load({
         }, []);
 
         React.useEffect(() => {
+          const listener = () => refresh();
+          discardListeners.add(listener);
+          return () => {
+            discardListeners.delete(listener);
+          };
+        }, []);
+
+        React.useEffect(() => {
           const listener = () => setOverridesVersion((v) => v + 1);
           sessionOverrideListeners.add(listener);
           return () => {
@@ -1269,6 +1344,42 @@ window.__ModuleLoader__.load({
         const generating = key !== '' && generationState.has(key);
         const onDemand = pluginSettings.generationMode === 'on-demand';
         const failureMessage = key !== '' && turn !== undefined ? failedGenerations.get(key) : undefined;
+        const [probeResults, setProbeResults] = React.useState(() => ({}));
+
+        const cachedProbe = key === '' ? undefined : validatedTurns.get(key);
+        const probeCompleted = onDemand === true && turn !== undefined && (
+          probeResults[key] === true
+          || (cachedProbe?.revision === settingsRevision && cachedProbe.completed === true)
+        );
+        const probeNeeded = onDemand === true && turn !== undefined && afterSeq !== undefined
+          && entries.length === 0 && generating === false && failureMessage === undefined
+          && probeResults[key] === undefined
+          && !(cachedProbe?.revision === settingsRevision);
+
+        React.useEffect(() => {
+          if (probeNeeded !== true) return undefined;
+          let cancelled = false;
+          const body = JSON.stringify({ sessionId, afterSeq, validate: true });
+          const run = async () => {
+            let completed = false;
+            try {
+              const response = await fetch(GENERATE_ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+              const data = await responseJson(response);
+              completed = data?.completed === true;
+            } catch {
+              completed = false;
+            }
+            if (cancelled) return;
+            validatedTurns.set(key, { revision: settingsRevision, probed: true, completed });
+            if (validatedTurns.size > VALIDATED_TURNS_LIMIT) validatedTurns.delete(validatedTurns.keys().next().value);
+            setProbeResults((previous) => ({ ...previous, [key]: completed }));
+          };
+          run();
+          return () => {
+            cancelled = true;
+          };
+        }, [key, probeNeeded, settingsRevision]);
+
         const retry = failureMessage !== undefined && entries.length === 0 && turn !== undefined ? h('div', { className: 'dsh-sf-retry' },
           h('span', { className: 'dsh-sf-error' }, t('generationFailed').replace('{e}', failureMessage)),
           h('button', {
@@ -1281,6 +1392,13 @@ window.__ModuleLoader__.load({
               if (seq !== undefined) startGeneration(sessionId, turn, seq);
             }
           }, t('retryGeneration'))) : null;
+
+        const sessionDiscards = Object.entries(readDiscarded())
+          .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId);
+        sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
+        const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
+
+        if (entries.length === 0 && retry === null && recentDiscard === undefined && probeCompleted !== true) return null;
 
         const saveManual = () => {
           const text = manualText.trim();
@@ -1432,9 +1550,9 @@ window.__ModuleLoader__.load({
     const MODEL_TEST_ROUTE = '/api/dsh-nextsteps.model-test';
     const UPDATE_ROUTE = '/api/dsh-nextsteps.update';
     const DICTIONARIES = {
-      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","updates":"Updates","current":"Version","checking":"Checking…","upToDate":"up to date","available":"{v} is available","manualCopy":"Development or renamed copy — update it manually.","installing":"Installing {v}…","restartMsg":"Version {v} was installed. Restart the dsh to use it.","noReleases":"No releases published yet","checkFailed":"Update check failed ({e})","updateNow":"Update now","check":"Check for updates","openRelease":"Open release page","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoriteCopy":"Copy","favoriteRemove":"Remove","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srEdited":"The edited suggestion was sent.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","srFavoritesExported":"Favourites exported.","favoritesExportFailed":"The favourites could not be exported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here."},
-      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","updates":"Atualizações","current":"Versão","checking":"Verificando…","upToDate":"em dia","available":"{v} disponível","manualCopy":"Cópia de desenvolvimento ou renomeada — atualize manualmente.","installing":"Instalando {v}…","restartMsg":"Versão {v} instalada. Reinicie o dsh para usá-la.","noReleases":"Nenhum release publicado ainda","checkFailed":"Falha ao verificar atualizações ({e})","updateNow":"Atualizar agora","check":"Verificar atualizações","openRelease":"Abrir página do release","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoriteCopy":"Copiar","favoriteRemove":"Remover","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srEdited":"A sugestão editada foi enviada.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","srFavoritesExported":"Favoritos exportados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui."},
-      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoriteCopy":"复制","favoriteRemove":"移除","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srEdited":"编辑后的建议已发送。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","srFavoritesExported":"收藏已导出。","favoritesExportFailed":"无法导出收藏。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。"}
+      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","updates":"Updates","current":"Version","checking":"Checking…","upToDate":"up to date","available":"{v} is available","manualCopy":"Development or renamed copy — update it manually.","installing":"Installing {v}…","restartMsg":"Version {v} was installed. Restart the dsh to use it.","noReleases":"No releases published yet","checkFailed":"Update check failed ({e})","updateNow":"Update now","check":"Check for updates","openRelease":"Open release page","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoriteCopy":"Copy","favoriteRemove":"Remove","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srEdited":"The edited suggestion was sent.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","srFavoritesExported":"Favourites exported.","favoritesExportFailed":"The favourites could not be exported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here."},
+      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","updates":"Atualizações","current":"Versão","checking":"Verificando…","upToDate":"em dia","available":"{v} disponível","manualCopy":"Cópia de desenvolvimento ou renomeada — atualize manualmente.","installing":"Instalando {v}…","restartMsg":"Versão {v} instalada. Reinicie o dsh para usá-la.","noReleases":"Nenhum release publicado ainda","checkFailed":"Falha ao verificar atualizações ({e})","updateNow":"Atualizar agora","check":"Verificar atualizações","openRelease":"Abrir página do release","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoriteCopy":"Copiar","favoriteRemove":"Remover","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srEdited":"A sugestão editada foi enviada.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","srFavoritesExported":"Favoritos exportados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui."},
+      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoriteCopy":"复制","favoriteRemove":"移除","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srEdited":"编辑后的建议已发送。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","srFavoritesExported":"收藏已导出。","favoritesExportFailed":"无法导出收藏。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。"}
     };
     const DEFAULT_SETTINGS = {
       lang: 'auto',

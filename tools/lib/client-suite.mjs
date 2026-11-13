@@ -276,7 +276,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       localStorage,
       fetch: async (url) => {
         if (String(url).includes("generate")) {
-          return new Response(JSON.stringify({ error: "no model" }), { status: 502, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } });
         }
         if (String(url).includes("models")) {
           return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });

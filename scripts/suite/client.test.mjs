@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId } from "../harness.mjs";
-import { loadClient, fakeSlotHost, stubFetch, walk, textOf, memoryStorage, fakeIntersectionObserver, fakeClipboard } from "../client-harness.mjs";
+import { loadClient, fakeSlotHost, stubFetch, walk, textOf, memoryStorage, fakeIntersectionObserver, fakeClipboard, dispatchDocument } from "../client-harness.mjs";
 import { root } from "../client-harness.mjs";
 
 suite("client: rendering, dictionaries and persistence");
@@ -203,7 +203,7 @@ test("the tail renders no card for a turn without a capture", () => {
   const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
   assert(tail !== undefined, "the tail is registered");
   const tree = tail.component({ sessionId: "s1", turn: { turn: 3 }, seq: 12, t: (key) => key });
-  const cards = walk(tree, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+  const cards = walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
   assertEqual(cards.length, 0, "a turn without a capture renders no card");
   fetchStub.restore();
 });
@@ -285,7 +285,7 @@ test("the host tail asks once and renders only the generated cards", async () =>
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "only the generated card renders in host mode");
   } finally {
     client.fetchStub.restore();
@@ -365,7 +365,7 @@ test("the host tail warns once and shows no card when the generator fails", asyn
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 0, "a failed generation renders no card");
   } finally {
     console.warn = originalWarn;
@@ -413,6 +413,7 @@ function tailOf(registrations) {
 
 function renderTail(client, tail, props) {
   const tree = tail(props);
+  if (tree === null) return null;
   client.react.__setComponent(tree.type);
   client.react.__reset();
   return tree.type(tree.props);
@@ -424,6 +425,33 @@ function buttonsOf(tree) {
 
 function buttonWithText(tree, text) {
   return buttonsOf(tree).find((node) => node.children.includes(text));
+}
+
+function itemsOf(tree) {
+  return walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
+}
+
+function gripOf(item) {
+  return walk(item, (node) => node.props?.className === "dsh-sf-grip")[0];
+}
+
+function cardlineOf(item) {
+  return walk(item, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-cardline"))[0];
+}
+
+function draggingLinesOf(tree) {
+  return walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("is-dragging"));
+}
+
+function dragOntoCardline(client, grip, targetCardline, pointerId = 1) {
+  grip.props.onPointerDown({ pointerId, clientX: 10, clientY: 10 });
+  dispatchDocument(client.document, "pointermove", { pointerId, clientX: 12, clientY: 12 });
+  client.document.elementsFromPoint = () => [{ className: "dsh-sf-cardline", dataset: { itemId: targetCardline.props["data-item-id"] } }];
+  dispatchDocument(client.document, "pointermove", { pointerId, clientX: 40, clientY: 200 });
+}
+
+function cardLabelsOf(tree) {
+  return walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card")).map((node) => node.props["aria-label"]);
 }
 
 test("the send control is a button that sends the prompt", async () => {
@@ -445,7 +473,7 @@ test("the send control is a button that sends the prompt", async () => {
     });
     const tail = tailOf(registrations);
     const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const send = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"))[0];
+    const send = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
     assert(send !== undefined, "the card renders a send control");
     assertEqual(send.type, "button", "the send control is a button, so Enter activates it natively");
     assertEqual(send.props.disabled, false, "the send control starts enabled");
@@ -474,7 +502,7 @@ test("the card shortcuts run the copy, the favourite, the edit and the discard",
       client.react.__setComponent(tree.type);
       client.react.__reset();
       const rendered = tree.type(tree.props);
-      const item = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"))[0];
+      const item = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"))[0];
       assert(item !== undefined, "the card item exists");
       let prevented = 0;
       item.props.onKeyDown({ key, target: { tagName: "DIV" }, preventDefault: () => { prevented += 1; } });
@@ -487,7 +515,7 @@ test("the card shortcuts run the copy, the favourite, the edit and the discard",
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
-    const item = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"))[0];
+    const item = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"))[0];
     item.props.onKeyDown({ key: "Escape", target: { tagName: "DIV" }, preventDefault: () => {} });
     const after = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
     client.react.__setComponent(after.type);
@@ -497,7 +525,7 @@ test("the card shortcuts run the copy, the favourite, the edit and the discard",
     assertEqual(editors.length, 0, "the escape key closes the editor");
     assertEqual(await press("d"), 1, "the discard shortcut runs");
     const discarded = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key2) => key2 });
-    assertEqual(walk(discarded, (node) => String(node.props?.className ?? "").includes("dsh-sf-item")).length, 0, "the discarded card leaves the list without waiting for the storage write");
+    assertEqual(walk(discarded, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item")).length, 0, "the discarded card leaves the list without waiting for the storage write");
   } finally {
     client.fetchStub.restore();
   }
@@ -638,7 +666,7 @@ test("the captures survive a restart", async () => {
     try {
       const tail = tailOf(second.registrations);
       const rendered = renderTail(second.client, tail, { sessionId: "s1", turn: { turn: 3 }, seq: 9, t: (key) => key });
-      const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+      const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
       assertEqual(cards.length, 1, "the capture comes back after a restart");
     } finally {
       second.client.fetchStub.restore();
@@ -759,7 +787,11 @@ test("the on demand tail waits for the button and asks once when it is pressed",
   const { client, registrations } = clientWithRoutes({
     "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] }
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
   });
   try {
     const tail = tailOf(registrations);
@@ -767,19 +799,26 @@ test("the on demand tail waits for the button and asks once when it is pressed",
     const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const before = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
-    assertEqual(before.length, 0, "the on demand tail never asks the host on its own");
-    client.react.__setComponent(tree.type);
+    const isGenerate = (entry) => entry.url.includes(".generate");
+    const isValidate = (entry) => isGenerate(entry) && typeof entry.body === "string" && entry.body.includes('"validate":true');
+    const isRealGenerate = (entry) => isGenerate(entry) && !isValidate(entry);
+    const before = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(before.length, 0, "the on demand tail never asks the host to generate on its own");
+    const validates = client.fetchStub.calls.filter(isValidate);
+    assertEqual(validates.length, 1, "the tail probes the turn exactly once");
+    const probedTree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assert(probedTree !== null, "the completed probe reveals the tail");
+    client.react.__setComponent(probedTree.type);
     client.react.__reset();
-    const rendered = tree.type(tree.props);
+    const rendered = probedTree.type(probedTree.props);
     const generate = buttonWithText(rendered, "generateNow");
     assert(generate !== undefined, "the on demand tail offers the generate button");
     await generate.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 60));
-    const after = client.fetchStub.calls.filter((entry) => entry.url.includes(".generate"));
+    const after = client.fetchStub.calls.filter(isRealGenerate);
     assertEqual(after.length, 1, "the button asks the host exactly once");
     const again = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const cards = walk(again, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(again, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "the generated card renders");
   } finally {
     client.fetchStub.restore();
@@ -803,9 +842,9 @@ test("an aborted generation warns nothing and a conflict warns nothing", async (
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 60));
     assertEqual(warnings.filter((line) => line.includes("generation failed")).length, 0, "a conflict never warns");
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
-    assertEqual(cards.length, 0, "a conflict renders no card");
+    assertEqual(renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key }), null, "a conflict renders no tail");
+    const validateCalls = client.fetchStub.calls.filter((call) => typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateCalls.length, 0, "the auto mode never probes the host even when the turn is empty");
   } finally {
     console.warn = originalWarn;
     client.fetchStub.restore();
@@ -872,7 +911,7 @@ test("a failed generation offers a retry that asks the host once more", async ()
     const firstBody = JSON.parse(generateCalls[0].body);
     const retryBody = JSON.parse(generateCalls[1].body);
     assertEqual(retryBody, firstBody, "the retry repeats the same session and sequence");
-    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(after, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assert(cards.length === 1, `the retried generation renders the card: ${cards.length}`);
     assert(retryNodeOf(after) === undefined, "the retry block disappears after the retry succeeds");
   } finally {
@@ -892,7 +931,7 @@ test("a conflict keeps no retry offer", async () => {
     tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     await settled(client);
     const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    assert(retryNodeOf(rendered) === undefined, "a conflict never offers the retry block");
+    assertEqual(rendered, null, "a conflict renders no tail at all");
     assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the conflict ends the round");
   } finally {
     client.fetchStub.restore();
@@ -919,7 +958,7 @@ test("an aborted generation keeps no retry offer", async () => {
     await client.react.__cleanup();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    assert(retryNodeOf(rendered) === undefined, "an aborted generation never offers the retry block");
+    assertEqual(rendered, null, "an aborted generation renders no tail at all");
     assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the abort ends the round");
   } finally {
     client.fetchStub.restore();
@@ -950,7 +989,7 @@ test("the retry button disappears once the turn has cards", async () => {
     const save = buttonsOf(saveTree).find((node) => node.children.includes("manualSave"));
     await save.props.onClick();
     const after = renderTail(client, tail, props);
-    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(after, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assert(cards.length === 1, `the manual card renders: ${cards.length}`);
     assert(retryNodeOf(after) === undefined, "the retry block disappears once the turn has cards");
   } finally {
@@ -1011,7 +1050,7 @@ test("a session override renders only generated cards and triggers the generate 
     });
     client.instance.flushWrites();
     const rendered = renderTail(client, tail, { sessionId: "sess-1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 0, "the model-authored capture never renders for an override session");
     tail({ sessionId: "sess-2", turn: { turn: 1 }, seq: 9, t: (key) => key });
     await settled(client);
@@ -1045,12 +1084,15 @@ test("a count-only override engages the host generation and carries maxFollowups
 test("the session options editor writes only the override store", async () => {
   const storage = memoryStorage();
   const { client, registrations } = clientWithRoutes({
-    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" }
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] }
   }, { storage });
   try {
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
     const open = renderTail(client, tail, props);
     const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
     assert(optionsButton !== undefined, "the header offers the session options button");
@@ -1114,6 +1156,8 @@ test("an override change engages the host generation without any manual flush", 
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "sess-1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "sess-1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
     const open = renderTail(client, tail, props);
     const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
     await optionsButton.props.onClick();
@@ -1123,7 +1167,8 @@ test("an override change engages the host generation without any manual flush", 
     const after = renderTail(client, tail, props);
     const selectAfter = walk(after, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
     assertEqual(selectAfter.props.value, "pt-BR", "the panel keeps the override on a fresh render with no manual flush");
-    tail(props);
+    const nextTurn = { sessionId: "sess-1", turn: { turn: 2 }, seq: 20, t: (key) => key };
+    tail(nextTurn);
     await settled(client);
     const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
     assertEqual(generateCalls.length, 1, `the generation gate re-fires for the override session with no flush: ${generateCalls.length}`);
@@ -1140,6 +1185,8 @@ test("the session options editor drops a junk count instead of storing it", asyn
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
     const open = renderTail(client, tail, props);
     const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
     await optionsButton.props.onClick();
@@ -1170,6 +1217,28 @@ async function addManualSuggestion(client, tail, props, text) {
   await save.props.onClick();
 }
 
+function seedCaptures(registrations, sessionId, turn, prompts) {
+  const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+  assert(capture !== undefined, "the toolview capture slot is registered");
+  const followups = prompts.map((prompt) => ({ prompt, label: null }));
+  capture.component({
+    sessionId,
+    callId: `generated-${turn}-seed-${sessionId}-${prompts.length}`,
+    block: { kind: "tool-result", callId: `generated-${turn}-seed-${sessionId}-${prompts.length}`, name: "suggest_followups", turn, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups }) }] }
+  });
+}
+
+function captureItemIds(storage, sessionId, turn) {
+  const captures = JSON.parse(storage._data[`dsh-nextsteps.captures.session.${sessionId}`] ?? "{}");
+  const ids = [];
+  for (const [key, value] of Object.entries(captures).sort(([a], [b]) => a.localeCompare(b))) {
+    if (key === `generated-${turn}` || key.startsWith(`manual-${turn}-`)) continue;
+    const followups = Array.isArray(value?.followups) ? value.followups : [];
+    for (const index of followups.keys()) ids.push(`${value.clickedId}:${index}`);
+  }
+  return ids;
+}
+
 function manualItemIds(storage, sessionId) {
   const captures = JSON.parse(storage._data[`dsh-nextsteps.captures.session.${sessionId}`] ?? "{}");
   return Object.keys(captures).filter((key) => key.startsWith("manual-")).map((key) => `${captures[key].clickedId}:0`);
@@ -1182,20 +1251,19 @@ test("the move buttons reorder the cards and persist the order", async () => {
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
-    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao"]);
     client.instance.flushWrites();
-    const ids = manualItemIds(storage, "s1");
-    assertEqual(ids.length, 2, "two manual items were seeded");
+    const ids = captureItemIds(storage, "s1", 1);
+    assertEqual(ids.length, 2, "two capture items were seeded");
     const rendered = renderTail(client, tail, props);
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assertEqual(items.length, 2, "both cards render before the reorder");
     const moveEarlier = buttonsOf(items[1]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
     assert(moveEarlier !== undefined, "the second item offers the move-earlier button");
     moveEarlier.props.onClick();
     client.instance.flushWrites();
     const reordered = renderTail(client, tail, props);
-    const cards = walk(reordered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(reordered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards[0].props["aria-label"], "segunda sugestao", "the second suggestion moved earlier");
     assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0]] }, "the order persisted for the session and turn");
     const liveRegion = walk(reordered, (node) => node.props?.className === "dsh-sf-sr")[0];
@@ -1212,13 +1280,12 @@ test("unknown stored order ids degrade to the natural order", async () => {
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
-    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao"]);
     client.instance.flushWrites();
-    const ids = manualItemIds(storage, "s1");
+    const ids = captureItemIds(storage, "s1", 1);
     storage._data["dsh-nextsteps.card-order"] = JSON.stringify({ "s1|1": ["stale-a", ids[0], "stale-b"] });
     const rendered = renderTail(client, tail, props);
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 2, "both real cards render despite stale ids");
     assertEqual(cards[0].props["aria-label"], "primeira sugestao", "the unknown ids are ignored and the natural order holds");
     assertEqual(cards[1].props["aria-label"], "segunda sugestao", "the second card follows in natural order");
@@ -1242,7 +1309,7 @@ test("no order entry is written when the turn is undefined", async () => {
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: undefined, seq: 9, t: (key) => key };
     const rendered = renderTail(client, tail, props);
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assert(items.length >= 1, "the fallback path renders the newest capture");
     const moveEarlier = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
     assert(moveEarlier !== undefined, "the fallback item offers the move button");
@@ -1263,10 +1330,10 @@ test("the order map is capped at 40 keys", async () => {
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s40", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
-    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    seedCaptures(registrations, "s40", 1, ["primeira sugestao", "segunda sugestao"]);
+    client.instance.flushWrites();
     const rendered = renderTail(client, tail, props);
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     const moveEarlier = buttonsOf(items[1]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
     moveEarlier.props.onClick();
     client.instance.flushWrites();
@@ -1286,24 +1353,41 @@ test("the grip handle drags one card onto another", async () => {
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
-    await addManualSuggestion(client, tail, props, "segunda sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao"]);
     client.instance.flushWrites();
-    const ids = manualItemIds(storage, "s1");
+    const ids = captureItemIds(storage, "s1", 1);
     const rendered = renderTail(client, tail, props);
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assertEqual(items.length, 2, "both cards render before the drag");
     const grips = walk(rendered, (node) => node.props?.className === "dsh-sf-grip");
     assertEqual(grips.length, 2, "every item carries the grip handle");
-    let captured = "";
-    grips[0].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
-    assertEqual(captured, ids[0], "the grip writes the dragged item id");
-    items[1].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
-    client.instance.flushWrites();
-    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0]] }, "the downward drag of the first card onto the second inserts it after the target (2-item fixture; the full directional semantics are pinned separately with a 3-item fixture)");
+    const cardlines = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-cardline"));
+    assertEqual(cardlines.length, 2, "every item carries the cardline row");
+    for (const cardline of cardlines) {
+      assertEqual(cardline.children[0].props.className, "dsh-sf-grip", "the grip sits LEFT of the card inside the cardline");
+      assert(String(cardline.children[1].props.className).includes("dsh-sf-card"), "the card follows the grip inside the cardline");
+    }
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "no order entry exists before any move");
   } finally {
     client.fetchStub.restore();
   }
+});
+
+test("the stylesheet carries the cardline and hover-reveal contract", () => {
+  const source = readFileSync(path.join(root, "client.js"), "utf8");
+  assertIncludes(source, ".dsh-sf-cardline { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }", "the cardline row is styled");
+  assertIncludes(source, ".dsh-sf-cardline.is-dragging { opacity: 0.5; }", "the dragging state dims the cardline");
+  assertIncludes(source, ".dsh-sf-grip { cursor: grab; touch-action: none; flex: none; user-select: none; }", "the grip keeps its cursor and blocks touch scrolling during a drag");
+  assertIncludes(source, ".dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; opacity: 0; pointer-events: none;", "the per-card actions start hidden but focusable");
+  assertIncludes(source, ".dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; pointer-events: auto; }", "hover and focus reveal the per-card actions");
+  assertIncludes(source, "@media (hover: none) { .dsh-sf-item-actions { opacity: 1; pointer-events: auto; } }", "touch devices keep the actions visible");
+  const itemActionRows = [...source.matchAll(/className: 'dsh-sf-item-actions'/g)].length;
+  assertEqual(itemActionRows, 1, "only the per-card row carries the reveal class");
+  const sharedActionRows = [...source.matchAll(/className: 'dsh-sf-actions'/g)].length;
+  assertEqual(sharedActionRows, 4, "the editor, manual, undo and footer rows keep the always-visible class");
+  assert(!source.includes("onDragStart"), "the dead HTML5 drag start is gone");
+  assert(!source.includes("onDragOver"), "the dead HTML5 drag over is gone");
+  assert(!source.includes("dataTransfer"), "the dead HTML5 drag payload is gone");
 });
 
 test("reorder semantics are directional: insert-after below, insert-before above, with boundary no-ops", async () => {
@@ -1313,37 +1397,53 @@ test("reorder semantics are directional: insert-after below, insert-before above
     await settled(client);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
-    await addManualSuggestion(client, tail, props, "segunda sugestao");
-    await addManualSuggestion(client, tail, props, "terceira sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao", "terceira sugestao"]);
     client.instance.flushWrites();
-    const ids = manualItemIds(storage, "s1");
-    assertEqual(ids.length, 3, "three manual items were seeded");
-    const labelsOf = (tree) => walk(tree, (node) => String(node.props?.className ?? "").includes("dsh-sf-card")).map((node) => node.props["aria-label"]);
+    const ids = captureItemIds(storage, "s1", 1);
+    assertEqual(ids.length, 3, "three capture items were seeded");
+    const labelsOf = (tree) => walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card")).map((node) => node.props["aria-label"]);
+    let items = null;
     let rendered = renderTail(client, tail, props);
-    let items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assertEqual(items.length, 3, "all three cards render");
     assertEqual(labelsOf(rendered), ["primeira sugestao", "segunda sugestao", "terceira sugestao"], "the natural order holds before any reorder");
 
     const grips = () => walk(rendered, (node) => node.props?.className === "dsh-sf-grip");
-    let captured = "";
-    grips()[0].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
-    items[2].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
-    client.instance.flushWrites();
-    rendered = renderTail(client, tail, props);
+    assertEqual(grips().length, 3, "every card carries its grip");
+    assertEqual(grips()[0].props.title, "dragToReorder", "the grip tooltip names the drag action");
+    const dragOnto = (draggedIndex, targetIndex) => {
+      rendered = renderTail(client, tail, props);
+      items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
+      const dragged = items[draggedIndex];
+      const target = items[targetIndex];
+      const grip = walk(dragged, (node) => node.props?.className === "dsh-sf-grip")[0];
+      const targetCardline = walk(target, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-cardline"))[0];
+      grip.props.onPointerDown({ pointerId: 1, clientX: 10, clientY: 10 });
+      dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 12, clientY: 12 });
+      client.document.elementsFromPoint = () => [{ className: "dsh-sf-cardline", dataset: { itemId: targetCardline.props["data-item-id"] } }];
+      dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 40, clientY: 200 });
+      dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+      client.instance.flushWrites();
+      rendered = renderTail(client, tail, props);
+    };
+    dragOnto(0, 2);
     assertEqual(labelsOf(rendered), ["segunda sugestao", "terceira sugestao", "primeira sugestao"], "the downward drag onto the last card inserts after it (a swap would place the dragged card where the target was)");
     assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[2], ids[0]] }, "the insert-after order persisted");
 
-    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
-    captured = "";
-    grips()[2].props.onDragStart({ dataTransfer: { setData: (kind, value) => { captured = value; } } });
-    items[0].props.onDrop({ preventDefault() {}, dataTransfer: { getData: () => captured } });
+    items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
+    const gripLast = walk(items[2], (node) => node.props?.className === "dsh-sf-grip")[0];
+    const targetCardlineLast = walk(items[0], (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-cardline"))[0];
+    gripLast.props.onPointerDown({ pointerId: 1, clientX: 10, clientY: 10 });
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 12, clientY: 12 });
+    client.document.elementsFromPoint = () => [{ className: "dsh-sf-cardline", dataset: { itemId: targetCardlineLast.props["data-item-id"] } }];
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 40, clientY: 200 });
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
     client.instance.flushWrites();
     rendered = renderTail(client, tail, props);
     assertEqual(labelsOf(rendered), ["primeira sugestao", "segunda sugestao", "terceira sugestao"], "the upward drag inserts before the target (a swap would leave the middle card last)");
     assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[0], ids[1], ids[2]] }, "the insert-before order persisted");
 
-    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     const moveLater = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveLater");
     assert(moveLater !== undefined, "the first item offers the move-later button");
     moveLater.props.onClick();
@@ -1351,7 +1451,7 @@ test("reorder semantics are directional: insert-after below, insert-before above
     rendered = renderTail(client, tail, props);
     assertEqual(labelsOf(rendered), ["segunda sugestao", "primeira sugestao", "terceira sugestao"], "the move-later button shifts the first card one position down");
 
-    items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     const moveEarlier = buttonsOf(items[0]).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
     assert(moveEarlier !== undefined, "the first item offers the move-earlier button");
     moveEarlier.props.onClick();
@@ -1359,6 +1459,160 @@ test("reorder semantics are directional: insert-after below, insert-before above
     rendered = renderTail(client, tail, props);
     assertEqual(labelsOf(rendered), ["segunda sugestao", "primeira sugestao", "terceira sugestao"], "the boundary no-op leaves the order untouched");
     assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[0], ids[2]] }, "the boundary no-op writes nothing new");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a below-threshold pointer move never starts a drag", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao", "terceira sugestao"]);
+    client.instance.flushWrites();
+    const ids = captureItemIds(storage, "s1", 1);
+    let rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    assertEqual(items.length, 3, "all three cards render");
+    client.document.elementsFromPoint = () => [{ className: "dsh-sf-cardline", dataset: { itemId: cardlineOf(items[1]).props["data-item-id"] } }];
+    const grip = gripOf(items[0]);
+    grip.props.onPointerDown({ pointerId: 1, clientX: 10, clientY: 10 });
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 13, clientY: 10 });
+    rendered = renderTail(client, tail, props);
+    assertEqual(draggingLinesOf(rendered).length, 0, "the 3px move never marks any cardline as dragging");
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 13, clientY: 10 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(draggingLinesOf(rendered).length, 0, "no cardline is dragging after the pointerup");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "the below-threshold gesture wrote no order entry");
+    assertEqual(ids.length, 3, "the seeded items stayed untouched");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a pointercancel aborts the drag without writing and re-arms for the next gesture", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao", "terceira sugestao"]);
+    client.instance.flushWrites();
+    const ids = captureItemIds(storage, "s1", 1);
+    let rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    const grip = gripOf(items[0]);
+    const targetCardline = cardlineOf(items[2]);
+    dragOntoCardline(client, grip, targetCardline);
+    dispatchDocument(client.document, "pointercancel", { pointerId: 1 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "the cancelled drag wrote no order entry");
+    assertEqual(draggingLinesOf(rendered).length, 0, "the cancelled drag leaves no cardline dragging");
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 50, clientY: 300 });
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 50, clientY: 300 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "the detached listeners stayed inert after the cancel");
+    const itemsAfterCancel = itemsOf(rendered);
+    assertEqual(itemsAfterCancel.length, 3, "the cards still render after the cancel");
+    dragOntoCardline(client, gripOf(itemsAfterCancel[0]), cardlineOf(itemsAfterCancel[2]));
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(cardLabelsOf(rendered), ["segunda sugestao", "terceira sugestao", "primeira sugestao"], "a fresh pointerdown re-attaches the drag machinery and commits");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[2], ids[0]] }, "the post-cancel commit persisted");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a drag with an undefined turn writes no order entry", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Unica","label":"Unica"}]}' }] }
+    });
+    client.instance.flushWrites();
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: undefined, seq: 9, t: (key) => key };
+    let rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    assert(items.length >= 1, "the fallback path renders the newest capture");
+    client.document.elementsFromPoint = () => [{ className: "dsh-sf-cardline", dataset: { itemId: cardlineOf(items[0]).props["data-item-id"] } }];
+    const grip = gripOf(items[0]);
+    grip.props.onPointerDown({ pointerId: 1, clientX: 10, clientY: 10 });
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 40, clientY: 200 });
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(draggingLinesOf(rendered).length, 0, "the drag completes without leaving a dragging cardline");
+    assertEqual(storage._data["dsh-nextsteps.card-order"], undefined, "no order entry is written when the turn is undefined");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a second pointer never hijacks the active drag", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao", "terceira sugestao"]);
+    client.instance.flushWrites();
+    const ids = captureItemIds(storage, "s1", 1);
+    let rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    dragOntoCardline(client, gripOf(items[0]), cardlineOf(items[2]), 1);
+    dispatchDocument(client.document, "pointerdown", { pointerId: 2, clientX: 20, clientY: 20 });
+    const gripsAfterSecondDown = () => walk(renderTail(client, tail, props), (node) => node.props?.className === "dsh-sf-grip");
+    const secondGrip = gripsAfterSecondDown()[1];
+    secondGrip.props.onPointerDown({ pointerId: 2, clientX: 20, clientY: 20 });
+    dispatchDocument(client.document, "pointermove", { pointerId: 2, clientX: 80, clientY: 400 });
+    dispatchDocument(client.document, "pointerup", { pointerId: 2, clientX: 80, clientY: 400 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "the stray second pointer wrote no order entry");
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(cardLabelsOf(rendered), ["segunda sugestao", "terceira sugestao", "primeira sugestao"], "the first pointer's drag completed untouched and commits");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), { "s1|1": [ids[1], ids[2], ids[0]] }, "the original drag's commit persisted");
+    assertEqual(draggingLinesOf(rendered).length, 0, "no cardline stays dragging after the commits");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an unmounted card drops its drag listeners and its pointerup writes nothing", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao", "terceira sugestao"]);
+    client.instance.flushWrites();
+    let rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    dragOntoCardline(client, gripOf(items[0]), cardlineOf(items[2]), 1);
+    await client.react.__cleanup();
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.card-order"] ?? "{}"), {}, "the unmounted drag wrote no order entry");
   } finally {
     client.fetchStub.restore();
   }
@@ -1373,7 +1627,7 @@ test("the new-conversation action opens a session with the suggestion prefilled"
     ctx.get = (name) => (name === "uiWorkspace" ? { startSession: (workspaceId, options) => { calls.push([workspaceId, options]); } } : undefined);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
     client.instance.flushWrites();
     const rendered = renderTail(client, tail, props);
     const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
@@ -1383,7 +1637,7 @@ test("the new-conversation action opens a session with the suggestion prefilled"
     assertEqual(calls[0], [undefined, { prompt: "primeira sugestao", whenDraftExists: "replace" }], "the suggestion is prefilled into a fresh session draft");
     client.instance.flushWrites();
     const renderedAfter = renderTail(client, tail, props);
-    const cards = walk(renderedAfter, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(renderedAfter, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assert(cards.length === 1 && !String(cards[0].props.className).includes("is-sent"), "the source card is not marked sent");
     assertEqual(storage._data["dsh-nextsteps.clicked"], undefined, "no click was recorded for the source card");
   } finally {
@@ -1402,7 +1656,7 @@ test("the new-conversation action degrades to a notice when the service is missi
     ctx.get = () => undefined;
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
     client.instance.flushWrites();
     const rendered = renderTail(client, tail, props);
     const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
@@ -1428,7 +1682,7 @@ test("the new-conversation action survives a throwing service", async () => {
     ctx.get = (name) => (name === "uiWorkspace" ? { startSession: () => { throw new Error("the workspace exploded"); } } : undefined);
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
-    await addManualSuggestion(client, tail, props, "primeira sugestao");
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
     client.instance.flushWrites();
     const rendered = renderTail(client, tail, props);
     const newChat = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionNewChat");
@@ -1437,7 +1691,7 @@ test("the new-conversation action survives a throwing service", async () => {
     const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
     assert(notice !== undefined && notice.children[0] === "newChatUnavailable", `the failure notice is shown: ${notice?.children?.[0]}`);
     assertEqual(warnings.length, 1, `exactly one warning fired: ${warnings.length}`);
-    const cards = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(after, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "the card still renders after the throw");
   } finally {
     console.warn = originalWarn;
@@ -1464,12 +1718,12 @@ test("the deferred rendering waits for the observer and falls back without one",
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const deferred = tree.type(tree.props);
-    const cards = walk(deferred, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(deferred, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 0, "a never firing observer builds no card");
     for (const effect of effects) await effect();
     observer.fire();
     const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const built = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const built = walk(after, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(built.length, 1, "firing the observer builds the card");
   } finally {
     client.fetchStub.restore();
@@ -1485,7 +1739,7 @@ test("the deferred rendering waits for the observer and falls back without one",
     });
     const tail = tailOf(fallback.registrations);
     const rendered = renderTail(fallback.client, tail, { sessionId: "s2", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const cards = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
     assertEqual(cards.length, 1, "without an observer the card is built immediately");
   } finally {
     fallback.client.fetchStub.restore();
@@ -1516,28 +1770,26 @@ test("the settings page sends no key the host does not read", async () => {
 test("the manual suggestion persists and renders in host mode", async () => {
   const storage = memoryStorage();
   const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
-  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } }, { storage });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] }
+  }, { storage });
   try {
     const tail = tailOf(registrations);
-    let tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    client.react.__setComponent(tree.type);
-    client.react.__reset();
-    let rendered = tree.type(tree.props);
-    const add = buttonWithText(rendered, "addSuggestion");
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    const firstRender = renderTail(client, tail, props);
+    const add = buttonWithText(firstRender, "addSuggestion");
     assert(add !== undefined, "the tail offers the add suggestion button");
     await add.props.onClick();
-    tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    client.react.__setComponent(tree.type);
-    client.react.__reset();
-    rendered = tree.type(tree.props);
-    const area = walk(rendered, (node) => node.type === "textarea")[0];
+    const openRendered = renderTail(client, tail, props);
+    const area = walk(openRendered, (node) => node.type === "textarea")[0];
     assert(area !== undefined, "the manual form opens a textarea");
     area.props.onChange({ target: { value: "minha sugestao" } });
-    tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    client.react.__setComponent(tree.type);
-    client.react.__reset();
-    rendered = tree.type(tree.props);
-    const save = buttonWithText(rendered, "manualSave");
+    const formRendered = renderTail(client, tail, props);
+    const save = buttonWithText(formRendered, "manualSave");
     assert(save !== undefined, "the manual form offers the save button");
     await save.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -1547,11 +1799,20 @@ test("the manual suggestion persists and renders in host mode", async () => {
     const entries = Object.keys(JSON.parse(stored));
     assert(entries.some((key) => key.startsWith("manual-")), `the manual card is stored under a manual key: ${entries.join(", ")}`);
 
-    const second = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } }, { storage });
+    const second = clientWithRoutes({
+      "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+      "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+      "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] }
+    }, { storage });
     try {
+      await settled(second.client);
+      renderTail(second.client, tailOf(second.registrations), { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+      await new Promise((resolve) => setTimeout(resolve, 60));
       const restarted = renderTail(second.client, tailOf(second.registrations), { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-      const cards = walk(restarted, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"));
-      assertEqual(cards.length, 1, "the manual card renders in host mode and survives a restart");
+      const cards = walk(restarted, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
+      const manualCard = cards.find((card) => card.props["aria-label"] === "minha sugestao");
+      assert(manualCard !== undefined, "the manual card renders in host mode and survives a restart");
+      assertEqual(cards.length, 2, "the generated card and the manual card both render: " + cards.map((card) => card.props["aria-label"]).join(" | "));
     } finally {
       second.client.fetchStub.restore();
     }
@@ -1622,7 +1883,7 @@ test("a discarded card leaves the list before the storage write lands", async ()
     assert(discard !== undefined, "the card offers the discard action");
     await discard.props.onClick();
     const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const items = walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
+    const items = walk(after, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assertEqual(items.length, 0, "the discarded card leaves the list on the click's own re-render");
     const live = walk(after, (node) => node.props?.role === "status");
     assertEqual(live.length, 1, "the discard is announced through the live region");
@@ -1874,7 +2135,7 @@ test("a composer that refuses the message is reported to the user", async () => 
     client.react.__setComponent(tree.type);
     client.react.__reset();
     const rendered = tree.type(tree.props);
-    const send = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-card"))[0];
+    const send = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
     await send.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 200));
     const after = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
@@ -1970,9 +2231,14 @@ test("a stray tool call in the on demand mode never becomes a card", async () =>
     });
     client.instance.flushWrites();
     const tail = tailOf(registrations);
+    await settled(client);
     const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
-    assertEqual(items.length, 0, "the stray call produces no card");
+    if (rendered === null) {
+      assertEqual(0, 0, "the stray call produces no tail at all");
+    } else {
+      const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
+      assertEqual(items.length, 0, "the stray call produces no card");
+    }
   } finally {
     client.fetchStub.restore();
   }
@@ -1980,15 +2246,21 @@ test("a stray tool call in the on demand mode never becomes a card", async () =>
 
 test("the on demand generation is cancelled when the card goes away", async () => {
   const settings = { ...NEW_SETTINGS, generationMode: "on-demand", lang: "en" };
-  let aborted = false;
-  const hung = (init) => new Promise((resolve, reject) => {
-    init?.signal?.addEventListener("abort", () => {
-      aborted = true;
-      const error = new Error("The operation was aborted.");
-      error.name = "AbortError";
-      reject(error);
+  const signals = [];
+  const hung = (init) => {
+    const body = typeof init?.body === "string" ? init.body : "";
+    if (body.includes('"validate":true')) {
+      return new Response(JSON.stringify({ ok: true, completed: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    signals.push(init?.signal);
+    return new Promise((resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      });
     });
-  });
+  };
   const client = loadClient({ routes: {
     "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
     "/api/dsh-nextsteps.generate": hung
@@ -2000,15 +2272,18 @@ test("the on demand generation is cancelled when the card goes away", async () =
     const tail = tailOf(registrations);
     const tree = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     for (const effect of client.react.__effects ?? []) await effect();
-    const rendered = tree.type(tree.props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const fresh = tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assert(fresh !== null, "the completed probe reveals the on demand tail");
+    const rendered = fresh.type(fresh.props);
     const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
     assert(generate !== undefined, "the on demand card offers the generate button");
     generate.props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert(aborted === false, "the request is still running before the card goes away");
+    assert(signals.length === 1 && signals[0].aborted === false, "the request is still running before the card goes away");
     await client.react.__cleanup();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert(aborted === true, "the request is aborted when the card goes away");
+    assert(signals[0].aborted === true, "the request is aborted when the card goes away");
   } finally {
     client.fetchStub.restore();
   }
@@ -2369,15 +2644,19 @@ test("two manual suggestions in the same turn keep their own identity", async ()
   const storage = memoryStorage();
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
   try {
+    await settled(client);
     const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
     const open = async (text) => {
-      const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+      const rendered = renderTail(client, tail, props);
       const add = buttonsOf(rendered).find((node) => node.children.includes("addSuggestion"));
       await add.props.onClick();
-      const withForm = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+      const withForm = renderTail(client, tail, props);
       const area = walk(withForm, (node) => node.type === "textarea")[0];
       area.props.onChange({ target: { value: text } });
-      const withText = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+      const withText = renderTail(client, tail, props);
       const save = buttonsOf(withText).find((node) => node.children.includes("manualSave"));
       await save.props.onClick();
     };
@@ -2390,9 +2669,204 @@ test("two manual suggestions in the same turn keep their own identity", async ()
     assert(keys[0] !== keys[1], "the two manual suggestions carry different keys");
     const ids = keys.map((key) => stored[key].clickedId);
     assertEqual(new Set(ids).size, 2, `the two manual suggestions carry different identities: ${ids.join(", ")}`);
-    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-    const items = walk(rendered, (node) => String(node.props?.className ?? "").includes("dsh-sf-item"));
-    assertEqual(items.length, 2, "both manual suggestions render as cards");
+    const rendered = renderTail(client, tail, props);
+    const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
+    assertEqual(items.length, 3, "the seeded card and the two manual suggestions render as cards");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+suite("harness: document event dispatch");
+
+test("the document stub records listeners, dispatches to them and detaches them", () => {
+  const client = loadClient();
+  try {
+    const seen = [];
+    const handler = (event) => seen.push(event);
+    client.document.addEventListener("pointermove", handler);
+    const event = { pointerId: 1, clientX: 40, clientY: 10 };
+    dispatchDocument(client.document, "pointermove", event);
+    assertEqual(seen, [event], "the recorded handler receives the dispatched event");
+    client.document.removeEventListener("pointermove", handler);
+    dispatchDocument(client.document, "pointermove", event);
+    assertEqual(seen.length, 1, "the detached handler runs no second time");
+    assertEqual(client.document.elementsFromPoint(0, 0), [], "the default hit-test answers with no elements");
+    const target = { className: "dsh-sf-cardline" };
+    client.document.elementsFromPoint = () => [target];
+    assertEqual(client.document.elementsFromPoint(0, 0), [target], "the hit-test is reassignable per scenario");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+suite("client: the empty tail and the on demand probe");
+
+function probeRoutes(completed, options = {}) {
+  return {
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, generationMode: "on-demand" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) {
+        if (options.failValidate === true) return new Response(JSON.stringify({ error: "host down" }), { status: 500, headers: { "content-type": "application/json" } });
+        if (options.missingCompleted === true) return { ok: true, rev: "sf-2", followups: [] };
+        return { ok: true, completed };
+      }
+      if (options.failGenerate === true) return new Response(JSON.stringify({ error: "no model" }), { status: 400, headers: { "content-type": "application/json" } });
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
+  };
+}
+
+async function probeOnce(client, tail, props) {
+  tail(props);
+  for (const effect of client.react.__effects ?? []) await effect();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const element = tail(props);
+  if (element === null) return null;
+  return element.type(element.props);
+}
+
+test("the probe hides an incomplete on demand turn entirely", async () => {
+  const { client, registrations } = clientWithRoutes(probeRoutes(false));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    const rendered = await probeOnce(client, tail, props);
+    assertEqual(rendered, null, "an incomplete turn renders no tail at all");
+    const validateCalls = client.fetchStub.calls.filter((call) => call.url.includes(".generate") && typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateCalls.length, 1, "the probe fires exactly once");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the probe failure lands in the not-completed bucket without a retry loop", async () => {
+  const { client, registrations } = clientWithRoutes(probeRoutes(false, { failValidate: true }));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    const rendered = await probeOnce(client, tail, props);
+    assertEqual(rendered, null, "a failed probe renders no tail");
+    const validateCalls = client.fetchStub.calls.filter((call) => call.url.includes(".generate") && typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateCalls.length, 1, "the probe never retries");
+    const again = await probeOnce(client, tail, props);
+    assertEqual(again, null, "the cached failed attempt keeps the tail hidden");
+    const validateAfter = client.fetchStub.calls.filter((call) => call.url.includes(".generate") && typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateAfter.length, 1, "the failed attempt is cached across re-renders");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an answer without the completed field counts as not completed", async () => {
+  const { client, registrations } = clientWithRoutes(probeRoutes(false, { missingCompleted: true }));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    const rendered = await probeOnce(client, tail, props);
+    assertEqual(rendered, null, "a validate answer without completed hides the tail");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the auto mode never probes the host", async () => {
+  const settings = { ...NEW_SETTINGS, generationMode: "auto" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "the chat moved on" }), { status: 409, headers: { "content-type": "application/json" } })
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    const validateCalls = client.fetchStub.calls.filter((call) => typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateCalls.length, 0, "the auto mode never sends a validate probe");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a completed on demand turn keeps the generate button without a second probe", async () => {
+  const { client, registrations } = clientWithRoutes(probeRoutes(true));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    const rendered = await probeOnce(client, tail, props);
+    assert(rendered !== null, "a completed turn renders the tail");
+    const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
+    assert(generate !== undefined, "the completed turn offers the generate button");
+    await probeOnce(client, tail, props);
+    const validateCalls = client.fetchStub.calls.filter((call) => call.url.includes(".generate") && typeof call.body === "string" && call.body.includes('"validate":true'));
+    assertEqual(validateCalls.length, 1, "the probe result is cached across re-renders");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a discarded suggestion keeps the undo row reachable on an otherwise empty tail", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.discarded": JSON.stringify({ "kept:0": { prompt: "descartada", label: null, at: 1, sessionId: "s1", turn: 1 } })
+  });
+  const { client, registrations } = clientWithRoutes(probeRoutes(false), { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    const rendered = await probeOnce(client, tail, props);
+    assert(rendered !== null, "a recent discard keeps the tail alive");
+    const undo = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "undoDiscard");
+    assert(undo !== undefined, "the undo row renders for the session discard");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a completed turn with zero suggestions still offers the retry", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [] }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    const rendered = renderTail(client, tail, props);
+    assert(rendered !== null, "a completed turn with no suggestions renders the retry row");
+    const retry = retryNodeOf(rendered);
+    assert(retry !== undefined, "the retry block survives on an empty answer");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a settings change invalidates the probe cache", async () => {
+  const { client, ctx, registrations } = clientWithRoutes(probeRoutes(true));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    await probeOnce(client, tail, props);
+    const countValidate = () => client.fetchStub.calls.filter((call) => typeof call.body === "string" && call.body.includes('"validate":true')).length;
+    assertEqual(countValidate(), 1, "the first render probes once");
+    const settingsSection = registrations.find((entry) => entry.spec?.name === "settings.section");
+    assert(settingsSection !== undefined, "the settings section is registered");
+    settingsSection.component({ t: (key) => key });
+    await settled(client);
+    await probeOnce(client, tail, props);
+    assert(countValidate() >= 1, "the probe cache tracks the settings revision");
   } finally {
     client.fetchStub.restore();
   }

@@ -490,6 +490,49 @@ export async function runHostSuite(harness, { pluginDir }) {
       }
     }
 
+    harness.section("host: the validate flag probes the turn without a model call");
+    {
+      llm.calls.length = 0;
+      const probe = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12, validate: true })
+      }));
+      const probeBody = await probe.json();
+      harness.check("a completed turn validates true", probe.status === 200 && probeBody.ok === true && probeBody.completed === true, JSON.stringify(probeBody).slice(0, 120));
+      harness.eq("the probe never calls the model", llm.calls.length, 0);
+
+      host.setService("sessionQuery", fakeSessionQuery([
+        { seq: 1, type: "user/message", data: { source: { kind: "user" }, content: "please build the thing" } },
+        { seq: 12, type: "turn/end", data: { reason: { kind: "aborted" } } }
+      ]));
+      const aborted = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12, validate: true })
+      }));
+      const abortedBody = await aborted.json();
+      harness.check("an aborted turn validates false", aborted.status === 200 && abortedBody.ok === true && abortedBody.completed === false, JSON.stringify(abortedBody).slice(0, 120));
+
+      host.setService("sessionQuery", { observeSession: async () => { throw new Error("the session is unavailable"); } });
+      const failed = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "session-1", afterSeq: 12, validate: true })
+      }));
+      const failedBody = await failed.json();
+      harness.check("a failing observation answers false instead of 5xx", failed.status === 200 && failedBody.ok === true && failedBody.completed === false, `${failed.status} ${JSON.stringify(failedBody).slice(0, 120)}`);
+
+      const bad = await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ afterSeq: 12, validate: true })
+      }));
+      harness.check("the validation runs before the probe", bad.status === 400);
+
+      host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
+    }
+
     harness.section("host: the generator survives the events that arrive after the turn");
     {
       const trailing = [...turnEvents(12), { seq: 13, type: "session/end-seed", data: {} }];

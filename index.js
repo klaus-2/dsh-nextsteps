@@ -11,6 +11,7 @@ const NPM_NAME = 'dsh-nextsteps';
 const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.json');
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const GENERATE_TIMEOUT_MS = 30000;
+const VALIDATE_TIMEOUT_MS = 4000;
 const GENERATE_MAX_TOKENS = 500;
 const MODEL_TEST_MAX_TOKENS = 8;
 const MODEL_TEST_TIMEOUT_MS = 15000;
@@ -477,6 +478,26 @@ function followupsFromModelText(text, maxChars = DEFAULT_MAX_SUGGESTION_CHARS) {
     .map((entry) => ({ prompt: entry.prompt.slice(0, cap), label: typeof entry.label === 'string' && entry.label.trim() !== '' ? entry.label.slice(0, 40) : null }));
 }
 
+async function isTurnCompleted(ctx, sessionId, afterSeq, signal) {
+  const sessionQuery = get(ctx, 'sessionQuery');
+  if (sessionQuery?.observeSession === undefined) throw new Error('the sessionQuery service is unavailable');
+  const observation = await sessionQuery.observeSession(sessionId, { signal, projectionMode: 'none' });
+  const events = observation.events ?? [];
+  try {
+    const turnEnd = events.find((entry) => {
+      const event = entry?.event ?? entry;
+      return event?.type === 'turn/end' && event.seq === afterSeq;
+    });
+    const newerTurn = events.some((entry) => {
+      const event = entry?.event ?? entry;
+      return event?.type === 'turn/end' && Number.isSafeInteger(event.seq) && event.seq > afterSeq;
+    });
+    return turnEnd !== undefined && !newerTurn && turnEnd.data?.reason?.kind === 'completed';
+  } finally {
+    observation[Symbol.dispose]?.();
+  }
+}
+
 async function generateForTurn(ctx, settings, sessionId, afterSeq, signal) {
   const sessionQuery = get(ctx, 'sessionQuery');
   if (sessionQuery?.observeSession === undefined) throw new Error('the sessionQuery service is unavailable');
@@ -693,6 +714,15 @@ async function apply(ctx) {
       try { body = await request.json(); } catch { return json({ error: 'bad request' }, 400); }
       if (typeof body?.sessionId !== 'string' || body.sessionId === '' || !Number.isSafeInteger(body?.afterSeq) || body.afterSeq < 0) {
         return json({ error: 'bad request' }, 400);
+      }
+      if (body?.validate === true) {
+        try {
+          const signal = AbortSignal.any([request.signal, AbortSignal.timeout(VALIDATE_TIMEOUT_MS)]);
+          const completed = await isTurnCompleted(ctx, body.sessionId, body.afterSeq, signal);
+          return json({ ok: true, completed });
+        } catch (error) {
+          return json({ ok: true, completed: false });
+        }
       }
       const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
       const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;
