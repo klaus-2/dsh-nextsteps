@@ -1296,33 +1296,6 @@ window.__ModuleLoader__.load({
         }, []);
 
         React.useEffect(() => {
-          const supported = typeof IntersectionObserver === 'function';
-          setVisible(!supported);
-          if (!supported) return undefined;
-          const observer = new IntersectionObserver((entries) => {
-            if (entries.some((entry) => entry.isIntersecting)) setVisible(true);
-          }, { rootMargin: '200px' });
-          const node = rootRef.current;
-          if (node !== null && node !== undefined && typeof observer.observe === 'function') observer.observe(node);
-          return () => {
-            if (typeof observer.disconnect === 'function') observer.disconnect();
-          };
-        }, [sessionId, turn]);
-
-        React.useEffect(() => {
-          if (sessionId === '' || turn === undefined) return undefined;
-          generationAfterSeq.set(generationKey(sessionId, turn), afterSeq);
-          if (!hostModeFor(sessionId)) return undefined;
-          if (pluginSettings.generationMode === 'on-demand') return undefined;
-          if (afterSeq === undefined) return undefined;
-          if (capturesForTurn(sessionId, turn).length > 0) return undefined;
-          startGeneration(sessionId, turn, afterSeq);
-          return () => {
-            cancelGeneration(sessionId, turn);
-          };
-        }, [sessionId, turn, afterSeq, host]);
-
-        React.useEffect(() => {
           if (sessionId === '' || turn === undefined) return undefined;
           return () => {
             cancelGeneration(sessionId, turn);
@@ -1397,6 +1370,36 @@ window.__ModuleLoader__.load({
           .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId);
         sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
         const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
+
+        const renders = entries.length > 0 || retry !== null || recentDiscard !== undefined || probeCompleted === true;
+
+        React.useEffect(() => {
+          const supported = typeof IntersectionObserver === 'function';
+          setVisible(!supported);
+          if (!supported) return undefined;
+          if (renders !== true) return undefined;
+          const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) setVisible(true);
+          }, { rootMargin: '200px' });
+          const node = rootRef.current;
+          if (node !== null && node !== undefined && typeof observer.observe === 'function') observer.observe(node);
+          return () => {
+            if (typeof observer.disconnect === 'function') observer.disconnect();
+          };
+        }, [sessionId, turn, renders]);
+
+        React.useEffect(() => {
+          if (sessionId === '' || turn === undefined) return undefined;
+          generationAfterSeq.set(generationKey(sessionId, turn), afterSeq);
+          if (!hostModeFor(sessionId)) return undefined;
+          if (pluginSettings.generationMode === 'on-demand') return undefined;
+          if (afterSeq === undefined) return undefined;
+          if (capturesForTurn(sessionId, turn).length > 0) return undefined;
+          startGeneration(sessionId, turn, afterSeq);
+          return () => {
+            cancelGeneration(sessionId, turn);
+          };
+        }, [sessionId, turn, afterSeq, host]);
 
         if (entries.length === 0 && retry === null && recentDiscard === undefined && probeCompleted !== true) return null;
 

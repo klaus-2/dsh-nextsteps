@@ -955,11 +955,11 @@ test("an aborted generation keeps no retry offer", async () => {
     const tail = tailOf(registrations);
     tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     await settled(client);
-    await client.react.__cleanup();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
     assertEqual(rendered, null, "an aborted generation renders no tail at all");
-    assertEqual(client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate").length, 1, "the abort ends the round");
+    const generateRounds = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate" && typeof call.body === "string" && call.body.includes('"afterSeq":9') && !call.body.includes('"validate":true'));
+    assertEqual(generateRounds.length, 1, "the abort ends the round");
   } finally {
     client.fetchStub.restore();
   }

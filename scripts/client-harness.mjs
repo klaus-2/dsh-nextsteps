@@ -56,7 +56,8 @@ export function fakeReact() {
         const dispose = await effect();
         if (typeof dispose === "function") await dispose();
       });
-    },    useSyncExternalStore(subscribe, getSnapshot) {
+    },
+    useSyncExternalStore(subscribe, getSnapshot) {
       return getSnapshot();
     }
   };
