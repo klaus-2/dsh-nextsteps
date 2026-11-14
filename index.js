@@ -284,6 +284,7 @@ async function startServer(options = {}) {
     try {
       await route(req, res);
     } catch (error) {
+      console.error(`dsh-nextsteps: route ${req.method} ${req.url ?? ''} failed:`, String(error?.stack ?? error).slice(0, 600));
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
       }
@@ -887,11 +888,7 @@ async function apply(ctx) {
   const reapplyTool = (next) => {
     settings = next;
   };
-  try {
-    await startServer();
-  } catch (error) {
-    console.error('dsh-nextsteps: could not start server:', error);
-  }
+  await startServer();
   try {
     ctx.connection?.fetch?.register({
       path: '/api/dsh-nextsteps.secret',
