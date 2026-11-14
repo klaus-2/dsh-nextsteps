@@ -156,7 +156,7 @@ export function fakeIntersectionObserver() {
  * The client is a browser bundle: it is evaluated with a fake window/document and the
  * captured factory is invoked with a `require` that hands out the fake React.
  */
-export function loadClient({ storage = memoryStorage(), language = "en", routes = {}, clipboard, intersectionObserver, document: documentOverride, execCommandResult = true, execCommandThrows = false, console: consoleOverride } = {}) {
+export function loadClient({ storage = memoryStorage(), language = "en", routes = {}, prefixes = {}, clipboard, intersectionObserver, document: documentOverride, execCommandResult = true, execCommandThrows = false, console: consoleOverride } = {}) {
   const source = readFileSync(path.join(root, "client.js"), "utf8");
   let captured;
   const head = { appendChild() {} };
@@ -213,7 +213,7 @@ export function loadClient({ storage = memoryStorage(), language = "en", routes 
   evaluate(window, document, { language, clipboard: clipboard ?? fakeClipboard() }, consoleOverride ?? clientConsole, intersectionObserver);
   if (captured === undefined) throw new Error("client.js did not register a module");
   const react = fakeReact();
-  const fetchStub = stubFetch(routes);
+  const fetchStub = stubFetch(routes, prefixes);
   const instance = captured.factory((name) => {
     if (name === "react") return react;
     if (name === "react-dom") return { createPortal: (node) => node };
@@ -279,18 +279,20 @@ export function fakeSlotHost(react) {
  * Stubs the browser fetch the client uses for the host routes, so the client can
  * exercise its settings and model catalog paths without a dsh host.
  */
-export function stubFetch(routes = {}) {
+export function stubFetch(routes = {}, prefixes = {}) {
   const calls = [];
   const original = globalThis.fetch;
   const table = new Map(Object.entries(routes));
+  const prefixTable = [...Object.entries(prefixes)].sort((a, b) => b[0].length - a[0].length);
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
-    const handler = table.get(url);
+    const prefixHandler = prefixTable.find(([prefix]) => url.includes(prefix))?.[1];
+    const handler = table.get(url) ?? prefixHandler;
     if (handler === undefined) {
       return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });
     }
-    const answer = typeof handler === "function" ? await handler(init) : handler;
+    const answer = typeof handler === "function" ? await handler(init, url) : handler;
     if (answer instanceof Response) return answer;
     const body = typeof answer === "string" ? answer : JSON.stringify(answer);
     return new Response(body, { status: 200, headers: { "content-type": "application/json" } });

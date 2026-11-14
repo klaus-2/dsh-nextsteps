@@ -28,6 +28,13 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "release $GITHUB_REF_NAME is not a v-tag; publish skipped"
           fi
+      - name: Version consistency
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          PLG=$(grep -m1 'PLUGIN_VERSION' index.js | sed "s/.*'\(.*\)'.*/\1/")
+          echo "package.json=$PKG PLUGIN_VERSION=$PLG"
+          test "$PKG" = "$PLG"
       - name: Publish
         if: steps.guard.outputs.publish == 'true'
         run: |

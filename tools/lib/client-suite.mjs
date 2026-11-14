@@ -9,11 +9,13 @@ import {
   findByClass,
   findElements,
   flush,
+  jsonResponse,
   loadClientModule,
   makeClipboard,
   makeIntersectionObserver,
   makeLocalStorage,
-  renderOnce
+  renderOnce,
+  waitFor
 } from "./harness.mjs";
 
 const FOLLOWUPS = [
@@ -48,6 +50,9 @@ export async function runClientSuite(harness, { pluginDir }) {
     const json = requires.filter((name) => name.endsWith(".json"));
     harness.check("the client never requires a JSON file", json.length === 0, json.join(" | "));
     harness.check("the client requires react", requires.includes("react"));
+    const portsMatch = source.match(/const API_PORTS = \[([0-9, ]+)\]/);
+    const ports = portsMatch === null ? [] : portsMatch[1].split(",").map((value) => Number(value.trim()));
+    harness.check("the client probes the frozen loopback block", ports.length === 20 && ports.every((value, index) => value === 47497 + index), `first=${ports[0]}, last=${ports.at(-1)}, count=${ports.length}`);
   }
 
   harness.section("client: dictionaries");
@@ -309,150 +314,380 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.check("a tool capture never renders in host mode", findByClass(renderedCard.tree, "dsh-sf-card").length === 0, JSON.stringify(renderedCard.tree).slice(0, 140));
   }
 
-  harness.section("client: the update button reaches the plugin manager");
+  harness.section("client: the update flow");
   {
-    const stub = createReactStub();
-    const localStorage = makeLocalStorage();
-    const calls = [];
-    const pluginManager = {
-      async installBundle(spec, options) {
-        calls.push({ op: "installBundle", spec, options });
-        return { ok: true, value: { application: "restart-required", version: "1.0.1" } };
-      },
-      async installBundle(spec, options) {
-        calls.push({ op: "installBundle", spec, options });
-        return { ok: true, value: { application: "applied", version: "1.0.0" } };
-      },
-      async updateBundle() {
-        calls.push({ op: "updateBundle" });
-        return { ok: true, value: { application: "applied", version: "1.0.1" } };
+    const build = (pluginManager, calls) => {
+      const stub = createReactStub();
+      const localStorage = makeLocalStorage();
+      const { module } = loadClientModule(clientPath, {
+        react: stub.React,
+        localStorage,
+        console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+        fetch: async (url, options) => {
+          const target = String(url);
+          calls.push({ url: target, method: options?.method ?? "GET", body: options?.body, headers: options?.headers ?? {} });
+          if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+          if (target.includes("/.ns/update/install")) {
+            return new Response(JSON.stringify({ ok: true, installed: "1.0.17" }), { status: 200, headers: { "content-type": "application/json" } });
+          }
+          if (target.includes("/.ns/update")) {
+            return new Response(JSON.stringify({ ok: true, version: "1.0.16", installed: "1.0.16", update: { latest: "v1.0.17", newer: true } }), { status: 200, headers: { "content-type": "application/json" } });
+          }
+          if (target.includes("/api/dsh-nextsteps.secret")) {
+            return new Response(JSON.stringify({ ok: true, secret: "a".repeat(64) }), { status: 200, headers: { "content-type": "application/json" } });
+          }
+          if (target.includes("/api/dsh-nextsteps.models")) {
+            return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
+          }
+          return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+      });
+      const client = fakeClientCtx(pluginManager === undefined ? {} : { remote: { pluginManager } });
+      module.apply(client.ctx);
+      client.resolve();
+      const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+      return { stub, settings, client, localStorage };
+    };
+
+    const managerCalls = [];
+    const manager = {
+      async updateBundle(name, version, options) {
+        managerCalls.push({ spec: `${name}@${version}`, options });
+        return { ok: true, value: { application: "applied", version: "1.0.17" } };
       }
     };
-    const { module } = loadClientModule(clientPath, {
-      react: stub.React,
-      localStorage,
-      fetch: async (url) => {
-        if (String(url).includes("update")) {
-          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1", url: "https://github.com/klaus-2/dsh-nextsteps/releases" }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        if (String(url).includes("models")) {
-          return new Response(JSON.stringify({ ok: true, groups: [] }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-    });
-    const client = fakeClientCtx({ remote: { pluginManager } });
-    module.apply(client.ctx);
-    client.resolve();
-    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
-    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    const flowCalls = [];
+    const withManager = build(manager, flowCalls);
+    const rendered = renderOnce(withManager.stub, withManager.settings, { t: (key) => key });
     for (const effect of rendered.effects) effect();
-    await flush(6);
-    const withButton = renderOnce(stub, settings, { t: (key) => key });
+    await flush(4);
+    const withButton = renderOnce(withManager.stub, withManager.settings, { t: (key) => key });
     const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
     harness.eq("the update button appears when a release is available", buttons.length, 1);
     if (buttons.length === 1) {
       await buttons[0].props.onClick();
-      await flush(6);
-      harness.eq("the button asks the plugin manager to install", calls.length, 1);
-      harness.eq("the plugin manager receives the package and the version", calls[0]?.spec, "dsh-nextsteps@1.0.1");
-      harness.check("the plugin manager receives a request id", typeof calls[0]?.options?.requestId === "string", JSON.stringify(calls[0]?.options));
+      await flush(4);
+      harness.eq("the plugin manager is asked to install", managerCalls.length, 1);
+      harness.eq("the plugin manager receives the package and the version", managerCalls[0]?.spec, "dsh-nextsteps@1.0.17");
+      harness.check("the plugin manager receives a request id", typeof managerCalls[0]?.options?.requestId === "string", JSON.stringify(managerCalls[0]?.options));
+      const updateCalls = flowCalls.filter((entry) => entry.url.includes("/.ns/update") && !entry.url.includes("/install"));
+      harness.check("the update request carries the instance secret", updateCalls.length === 1 && updateCalls[0]?.headers["x-dsh-nextsteps-secret"] === "a".repeat(64), JSON.stringify(updateCalls.map((entry) => entry.headers)));
+      harness.eq("the secret is fetched once and reused", flowCalls.filter((entry) => entry.url.includes("/api/dsh-nextsteps.secret")).length, 1);
+      harness.eq("the applied install remembers the version", withManager.localStorage.getItem("dsh-nextsteps.updated"), "1.0.17");
+      const settled = renderOnce(withManager.stub, withManager.settings, { t: (key) => key });
+      const updateState = settled.states?.[1];
+      harness.check("the running version moves to what landed", updateState?.version === "1.0.17" && updateState?.update?.newer === false, JSON.stringify(updateState));
+      const gone = findElements(settled.tree, (element) => element.props?.children === "updateNow");
+      harness.eq("the update button disappears once the release is applied", gone.length, 0);
+    }
+
+    const fallbackCalls = [];
+    const withoutManager = build(undefined, fallbackCalls);
+    const renderedFallback = renderOnce(withoutManager.stub, withoutManager.settings, { t: (key) => key });
+    for (const effect of renderedFallback.effects) effect();
+    await flush(4);
+    const withButtonFallback = renderOnce(withoutManager.stub, withoutManager.settings, { t: (key) => key });
+    const fallbackButtons = findElements(withButtonFallback.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears without a plugin manager", fallbackButtons.length, 1);
+    if (fallbackButtons.length === 1) {
+      await fallbackButtons[0].props.onClick();
+      await flush(4);
+      const installCall = fallbackCalls.find((entry) => entry.url.includes("/.ns/update/install"));
+      harness.check("the own install route is used when there is no plugin manager", installCall !== undefined, JSON.stringify(fallbackCalls.map((entry) => entry.url.slice(0, 60))));
+      harness.check("the own install route carries the version", String(installCall?.body ?? "").includes("1.0.17"), String(installCall?.body ?? ""));
+      harness.check("the install request carries the instance secret", installCall?.headers?.["x-dsh-nextsteps-secret"] === "a".repeat(64), JSON.stringify(installCall?.headers));
+      harness.eq("the fallback install remembers the version the host installed", withoutManager.localStorage.getItem("dsh-nextsteps.updated"), "1.0.17");
     }
   }
 
-  harness.section("client: the update button falls back to the tarball");
+  harness.section("client: the update paths that fail");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const managerCalls = [];
+    const pluginManager = {
+      async updateBundle(name, version) {
+        managerCalls.push(`${name}@${version}`);
+        return { ok: true, value: { application: "applied", version: "1.0.25-rc.1" } };
+      }
+    };
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+      fetch: async (url) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.16", update: { latest: "v1.0.25-rc.1", newer: true } });
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" });
+      }
+    });
+    const client = fakeClientCtx({ remote: { pluginManager } });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    for (const effect of rendered.effects) effect();
+    await flush(4);
+    const withButton = renderOnce(stub, settings, { t: (key) => key });
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    harness.eq("the update button appears for a release that is not a plain version", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(4);
+      harness.eq("the manager is not asked to install an unparsable version", managerCalls.length, 0);
+      const after = renderOnce(stub, settings, { t: (key) => key });
+      const refused = findElements(after.tree, (element) => element.props?.children === "unsupportedVersion");
+      harness.eq("the unsupported version error is shown", refused.length, 1);
+    }
+  }
+
+  harness.section("client: the update that waits for a restart names the version that landed");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update")) {
+          return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true, url: "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v1.0.24" } });
+        }
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.23" });
+      }
+    });
+    const client = fakeClientCtx({
+      remote: {
+        pluginManager: {
+          async updateBundle() {
+            return { ok: true, value: { application: "restart-required", version: "1.0.23" } };
+          }
+        }
+      }
+    });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, {});
+    for (const effect of rendered.effects) effect();
+    await flush(4);
+    const withButton = renderOnce(stub, settings, {});
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "Update now");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(4);
+      harness.eq("the version that landed on disk is remembered", localStorage.getItem("dsh-nextsteps.updated"), "1.0.23");
+      const after = renderOnce(stub, settings, {});
+      const restart = findElements(after.tree, (element) => typeof element?.props?.children === "string" && element.props.children.includes("1.0.23") && element.props.children.includes("installed"));
+      harness.eq("the row names the version that landed, and says which one was asked for", restart.length, 1);
+      harness.eq("the row says exactly what landed and what was asked for", restart[0]?.props.children, "Version 1.0.23 was installed instead of 1.0.24 — pnpm holds back a release that is too recent.");
+      const asked = findElements(after.tree, (element) => typeof element?.props?.children === "string" && element.props.children.includes("1.0.24 was installed"));
+      harness.eq("the row does not claim the version that was only asked for", asked.length, 0);
+      const stillThere = findElements(after.tree, (element) => element.props?.children === "Update now");
+      harness.eq("the update button stays so the release can be tried again", stillThere.length, 1);
+    }
+  }
+
+  harness.section("client: the client identifies the host before it authenticates");
+  {
+    const stub = createReactStub();
+    const calls = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage: makeLocalStorage(),
+      fetch: async (url, options) => {
+        const target = String(url);
+        calls.push({ url: target, headers: options?.headers ?? {} });
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "other-listener", port: Number(new URL(target).port) });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" });
+      }
+    });
+    const client = fakeClientCtx({});
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, {});
+    for (const effect of rendered.effects) effect();
+    const exhausted = await waitFor(() => calls.filter((call) => call.url.endsWith("/.ns/health")).length === 20, 2000, 10);
+    await flush(4);
+    const probes = calls.filter((call) => call.url.endsWith("/.ns/health"));
+    harness.check("every candidate port is probed in order when no host identifies", exhausted === true && probes.length === 20 && probes.every((call, index) => new URL(call.url).port === String(47497 + index)), `probes=${probes.length}`);
+    harness.eq("the unidentified host is never asked for the secret", calls.filter((call) => call.url.includes("/api/dsh-nextsteps.secret")).length, 0);
+    harness.eq("no private request reaches the unidentified host", calls.filter((call) => call.url.includes("/.ns/update")).length, 0);
+    harness.check("no credentials are sent anywhere", calls.every((call) => Object.keys(call.headers).every((key) => !/secret/i.test(key))), JSON.stringify(calls.slice(0, 2)));
+    const state = stub.getStates()[1];
+    harness.check("the check ends unreachable, not silent", state?.checking === false && state?.update?.error === "unreachable", JSON.stringify(state));
+
+    const secretless = [];
+    const stub2 = createReactStub();
+    const { module: module2 } = loadClientModule(clientPath, {
+      react: stub2.React,
+      localStorage: makeLocalStorage(),
+      fetch: async (url, options) => {
+        const target = String(url);
+        secretless.push({ url: target, headers: options?.headers ?? {} });
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });
+      }
+    });
+    const client2 = fakeClientCtx({});
+    module2.apply(client2.ctx);
+    client2.resolve();
+    const settings2 = client2.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered2 = renderOnce(stub2, settings2, {});
+    for (const effect of rendered2.effects) effect();
+    await waitFor(() => secretless.filter((call) => call.url.endsWith("/.ns/health")).length === 1, 2000, 10);
+    await flush(4);
+    harness.eq("a host that answers without its secret is not authenticated to", secretless.filter((call) => call.url.includes("/.ns/update")).length, 0);
+    harness.check("the first walk sends no credentials", secretless.every((call) => Object.keys(call.headers).every((key) => !/secret/i.test(key))), `calls=${secretless.length}`);
+    const checkTree = renderOnce(stub2, settings2, { t: (key) => key });
+    const check = findElements(checkTree.tree, (element) => element.props?.children === "check");
+    if (check.length === 1) {
+      await check[0].props.onClick();
+      const retried = await waitFor(() => secretless.filter((call) => call.url.endsWith("/.ns/health")).length === 2, 2000, 10);
+      harness.check("a failed discovery retries from the first port on the next check", retried === true, `health probes=${secretless.filter((call) => call.url.endsWith("/.ns/health")).length}`);
+    }
+  }
+
+  harness.section("client: a copy the manager already holds is not asked for by its tarball");
   {
     const stub = createReactStub();
     const localStorage = makeLocalStorage();
     const calls = [];
+    const routeCalls = [];
     const pluginManager = {
-      async installBundle(spec, options) {
-        calls.push({ op: "installBundle", spec, options });
-        if (spec === "dsh-nextsteps@1.0.1") return { ok: true, value: { error: { code: "already-installed" } } };
-        return { ok: true, value: { application: "applied", version: "1.0.1" } };
+      async installBundle(spec) {
+        calls.push(spec);
+        return { ok: true, value: { application: "failed", error: { code: "already-installed" } } };
       }
     };
     const { module } = loadClientModule(clientPath, {
       react: stub.React,
       localStorage,
-      fetch: async (url) => {
-        if (String(url).includes("update")) {
-          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
+      fetch: async (url, options) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update/install")) {
+          routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
+          return jsonResponse({ ok: true, installed: "1.0.24" });
         }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
+        if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.23" });
       }
     });
     const client = fakeClientCtx({ remote: { pluginManager } });
     module.apply(client.ctx);
     client.resolve();
     const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
-    const rendered = renderOnce(stub, settings, { t: (key) => key });
+    const rendered = renderOnce(stub, settings, {});
     for (const effect of rendered.effects) effect();
-    await flush(6);
-    const withButton = renderOnce(stub, settings, { t: (key) => key });
-    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
+    await flush(4);
+    const withButton = renderOnce(stub, settings, {});
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "Update now");
     harness.eq("the update button appears", buttons.length, 1);
     if (buttons.length === 1) {
       await buttons[0].props.onClick();
-      await flush(6);
-      harness.eq("the plugin manager is asked twice", calls.length, 2);
-      harness.eq("the second attempt uses the tarball", calls[1]?.spec, "https://registry.npmjs.org/dsh-nextsteps/-/dsh-nextsteps-1.0.1.tgz");
-      const after = renderOnce(stub, settings, { t: (key) => key });
-      const current = findElements(after.tree, (element) => element.props?.children === "upToDate");
-      harness.eq("the applied version is shown", current.length, 1);
+      await flush(4);
+      harness.eq("the manager is asked once", calls.length, 1);
+      harness.check("the tarball is never asked for", !calls.some((spec) => String(spec).includes(".tgz")), JSON.stringify(calls));
+      harness.eq("the plugin's own route installs the version", routeCalls.length, 1);
+      harness.eq("the route is asked for the exact version", routeCalls[0]?.version, "1.0.24");
+      harness.eq("the version that landed on disk is remembered", localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
+      const after = renderOnce(stub, settings, {});
+      const restart = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("1.0.24") && element.props.children.includes("installed"));
+      harness.check("the row names the version that landed", restart.length > 0, JSON.stringify(after.tree).slice(0, 200));
     }
   }
 
-  harness.section("client: the update button shows the real error");
+  harness.section("client: a host that refuses the update does not claim it worked");
   {
-    const stub = createReactStub();
-    const localStorage = makeLocalStorage();
-    const diagnostic = [
-      "? Verifying lockfile against supply-chain policies (253 entries)...",
-      "Progress: resolved 254, reused 2, downloaded 0, added 1, done",
-      "",
-      "dsh: installation rejected: Cannot validate installed package dsh-nextsteps: Error: ENOENT: no such file or directory",
-      "dsh: restored package.json, pnpm-lock.yaml, and node_modules."
-    ].join(String.fromCharCode(10));
-    const pluginManager = {
-      async installBundle() {
-        return { ok: true, value: { application: "failed", error: { code: "operation-error", diagnostic } } };
-      }
+    const build = async (pluginManager) => {
+      const stub = createReactStub();
+      const localStorage = makeLocalStorage();
+      const routeCalls = [];
+      const { module } = loadClientModule(clientPath, {
+        react: stub.React,
+        localStorage,
+        fetch: async (url, options) => {
+          const target = String(url);
+          if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+          if (target.includes("/.ns/update/install")) {
+            routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
+            return jsonResponse({ ok: true, installed: "1.0.24" });
+          }
+          if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
+          if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+          if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+          return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.23" });
+        }
+      });
+      const client = fakeClientCtx({ remote: { pluginManager } });
+      module.apply(client.ctx);
+      client.resolve();
+      const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+      const rendered = renderOnce(stub, settings, {});
+      for (const effect of rendered.effects) effect();
+      await flush(4);
+      return { stub, settings, localStorage, routeCalls };
     };
-    const { module } = loadClientModule(clientPath, {
-      react: stub.React,
-      localStorage,
-      fetch: async (url) => {
-        if (String(url).includes("update")) {
-          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
+    const click = async (built) => {
+      const withButton = renderOnce(built.stub, built.settings, {});
+      const buttons = findElements(withButton.tree, (element) => element.props?.children === "Update now");
+      harness.eq("the update button appears", buttons.length, 1);
+      if (buttons.length !== 1) return;
+      await buttons[0].props.onClick();
+      await flush(4);
+    };
+
+    const refused = await build({
+      async updateBundle() {
+        return { ok: true, value: { from: "1.0.23", to: "1.0.24", step: "check", result: { changed: false, application: "failed", stage: "install", target: "dsh-nextsteps", error: { code: "invalid-spec", diagnostic: "dsh-nextsteps is not installed from a registry under its own name" } } } };
       }
     });
-    const client = fakeClientCtx({ remote: { pluginManager } });
-    module.apply(client.ctx);
-    client.resolve();
-    const label = (key) => (key === "checkFailed" ? "Falha ao verificar atualizações ({e})" : key);
-    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
-    const rendered = renderOnce(stub, settings, { t: label });
-    for (const effect of rendered.effects) effect();
-    await flush(6);
-    const withButton = renderOnce(stub, settings, { t: label });
-    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
-    harness.eq("the update button appears", buttons.length, 1);
-    if (buttons.length === 1) {
-      await buttons[0].props.onClick();
-      await flush(6);
-      const after = renderOnce(stub, settings, { t: label });
-      const errors = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("Falha ao verificar"));
-      harness.eq("the failure is shown", errors.length, 1);
-      const message = errors[0]?.props?.children ?? "";
-      harness.check("the message names the real failure", message.includes("installation rejected"), message.slice(0, 140));
-      harness.check("the message is not the install progress", !message.includes("Verifying lockfile"), message.slice(0, 140));
-    }
+    await click(refused);
+    harness.eq("the plugin's own route installs the version", refused.routeCalls.length, 1);
+    harness.eq("the route is asked for the exact version", refused.routeCalls[0]?.version, "1.0.24");
+    harness.eq("the version that landed is named", refused.stub.getStates()[1].installed, "1.0.24");
+    harness.eq("the version that landed is remembered", refused.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
+
+    const cancelled = await build({
+      async updateBundle(name, version) {
+        return { ok: true, value: { from: "1.0.23", to: version, step: "install", result: { changed: false, application: "cancelled", stage: "install", target: name } } };
+      }
+    });
+    await click(cancelled);
+    harness.eq("a cancellation names nothing as installed", cancelled.stub.getStates()[1].installed, "");
+    harness.eq("a cancellation is not remembered as installed", cancelled.localStorage.getItem("dsh-nextsteps.updated"), null);
+    harness.check("a cancellation is reported", cancelled.stub.getStates()[1].installError !== "", String(cancelled.stub.getStates()[1].installError));
+
+    const managerCalls = [];
+    const recovered = await build({
+      async updateBundle() {
+        return { ok: true, value: { from: "1.0.23", to: "1.0.24", step: "check", result: { changed: false, application: "failed", stage: "install", target: "dsh-nextsteps", error: { code: "invalid-spec", diagnostic: "dsh-nextsteps is not installed from a registry under its own name" } } } };
+      },
+      async installBundle(spec) {
+        managerCalls.push(spec);
+        return { ok: true, value: { application: "restart-required", version: "1.0.24" } };
+      }
+    });
+    await click(recovered);
+    harness.eq("the manager is not asked to install a package it already holds", managerCalls.length, 0);
+    harness.eq("the plugin's own route installs the version", recovered.routeCalls.length, 1);
+    harness.eq("the route is asked for the exact version", recovered.routeCalls[0]?.version, "1.0.24");
+    harness.eq("the copy that landed is remembered", recovered.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
+    harness.eq("the refusal does not survive the recovery", recovered.stub.getStates()[1].installError, "");
   }
 
-  harness.section("client: the update button reports a missing plugin manager");
+  harness.section("client: a development copy refuses to be installed over");
   {
     const stub = createReactStub();
     const localStorage = makeLocalStorage();
@@ -460,29 +695,191 @@ export async function runClientSuite(harness, { pluginDir }) {
       react: stub.React,
       localStorage,
       fetch: async (url) => {
-        if (String(url).includes("update")) {
-          return new Response(JSON.stringify({ ok: true, newer: true, managed: true, current: "1.0.0", latest: "1.0.1" }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 } }), { status: 200, headers: { "content-type": "application/json" } });
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update/install")) return jsonResponse({ ok: false, error: "local-development" });
+        if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.23" });
       }
     });
-    const client = fakeClientCtx({ remote: {} });
+    const client = fakeClientCtx({});
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, {});
+    for (const effect of rendered.effects) effect();
+    await flush(4);
+    const withButton = renderOnce(stub, settings, {});
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "Update now");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(4);
+      const after = renderOnce(stub, settings, {});
+      const notice = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("Local development copy"));
+      harness.eq("the row explains the development copy instead of an install failure", notice.length, 1);
+      harness.eq("nothing was remembered as installed", localStorage.getItem("dsh-nextsteps.updated"), null);
+    }
+  }
+
+  harness.section("client: the installed record retires when the running copy catches up");
+  {
+    const build = async (seed, version) => {
+      const stub = createReactStub();
+      const localStorage = makeLocalStorage(seed);
+      const { module } = loadClientModule(clientPath, {
+        react: stub.React,
+        localStorage,
+        fetch: async (url) => {
+          const target = String(url);
+          if (target.endsWith("/.ns/health")) return new Response("no", { status: 503 });
+          if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+          if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+          return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version });
+        }
+      });
+      const client = fakeClientCtx({});
+      module.apply(client.ctx);
+      client.resolve();
+      const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+      const rendered = renderOnce(stub, settings, {});
+      for (const effect of rendered.effects) effect();
+      await flush(4);
+      return localStorage;
+    };
+    const retired = await build({ "dsh-nextsteps.updated": "1.0.24" }, "1.0.24");
+    harness.eq("the record retires once the running copy is the one it installed", retired.getItem("dsh-nextsteps.updated"), null);
+    const kept = await build({ "dsh-nextsteps.updated": "1.0.24" }, "1.0.23");
+    harness.eq("a record newer than the running copy survives", kept.getItem("dsh-nextsteps.updated"), "1.0.24");
+  }
+
+  harness.section("client: a failed start still names what landed");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const routeCalls = [];
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url, options) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update/install")) {
+          routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
+          return jsonResponse({ ok: true, installed: "1.0.24" });
+        }
+        if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.23" });
+      }
+    });
+    const client = fakeClientCtx({
+      remote: {
+        pluginManager: {
+          async updateBundle() {
+            return { ok: true, value: { application: "failed", version: "1.0.24", error: { diagnostic: "dsh: the plugin could not be started" } } };
+          }
+        }
+      }
+    });
+    module.apply(client.ctx);
+    client.resolve();
+    const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const rendered = renderOnce(stub, settings, {});
+    for (const effect of rendered.effects) effect();
+    await flush(4);
+    const withButton = renderOnce(stub, settings, {});
+    const buttons = findElements(withButton.tree, (element) => element.props?.children === "Update now");
+    harness.eq("the update button appears", buttons.length, 1);
+    if (buttons.length === 1) {
+      await buttons[0].props.onClick();
+      await flush(4);
+      harness.eq("the landed version is remembered", localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
+      const state = stub.getStates()[1];
+      harness.check("the state names what landed and why it did not start", state?.installed === "1.0.24" && String(state?.installError).includes("could not be started"), JSON.stringify(state));
+      harness.eq("the plugin's own route is not asked when the manager landed the version", routeCalls.length, 0);
+    }
+  }
+
+  harness.section("client: an update check that fails is not an answer that says there is nothing");
+  {
+    const stub = createReactStub();
+    const localStorage = makeLocalStorage();
+    const { module } = loadClientModule(clientPath, {
+      react: stub.React,
+      localStorage,
+      fetch: async (url) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update")) throw new Error("the registry is unreachable");
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" });
+      }
+    });
+    const client = fakeClientCtx({});
     module.apply(client.ctx);
     client.resolve();
     const settings = client.slots.find((slot) => slot.spec.name === "settings.section").component;
     const rendered = renderOnce(stub, settings, { t: (key) => key });
     for (const effect of rendered.effects) effect();
-    await flush(6);
-    const withButton = renderOnce(stub, settings, { t: (key) => key });
-    const buttons = findElements(withButton.tree, (element) => element.props?.children === "updateNow");
-    harness.eq("the update button appears", buttons.length, 1);
-    if (buttons.length === 1) {
-      await buttons[0].props.onClick();
-      await flush(6);
-      const after = renderOnce(stub, settings, { t: (key) => key });
-      const errors = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.startsWith("checkFailed"));
-      harness.eq("the failure is shown instead of nothing happening", errors.length, 1);
-    }
+    await flush(4);
+    const after = renderOnce(stub, settings, { t: (key) => key });
+    const none = findElements(after.tree, (element) => element.props?.children === "none");
+    harness.eq("an unreachable check does not say no releases published", none.length, 0);
+
+    const errorStub = createReactStub();
+    const { module: errorModule } = loadClientModule(clientPath, {
+      react: errorStub.React,
+      localStorage: makeLocalStorage(),
+      fetch: async (url) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update")) return jsonResponse({ ok: true, update: { error: "registry down" } });
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" });
+      }
+    });
+    const errorClient = fakeClientCtx({});
+    errorModule.apply(errorClient.ctx);
+    errorClient.resolve();
+    const errorSettings = errorClient.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const errorRendered = renderOnce(errorStub, errorSettings, {});
+    for (const effect of errorRendered.effects) effect();
+    await flush(4);
+    const errorTree = renderOnce(errorStub, errorSettings, {});
+    const failure = findElements(errorTree.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("registry down") && element.props.children.includes("Update check failed"));
+    harness.eq("a server-reported failure names the failure the server gave", failure.length, 1);
+
+    const pendingStub = createReactStub();
+    const pendingStorage = makeLocalStorage({ "dsh-nextsteps.updated": "1.0.24" });
+    const { module: pendingModule } = loadClientModule(clientPath, {
+      react: pendingStub.React,
+      localStorage: pendingStorage,
+      fetch: async (url) => {
+        const target = String(url);
+        if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("/.ns/update")) throw new Error("the registry is unreachable");
+        if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
+        if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
+        return jsonResponse({ ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.16" });
+      }
+    });
+    const pendingClient = fakeClientCtx({});
+    pendingModule.apply(pendingClient.ctx);
+    pendingClient.resolve();
+    const pendingSettings = pendingClient.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const pendingRendered = renderOnce(pendingStub, pendingSettings, {});
+    for (const effect of pendingRendered.effects) effect();
+    await flush(4);
+    const pendingTree = renderOnce(pendingStub, pendingSettings, {});
+    const pendingRow = findElements(pendingTree.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("1.0.24 was installed"));
+    harness.eq("a failed check with a pending install still shows the pending version", pendingRow.length, 1);
+    harness.eq("the pending record survives the failed check", pendingStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
   }
 
   harness.section("client: the followups survive a restart");

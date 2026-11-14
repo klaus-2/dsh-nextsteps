@@ -6,8 +6,10 @@ import { run } from "./harness.mjs";
 const home = mkdtempSync(path.join(tmpdir(), "dsh-nextsteps-home-"));
 const previousProfile = process.env.USERPROFILE;
 const previousHome = process.env.HOME;
+const previousProfileDir = process.env.DSH_PROFILE_DIR;
 process.env.USERPROFILE = home;
 process.env.HOME = home;
+process.env.DSH_PROFILE_DIR = path.join(home, ".dsh", "profiles", "desktop");
 let code;
 try {
   code = await run();
@@ -16,6 +18,8 @@ try {
   else process.env.USERPROFILE = previousProfile;
   if (previousHome === undefined) delete process.env.HOME;
   else process.env.HOME = previousHome;
+  if (previousProfileDir === undefined) delete process.env.DSH_PROFILE_DIR;
+  else process.env.DSH_PROFILE_DIR = previousProfileDir;
   rmSync(home, { recursive: true, force: true });
 }
 process.exit(code);

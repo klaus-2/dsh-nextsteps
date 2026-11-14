@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { fakeHostCtx, withIsolatedHome } from "./harness.mjs";
+import vm from "node:vm";
+import { fakeHostCtx, flush, freePort, extractFunction, withIsolatedHome, withStubbedFetch } from "./harness.mjs";
 
 const LANGUAGES = ["auto", "en", "pt-BR", "zh-CN", "es", "fr", "de", "it", "ja", "ko", "ru", "ar", "hi", "id", "tr", "vi"];
 
@@ -56,9 +59,12 @@ function turnEvents(afterSeq) {
 
 export async function runHostSuite(harness, { pluginDir }) {
   await withIsolatedHome(async (home) => {
+    const hostSource = readFileSync(path.join(pluginDir, "index.js"), "utf8");
+    const pluginVersion = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8")).version;
     const moduleUrl = pathToFileURL(path.join(pluginDir, "index.js")).href;
-    const { apply, checkUpdate, name, inject } = await import(moduleUrl);
+    const { apply, name, inject, startServer } = await import(moduleUrl);
     const settingsFile = path.join(home, ".dsh", "dsh-nextsteps", "settings.json");
+    const secretHeader = "x-dsh-nextsteps-secret";
 
     const llm = fakeLlm({
       text: JSON.stringify({ followups: [{ prompt: "Add the missing tests", label: "Add tests" }] })
@@ -73,7 +79,8 @@ export async function runHostSuite(harness, { pluginDir }) {
     await apply(host.ctx);
     harness.eq("the plugin name", name, "dsh-nextsteps");
     harness.eq("the declared services", inject, ["tools", "connection"]);
-    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.model-test", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.update"]) {
+    harness.check("the host binds the frozen loopback block", hostSource.includes("const DEFAULT_PORT = 47497;") && hostSource.includes("const PORT_ATTEMPTS = 20;"), "the loopback block must stay at 47497 with 20 attempts");
+    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.model-test", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.secret"]) {
       harness.check(`the route ${route} is registered`, host.routes.has(route));
     }
     for (const [route, spec] of host.routes) {
@@ -83,7 +90,7 @@ export async function runHostSuite(harness, { pluginDir }) {
     harness.eq("the models route answers GET", host.routes.get("/api/dsh-nextsteps.models").methods, ["GET"]);
     harness.eq("the model-test route answers POST", host.routes.get("/api/dsh-nextsteps.model-test").methods, ["POST"]);
     harness.eq("the generate route answers POST", host.routes.get("/api/dsh-nextsteps.generate").methods, ["POST"]);
-    harness.eq("the update route answers GET", host.routes.get("/api/dsh-nextsteps.update").methods, ["GET"]);
+    harness.eq("the secret route answers GET", host.routes.get("/api/dsh-nextsteps.secret").methods, ["GET"]);
     harness.check("the tool is registered", host.tools.has("suggest_followups"));
     harness.check("the system prompt section is registered", host.sections.some((section) => section.name === "dsh-nextsteps"));
     const section = host.sections.find((entry) => entry.name === "dsh-nextsteps");
@@ -628,42 +635,213 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.check("the tool is still registered", bare.tools.has("suggest_followups"));
     }
 
-    harness.section("host: the update check");
+    const server = await startServer({ port: await freePort() });
+    const port = server.port ?? server.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const secret = readFileSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret"), "utf8").trim();
+    const auth = { [secretHeader]: secret };
+    const json = (extra) => ({ [secretHeader]: secret, "content-type": "application/json", ...(extra ?? {}) });
+
+    harness.section("host: boot and instance secret");
+    harness.check("the server binds a port", typeof port === "number" && port > 0, String(port));
+    harness.check("the secret file lives in the profile", existsSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret")));
+    harness.check("the secret is 64 hex characters", /^[0-9a-f]{64}$/.test(secret), secret.slice(0, 12));
     {
-      const registry = (version) => async (url) => {
-        if (String(url).includes("registry.npmjs.org")) {
-          return new Response(JSON.stringify({ version }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ body: "notes" }), { status: 200, headers: { "content-type": "application/json" } });
-      };
-      const newer = await checkUpdate(registry("9.9.9"));
-      harness.check("a newer release is detected", newer.newer === true && newer.latest === "9.9.9", JSON.stringify(newer));
-      harness.eq("the notes are carried", newer.notes, "notes");
-      harness.eq("the release page is carried", newer.url, "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v9.9.9");
-
-      const same = await checkUpdate(registry("0.0.1"));
-      harness.check("an older release is not newer", same.newer === false);
-
-      const githubBlocked = await checkUpdate(async (url) => {
-        if (String(url).includes("registry.npmjs.org")) {
-          return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response("{}", { status: 403 });
-      });
-      harness.check("a blocked notes request does not break the check", githubBlocked.newer === true && githubBlocked.latest === "9.9.9", JSON.stringify(githubBlocked));
-      harness.check("a blocked notes request leaves the notes empty", githubBlocked.notes === undefined, JSON.stringify(githubBlocked.notes));
-
-      const missing = await checkUpdate(async () => new Response("{}", { status: 404 })).then(() => undefined, (error) => error);
-      harness.check("a missing release answers with an error", missing !== undefined && /404/.test(String(missing.message)), String(missing?.message));
-
-      const untagged = await checkUpdate(async (url) => {
-        if (String(url).includes("registry.npmjs.org")) {
-          return new Response(JSON.stringify({ version: "nightly" }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-      }).then(() => undefined, (error) => error);
-      harness.check("a release without a version is refused", untagged !== undefined && /no x\.y\.z version/.test(String(untagged.message)), String(untagged?.message));
+      const restarted = await import(`${moduleUrl}?restart=1`);
+      const again = await restarted.startServer({ port: await freePort() });
+      again.close();
+      const reread = readFileSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret"), "utf8").trim();
+      harness.check("the secret survives a restart", reread === secret);
     }
+    {
+      const health = await fetch(`${base}/.ns/health`);
+      const body = await health.json();
+      harness.check("the health route answers", health.status === 200 && body.ok === true && body.name === "dsh-nextsteps");
+    }
+    {
+      const unauthorized = await fetch(`${base}/.ns/update`);
+      harness.eq("a request without the secret is rejected", unauthorized.status, 401);
+      const wrong = await fetch(`${base}/.ns/update`, { headers: { [secretHeader]: "0".repeat(64) } });
+      harness.eq("a request with a wrong secret is rejected", wrong.status, 401);
+      const authorized = await fetch(`${base}/.ns/update`, { headers: { [secretHeader]: secret } });
+      harness.eq("a request with the real secret passes the gate", authorized.status, 200);
+    }
+
+    harness.section("host: profile directory derivation");
+    {
+      const fixtureHome = path.join(path.parse(process.cwd()).root, "dsh-profile-fixture-home");
+      const fnSource = extractFunction(hostSource, "resolveProfileDir");
+      const resolveProfileDir = typeof fnSource === "string"
+        ? vm.runInNewContext(`(${fnSource})`, { path })
+        : undefined;
+      const cases = [
+        ["the profile is derived from a web install",
+          path.join(fixtureHome, ".dsh", "profiles", "web", "node_modules", "dsh-nextsteps"),
+          path.join(fixtureHome, ".dsh", "profiles", "web")],
+        ["the profile is derived through the pnpm virtual store",
+          path.join(fixtureHome, ".dsh", "profiles", "desktop", "node_modules", ".pnpm", "dsh-nextsteps@1.7.1", "node_modules", "dsh-nextsteps"),
+          path.join(fixtureHome, ".dsh", "profiles", "desktop")],
+        ["a repository checkout falls back to the desktop profile",
+          path.join(fixtureHome, "code", "dsh-nextsteps"),
+          path.join(fixtureHome, ".dsh", "profiles", "desktop")],
+        ["the innermost profiles segment wins",
+          path.join(fixtureHome, "profiles", "outer", ".dsh", "profiles", "inner", "node_modules", "dsh-nextsteps"),
+          path.join(fixtureHome, "profiles", "outer", ".dsh", "profiles", "inner")]
+      ];
+      for (const [name, packageDir, expected] of cases) {
+        const actual = typeof resolveProfileDir === "function" ? resolveProfileDir(packageDir, fixtureHome) : undefined;
+        harness.eq(name, actual, expected);
+      }
+    }
+
+    harness.section("host: version and update");
+    {
+      await withStubbedFetch([
+        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => new Response(JSON.stringify({ version: "99.0.0" }), { status: 200, headers: { "content-type": "application/json" } }) }
+      ], async () => {
+        const update = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
+        harness.check("the update route answers", update.ok === true && update.update.latest === "v99.0.0" && update.update.newer === true, JSON.stringify(update.update));
+      });
+      await withStubbedFetch([
+        { match: "api.github.com", reply: async () => { throw new Error("the GitHub API must not be asked for the version"); } },
+        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => new Response(JSON.stringify({ version: "99.0.0" }), { status: 200, headers: { "content-type": "application/json" } }) }
+      ], async () => {
+        const withoutNotes = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
+        harness.check("the version comes from the registry alone", withoutNotes.error === undefined && withoutNotes.update.latest === "v99.0.0", JSON.stringify(withoutNotes).slice(0, 140));
+        harness.check("the release is still offered without the notes", withoutNotes.update.newer === true, JSON.stringify(withoutNotes.update).slice(0, 140));
+      });
+      await withStubbedFetch([
+        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => { throw new Error("This operation was aborted"); } }
+      ], async () => {
+        const brokenRegistry = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
+        harness.check("a registry failure answers with an error", brokenRegistry.update?.error !== undefined, JSON.stringify(brokenRegistry).slice(0, 140));
+      });
+      const badVersion = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "abc" }) });
+      harness.check("a malformed version is refused", badVersion.status === 400);
+      const overlong = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "9999999.0.0" }) });
+      harness.check("a version the panel cannot name is not installable", overlong.status === 400, `status=${overlong.status}`);
+      const local = await (await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: pluginVersion }) })).json();
+      harness.check("a development copy refuses the in-app install", local.ok === false && local.error === "local-development", JSON.stringify(local));
+      const running = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
+      harness.check("the running copy is not reported as a pending install", running.update.installed === undefined, JSON.stringify({ installed: running.installed, updateInstalled: running.update.installed }));
+    }
+
+    harness.section("host: the install route answers what landed");
+    {
+      const staged = await mkdtemp(path.join(tmpdir(), "dsh-regression-install-"));
+      try {
+        const stub = path.join(staged, "pnpm.cjs");
+        await writeFile(stub, [
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const spec = process.argv[process.argv.indexOf('add') + 1] ?? '';",
+          "const version = spec.slice(spec.lastIndexOf('@') + 1);",
+          "const land = process.env.DSH_TEST_LAND ?? version;",
+          "if (process.env.DSH_TEST_HANG === '1') {",
+          "  console.log('Progress: resolved 1, reused 0, downloaded 0, added 0');",
+          "  setTimeout(() => {}, 600000);",
+          "} else {",
+          "  const pkg = path.join(process.env.DSH_TEST_PKG_DIR, 'package.json');",
+          "  fs.writeFileSync(pkg, JSON.stringify({ name: 'dsh-nextsteps', version: land }));",
+          "  console.log('Done in 1s');",
+          "}"
+        ].join("\n"));
+        await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", version: pluginVersion }));
+        await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
+        const previousRuntime = process.env.DSH_RUNTIME_PNPM;
+        const previousPkgDir = process.env.DSH_TEST_PKG_DIR;
+        process.env.DSH_RUNTIME_PNPM = stub;
+        process.env.DSH_TEST_PKG_DIR = staged;
+        try {
+          const installModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
+          const installServer = await installModule.startServer({ port: await freePort() });
+          const installPort = installServer.port ?? installServer.address().port;
+          const installBase = `http://127.0.0.1:${installPort}`;
+          try {
+            const exact = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
+            harness.check("the route names the version that landed", exact.ok === true && exact.installed === "9.9.9", JSON.stringify(exact));
+            process.env.DSH_TEST_LAND = "9.9.8";
+            const held = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
+            harness.check("a version other than the one asked for is a success that names what landed", held.ok === true && held.installed === "9.9.8", JSON.stringify(held));
+            delete process.env.DSH_TEST_LAND;
+            process.env.DSH_TEST_HANG = "1";
+            const previousTimeout = process.env.DSH_PNPM_TIMEOUT_MS;
+            process.env.DSH_PNPM_TIMEOUT_MS = "700";
+            try {
+              const hung = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
+              harness.check("a stopped run is not reported as a success", hung.ok === false, JSON.stringify(hung));
+              harness.check("the reason names the stop, not a line of pnpm output", typeof hung.error === "string" && hung.error.includes("stopped") && !hung.error.includes("Progress"), JSON.stringify(hung));
+            } finally {
+              delete process.env.DSH_TEST_HANG;
+              if (previousTimeout === undefined) delete process.env.DSH_PNPM_TIMEOUT_MS;
+              else process.env.DSH_PNPM_TIMEOUT_MS = previousTimeout;
+            }
+            process.env.DSH_TEST_HANG = "1";
+            process.env.DSH_PNPM_TIMEOUT_MS = "3000";
+            try {
+              const first = fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
+              await flush(2);
+              const second = await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
+              harness.check("a second install is refused while the first runs", second.status === 409, `status=${second.status}`);
+              const refused = await second.json();
+              harness.check("the refused install says why", refused.ok === false && refused.error === "install-in-progress", JSON.stringify(refused));
+              await first;
+            } finally {
+              delete process.env.DSH_TEST_HANG;
+              if (previousTimeout === undefined) delete process.env.DSH_PNPM_TIMEOUT_MS;
+              else process.env.DSH_PNPM_TIMEOUT_MS = previousTimeout;
+            }
+          } finally {
+            await installServer.close?.();
+          }
+        } finally {
+          if (previousRuntime === undefined) delete process.env.DSH_RUNTIME_PNPM;
+          else process.env.DSH_RUNTIME_PNPM = previousRuntime;
+          if (previousPkgDir === undefined) delete process.env.DSH_TEST_PKG_DIR;
+          else process.env.DSH_TEST_PKG_DIR = previousPkgDir;
+        }
+      } finally {
+        await rm(staged, { recursive: true, force: true });
+      }
+    }
+
+    harness.section("host: a newer copy on disk waits for the next start");
+    {
+      const [newerMajor] = pluginVersion.split(".");
+      const newerVersion = `${Number(newerMajor) + 1}.0.0`;
+      const staged = await mkdtemp(path.join(tmpdir(), "dsh-regression-newer-"));
+      try {
+        await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", version: newerVersion }));
+        await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
+        const stagedUrl = pathToFileURL(path.join(staged, "index.js")).href;
+        const stagedModule = await import(stagedUrl);
+        const newerServer = await stagedModule.startServer({ port: await freePort() });
+        const newerPort = newerServer.port ?? newerServer.address().port;
+        const newerBase = `http://127.0.0.1:${newerPort}`;
+        const newerAuth = { [secretHeader]: secret };
+        try {
+          const newerUpdate = await (await fetch(`${newerBase}/.ns/update`, { headers: newerAuth })).json();
+          harness.eq("the update route reports the newer copy as installed", newerUpdate.update.installed, newerVersion);
+          harness.eq("the running copy is still the one that runs", newerUpdate.version, pluginVersion);
+        } finally {
+          newerServer.close();
+        }
+      } finally {
+        await rm(staged, { recursive: true, force: true });
+      }
+    }
+
+    harness.section("host: the secret route is registered");
+    {
+      const secretRoute = host.routes.get("/api/dsh-nextsteps.secret");
+      harness.check("the secret route is registered", host.routes.has("/api/dsh-nextsteps.secret"));
+      harness.eq("the secret route declares GET", secretRoute.methods, ["GET"]);
+      harness.eq("the secret route buffers the body", secretRoute.requestBody, "buffered");
+      const secretBody = await (await secretRoute.fetch(new Request("http://x/api/dsh-nextsteps.secret"))).json();
+      harness.check("the secret route hands the instance secret over", secretBody.ok === true && secretBody.secret === secret);
+    }
+
+    await server.close?.();
 
     harness.section("host: the four new settings are loaded, validated and persisted");
     {
@@ -857,5 +1035,8 @@ export async function runHostSuite(harness, { pluginDir }) {
         body: JSON.stringify({ maxSuggestionChars: 200, latencyBudgetMs: 30000 })
       }));
     }
+
+    const singleton = await startServer();
+    singleton.close();
   });
 }

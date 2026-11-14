@@ -41,7 +41,10 @@ test("the settings section renders every control", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
   });
   try {
     const { tree } = settingsTree(client);
@@ -82,7 +85,10 @@ test("the language select offers every language the host accepts", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
   });
   try {
     const { tree } = settingsTree(client);
@@ -103,7 +109,10 @@ test("the model row explains an empty catalog instead of waiting forever", () =>
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
   });
   try {
     const { tree } = settingsTree(client);
@@ -122,7 +131,10 @@ test("the followup count input keeps the bounds", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
   });
   try {
     const { tree } = settingsTree(client);
@@ -212,7 +224,10 @@ test("the client asks the host for its settings and its model catalog", async ()
   const client = loadClient({ routes: {
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, prefixes: {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
   } });
   try {
     const { ctx, registrations } = fakeSlotHost(client.react);
@@ -225,7 +240,10 @@ test("the client asks the host for its settings and its model catalog", async ()
     const urls = client.fetchStub.calls.map((call) => call.url);
     assert(urls.some((url) => url.includes(".settings")), `the client reads the settings: ${JSON.stringify(urls)}`);
     assert(urls.some((url) => url.includes(".models")), `the client reads the model catalog: ${JSON.stringify(urls)}`);
-    assert(urls.every((url) => url.startsWith("/api/dsh-nextsteps.")), `the client only calls its own routes: ${JSON.stringify(urls)}`);
+    const hostChannel = urls.filter((url) => !/^https?:\/\//.test(url));
+    assert(hostChannel.every((url) => url.startsWith("/api/dsh-nextsteps.")), `the client only calls its own host routes: ${JSON.stringify(hostChannel)}`);
+    const loopback = urls.filter((url) => /^https?:\/\//.test(url));
+    assert(loopback.length > 0 && loopback.every((url) => url.startsWith("http://127.0.0.1:") && url.includes("/.ns/")), `the client talks to its own loopback server only: ${JSON.stringify(loopback)}`);
   } finally {
     client.fetchStub.restore();
   }
@@ -377,14 +395,22 @@ test("the client survives a host that answers with an empty body", async () => {
   const client = loadClient();
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": "",
-    "/api/dsh-nextsteps.models": "",
-    "/api/dsh-nextsteps.update": ""
+    "/api/dsh-nextsteps.models": ""
+  }, {
+    "/.ns/health": "",
+    "/.ns/update": ""
   });
   try {
-    const { ctx } = fakeSlotHost(client.react);
+    const { ctx, registrations } = fakeSlotHost(client.react);
     client.instance.apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert(true, "an empty answer does not break the client");
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    settings.component({ t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tree = settings.component({ t: (key) => key });
+    const none = walk(tree, (node) => node.children === "none" || (Array.isArray(node.children) && node.children.includes("none")));
+    assertEqual(none.length, 0, "an empty answer is not reported as no releases published");
   } finally {
     fetchStub.restore();
   }
@@ -2465,7 +2491,11 @@ function favoritesExportClient(storageSeed) {
     routes: {
       "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
       "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-      "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false }
+      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+    },
+    prefixes: {
+      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+      "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
     }
   });
   const originalCreate = URL.createObjectURL;
@@ -2576,8 +2606,12 @@ test("the settings page tests the selected model and shows the latency", async (
     routes: {
       "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
       "/api/dsh-nextsteps.models": { ok: true, groups: [{ id: "demo", name: "Demo", models: [{ id: "demo-model", name: "Demo Model" }] }] },
-      "/api/dsh-nextsteps.update": { name: "dsh-nextsteps", current: "1.0.0", newer: false },
+      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) },
       "/api/dsh-nextsteps.model-test": { ok: true, model: "demo/demo-model", latencyMs: 42 }
+    },
+    prefixes: {
+      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+      "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
     }
   });
   try {

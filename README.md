@@ -2,7 +2,7 @@
 
 English · [Português (Brasil)](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
-[![npm](https://img.shields.io/npm/v/dsh-nextsteps)](https://www.npmjs.com/paceage/dsh-nextsteps) [![license](https://img.shields.io/github/license/elaus-2/dsh-nextsteps)](LICENSE) [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-e5484d)](https://github.com/deepseek-ai/deepseek-harness)
+[![npm](https://img.shields.io/npm/v/dsh-nextsteps)](https://www.npmjs.com/package/dsh-nextsteps) [![license](https://img.shields.io/github/license/klaus-2/dsh-nextsteps)](LICENSE) [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-e5484d)](https://github.com/deepseek-ai/deepseek-harness)
 
 **Every finished agent turn ends with ready-to-click next steps.**
 
@@ -52,7 +52,7 @@ dsh plugin --profile web add dsh-nextsteps
 - An incremental capture history: each session keeps its own key and an index tracks the order, so a session you never open is never read.
 - Settings page inside the dsh settings — language, followups per turn, styles, generation mode, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates.
 - An explicit language (or an explicit model) switches to a separate clean model call, so the cards hold that language even in a conversation written in another one; `Auto` with no model follows the conversation inside the turn.
-- In-app updater — version check, one-click install, release notes, restart prompt.
+- In-app updater — version check against npm, one-click install, restart prompt.
 - UI in English, Português (Brasil) and 简体中文.
 
 ## Keyboard shortcuts and the live region
@@ -90,7 +90,7 @@ The same page also shows the **performance** table (generation, persistence and 
 
 ## Updates
 
-The same settings page checks GitHub for new releases. When a newer version is published on npm, **Update now** installs it through the dsh plugin manager and asks you to restart. Updates only ever install the `dsh-nextsteps` npm package — a renamed or development copy is detected and left alone.
+The same settings page asks the npm registry for the latest `dsh-nextsteps` release. When a newer version is published, **Update now** installs it through the dsh plugin manager; if the manager is missing or rejects the install spec, the plugin's own loopback service runs the install with pnpm instead. Either way the installed version is shown and you are asked to restart. Updates only ever install the `dsh-nextsteps` npm package — a development copy is detected and left alone.
 
 ## Requirements
 

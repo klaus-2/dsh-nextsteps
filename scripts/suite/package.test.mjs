@@ -52,13 +52,9 @@ test("the sources carry no identity from another variant", () => {
   }
 });
 
-test("the release check points at the releases of this repository", () => {
-  if (isDevCopy) {
-    assert(hostSource.includes("about:blank"), "a development copy does not poll the release feed");
-  } else {
-    assert(hostSource.includes("registry.npmjs.org"), "the host reads the installable version from the registry");
-    assert(hostSource.includes("api.github.com/repos/klaus-2/dsh-nextsteps/releases"), "the host reads the notes from the releases of this repository");
-  }
+test("the release check reads the registry and nothing else", () => {
+  assert(hostSource.includes("registry.npmjs.org"), "the host reads the installable version from the registry");
+  assert(!hostSource.includes("api.github.com"), "the host never asks the GitHub API");
 });
 
 test("the client does not require a json file", () => {

@@ -5,11 +5,14 @@ import { listPublishedReleases, readPublishedReleases } from "./release-suite.mj
 
 export async function runPackageSuite(harness, { pluginDir, packageName }) {
   const manifest = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8"));
+  const source = readFileSync(path.join(pluginDir, "index.js"), "utf8");
 
   harness.section("package: identity");
   harness.eq("the package name matches", manifest.name, packageName);
   harness.check("the package is public", manifest.private !== true);
   harness.check("the package declares a version", /^\d+\.\d+\.\d+$/.test(manifest.version ?? ""), manifest.version);
+  const pluginVersion = /PLUGIN_VERSION = ['"]([^'"]+)['"]/.exec(source)?.[1] ?? "";
+  harness.eq("PLUGIN_VERSION matches the manifest", pluginVersion, manifest.version);
   harness.check("the repository points at the public repo", typeof manifest.repository?.url === "string" && manifest.repository.url.includes(manifest.name), manifest.repository?.url);
   harness.check("the homepage points at the public repo", typeof manifest.homepage === "string" && manifest.homepage.startsWith("https://github.com/"));
 

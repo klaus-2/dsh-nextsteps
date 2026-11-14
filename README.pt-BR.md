@@ -52,7 +52,7 @@ dsh plugin --profile web add dsh-nextsteps
 - Um histórico de capturas incremental: cada sessão guarda sua própria chave e um índice registra a ordem, então uma sessão que você nunca abre nunca é lida.
 - Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações.
 - Um idioma explícito (ou um modelo explícito) passa a usar uma chamada limpa separada, então os cards mantêm esse idioma mesmo numa conversa escrita em outro; `Automático` sem modelo segue a conversa dentro do turno.
-- Atualizador in-app — verificação de versão, instalação com um clique, notas de release, pedido de reinício.
+- Atualizador in-app — verificação de versão no npm, instalação com um clique, pedido de reinício.
 - Interface em English, Português (Brasil) e 简体中文.
 
 ## Atalhos de teclado e a região viva
@@ -90,7 +90,7 @@ A mesma página mostra também a tabela de **desempenho** (geração, persistên
 
 ## Atualizações
 
-A mesma página de configurações verifica novos releases no GitHub. Quando uma versão mais nova é publicada no npm, **Atualizar agora** instala pelo gerenciador de plugins do dsh e pede reinício. As atualizações instalam somente o pacote npm `dsh-nextsteps` — cópias renomeadas ou de desenvolvimento são detectadas e deixadas em paz.
+A mesma página de configurações pergunta ao npm registry qual é a versão mais recente de `dsh-nextsteps`. Quando uma versão mais nova é publicada, **Atualizar agora** instala pelo gerenciador de plugins do dsh; se o gerenciador estiver ausente ou recusar a spec de instalação, o serviço loopback do próprio plugin roda a instalação com pnpm. Em qualquer caminho, a versão instalada é mostrada e você é convidado a reiniciar. As atualizações instalam somente o pacote npm `dsh-nextsteps` — cópias de desenvolvimento são detectadas e deixadas em paz.
 
 ## Requisitos
 

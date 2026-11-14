@@ -34,7 +34,81 @@ window.__ModuleLoader__.load({
     const SESSION_OVERRIDES_KEY = 'dsh-nextsteps.session-overrides';
     const CARD_ORDER_KEY = 'dsh-nextsteps.card-order';
     const CARD_ORDER_LIMIT = 40;
-    const remembered = () => { try { return localStorage.getItem(UPDATE_KEY); } catch { return null; } };
+
+    const API_PORTS = [47497, 47498, 47499, 47500, 47501, 47502, 47503, 47504, 47505, 47506, 47507, 47508, 47509, 47510, 47511, 47512, 47513, 47514, 47515, 47516];
+    const HEALTH_TIMEOUT_MS = 1000;
+    const SECRET_TIMEOUT_MS = 5000;
+    const UPDATE_TIMEOUT_MS = 15000;
+    let API_BASE = 'http://127.0.0.1:47497';
+    let identifiedApiBase = '';
+    let apiDiscovery = null;
+    const SECRET_ROUTE = '/api/dsh-nextsteps.secret';
+    const SECRET_HEADER = 'x-dsh-nextsteps-secret';
+    let INSTANCE_SECRET = '';
+
+    const versionOf = (text) => { const m = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(String(text ?? '')); return m === null ? undefined : m.slice(1).map(Number); };
+    const compareVersions = (a, b) => { const pa = versionOf(a); const pb = versionOf(b); if (pa === undefined || pb === undefined) return 0; for (let i = 0; i < 3; i += 1) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; } return 0; };
+    const isNewer = (candidate, running) => versionOf(candidate) !== undefined && versionOf(running) !== undefined && compareVersions(candidate, running) > 0;
+
+    async function resolveInstanceSecret() {
+      if (INSTANCE_SECRET !== '') return INSTANCE_SECRET;
+      try {
+        console.info('dsh-nextsteps: requesting ' + SECRET_ROUTE);
+        const r = await fetch(SECRET_ROUTE, { cache: 'no-store', signal: AbortSignal.timeout(SECRET_TIMEOUT_MS) });
+        const j = await r.json();
+        if (j && j.ok && typeof j.secret === 'string' && j.secret !== '') {
+          INSTANCE_SECRET = j.secret;
+          console.info('dsh-nextsteps: secret acquired');
+        } else {
+          console.info('dsh-nextsteps: the secret route answered ok=' + (j?.ok === true));
+        }
+      } catch (error) {
+        console.info('dsh-nextsteps: the secret request failed ' + String(error?.message ?? error).slice(0, 80));
+      }
+      return INSTANCE_SECRET;
+    }
+
+    function authHeaders(extra) {
+      if (identifiedApiBase === '' || identifiedApiBase !== API_BASE) throw new Error('the Nextsteps host has not been identified');
+      const headers = { ...(extra ?? {}) };
+      if (INSTANCE_SECRET !== '') headers[SECRET_HEADER] = INSTANCE_SECRET;
+      return headers;
+    }
+
+    async function resolveApiBase() {
+      if (identifiedApiBase !== '') return identifiedApiBase;
+      if (apiDiscovery === null) {
+        apiDiscovery = (async () => {
+          console.info('dsh-nextsteps: api discovery: probing ports...');
+          for (const port of API_PORTS) {
+            try {
+              const r = await fetch(`http://127.0.0.1:${port}/.ns/health`, { cache: 'no-store', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+              if (!r.ok) continue;
+              const j = await r.json().catch(() => null);
+              if (j === null || j.ok !== true || j.name !== NS || j.port !== port) continue;
+              console.info(`dsh-nextsteps: api discovery: host found on :${port}, fetching secret...`);
+              if (await resolveInstanceSecret() === '') {
+                console.info(`dsh-nextsteps: api discovery: host on :${port} ok but the secret is unavailable`);
+                apiDiscovery = null;
+                return null;
+              }
+              API_BASE = `http://127.0.0.1:${port}`;
+              identifiedApiBase = API_BASE;
+              console.info(`dsh-nextsteps: api discovery: identified base ${API_BASE}`);
+              return API_BASE;
+            } catch {}
+          }
+          console.info('dsh-nextsteps: api discovery: no host found in the port range');
+          apiDiscovery = null;
+          return null;
+        })();
+      }
+      return apiDiscovery;
+    }
+
+    const remembered = () => { try { return localStorage.getItem(UPDATE_KEY) ?? ''; } catch { return ''; } };
+    const remember = (value) => { try { localStorage.setItem(UPDATE_KEY, value); } catch {} };
+    const forget = () => { try { localStorage.removeItem(UPDATE_KEY); } catch {} };
 
     const CSS = `
 .dsh-sf-root { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
@@ -1531,7 +1605,6 @@ window.__ModuleLoader__.load({
       { value: "tr", label: "Türkçe" },
       { value: "vi", label: "Tiếng Việt" }
     ];
-    const NPM_NAME = 'dsh-nextsteps';
     const MODELS_ROUTE = '/api/dsh-nextsteps.models';
     const GENERATE_ROUTE = '/api/dsh-nextsteps.generate';
     let modelCatalogCache = undefined;
@@ -1551,11 +1624,10 @@ window.__ModuleLoader__.load({
     const ICON_DATAURI = 'data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20256%20256%22%20role%3D%22img%22%20aria-label%3D%22Nextsteps%20icon%22%3E%0A%20%20%3Crect%20width%3D%22256%22%20height%3D%22256%22%20rx%3D%2256%22%20fill%3D%22%230d0d10%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%2264%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22124%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%231f242b%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%223%22%2F%3E%0A%20%20%3Crect%20x%3D%2252%22%20y%3D%22184%22%20width%3D%22152%22%20height%3D%2244%22%20rx%3D%2210%22%20fill%3D%22%23e5484d%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M84%20206h72M136%20194l14%2012-14%2012%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%228%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20fill%3D%22none%22%2F%3E%0A%20%20%3Cpath%20d%3D%22M76%2086h96M76%20146h96%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%227%22%20stroke-linecap%3D%22round%22%2F%3E%0A%3C%2Fsvg%3E%0A';
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
     const MODEL_TEST_ROUTE = '/api/dsh-nextsteps.model-test';
-    const UPDATE_ROUTE = '/api/dsh-nextsteps.update';
     const DICTIONARIES = {
-      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","updates":"Updates","current":"Version","checking":"Checking…","upToDate":"up to date","available":"{v} is available","manualCopy":"Development or renamed copy — update it manually.","installing":"Installing {v}…","restartMsg":"Version {v} was installed. Restart the dsh to use it.","noReleases":"No releases published yet","checkFailed":"Update check failed ({e})","updateNow":"Update now","check":"Check for updates","openRelease":"Open release page","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoriteCopy":"Copy","favoriteRemove":"Remove","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srEdited":"The edited suggestion was sent.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","srFavoritesExported":"Favourites exported.","favoritesExportFailed":"The favourites could not be exported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here."},
-      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","updates":"Atualizações","current":"Versão","checking":"Verificando…","upToDate":"em dia","available":"{v} disponível","manualCopy":"Cópia de desenvolvimento ou renomeada — atualize manualmente.","installing":"Instalando {v}…","restartMsg":"Versão {v} instalada. Reinicie o dsh para usá-la.","noReleases":"Nenhum release publicado ainda","checkFailed":"Falha ao verificar atualizações ({e})","updateNow":"Atualizar agora","check":"Verificar atualizações","openRelease":"Abrir página do release","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoriteCopy":"Copiar","favoriteRemove":"Remover","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srEdited":"A sugestão editada foi enviada.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","srFavoritesExported":"Favoritos exportados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui."},
-      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","updates":"更新","current":"版本","checking":"检查中…","upToDate":"已是最新","available":"{v} 可用","manualCopy":"开发或重命名的副本——请手动更新。","installing":"正在安装 {v}…","restartMsg":"版本 {v} 已安装。请重启 dsh 以使用。","noReleases":"尚未发布任何版本","checkFailed":"检查更新失败（{e}）","updateNow":"立即更新","check":"检查更新","openRelease":"打开发布页","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoriteCopy":"复制","favoriteRemove":"移除","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srEdited":"编辑后的建议已发送。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","srFavoritesExported":"收藏已导出。","favoritesExportFailed":"无法导出收藏。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。"}
+      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoriteCopy":"Copy","favoriteRemove":"Remove","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srEdited":"The edited suggestion was sent.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","srFavoritesExported":"Favourites exported.","favoritesExportFailed":"The favourites could not be exported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here."},
+      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoriteCopy":"Copiar","favoriteRemove":"Remover","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srEdited":"A sugestão editada foi enviada.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","srFavoritesExported":"Favoritos exportados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui."},
+      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoriteCopy":"复制","favoriteRemove":"移除","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srEdited":"编辑后的建议已发送。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","srFavoritesExported":"收藏已导出。","favoritesExportFailed":"无法导出收藏。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。"}
     };
     const DEFAULT_SETTINGS = {
       lang: 'auto',
@@ -1612,7 +1684,11 @@ window.__ModuleLoader__.load({
         const data = await responseJson(response);
         if (data !== null && typeof data === 'object' && data.ok === true && data.settings !== null && typeof data.settings === 'object') {
           applySettings(data.settings);
-          if (typeof data.version === 'string') pluginVersion = data.version;
+          if (typeof data.version === 'string') {
+            pluginVersion = data.version;
+            const record = remembered();
+            if (record !== '' && versionOf(pluginVersion) !== undefined && !isNewer(record, pluginVersion)) forget();
+          }
         }
       } catch (error) {
         console.warn('dsh-nextsteps: settings unavailable:', error);
@@ -1629,12 +1705,12 @@ window.__ModuleLoader__.load({
           t = (key) => DICTIONARIES.en[key] ?? key;
         }
         const [settings, setSettings] = React.useState(pluginSettings);
-        const [update, setUpdate] = React.useState({ status: 'idle' });
+        const [updateState, setUpdateState] = React.useState({ version: '', update: null, checking: false, installing: false, installed: '', installError: '', asked: '' });
         const [local, setLocal] = React.useState(() => ({ favorites: readFavorites(), discarded: readDiscarded() }));
         const [localNotice, setLocalNotice] = React.useState('');
         React.useEffect(() => {
           refreshPluginSettings().then((loaded) => setSettings({ ...loaded }));
-          check();
+          checkUpdate();
         }, []);
         const [models, setModels] = React.useState(() => modelCatalogCache);
         React.useEffect(() => {
@@ -1692,59 +1768,116 @@ window.__ModuleLoader__.load({
             setModelTest({ phase: 'fail', ms: 0, error: String(error?.message ?? error) });
           }
         };
-        const check = async () => {
-          setUpdate((previous) => ({ ...previous, status: 'checking' }));
+        const checkUpdate = async () => {
+          setUpdateState((prev) => ({ ...prev, checking: true }));
           try {
-            const response = await fetch(UPDATE_ROUTE, { cache: 'no-store' });
-            const info = await responseJson(response);
-            if (!response.ok || info === null || typeof info !== 'object' || info.error !== undefined) throw new Error(info?.error ?? 'HTTP ' + response.status);
-            const status = info.newer !== true ? 'current' : remembered() === info.latest ? 'restart' : info.managed ? 'available' : 'manual';
-            setUpdate({ status, info });
-          } catch (error) {
-            setUpdate((previous) => previous.status === 'restart' ? previous : { status: 'error', info: previous.info, error: String(error?.message ?? error) });
+            await resolveApiBase();
+            const r = await fetch(API_BASE + '/.ns/update', { cache: 'no-store', headers: authHeaders(), signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS) });
+            const j = await r.json();
+            if (j.update?.error !== undefined) {
+              setUpdateState((prev) => ({ ...prev, checking: false, update: j.update, version: j.version ?? prev.version }));
+              return;
+            }
+            if (!r.ok || j.update === undefined || j.update === null) {
+              setUpdateState((prev) => ({ ...prev, checking: false, update: { error: typeof j.error === 'string' ? j.error : `http ${r.status}` } }));
+              return;
+            }
+            setUpdateState((prev) => ({ ...prev, checking: false, update: j.update, version: j.version ?? prev.version }));
+          } catch {
+            const pending = remembered();
+            setUpdateState((prev) => (pending === ''
+              ? { ...prev, checking: false, update: { error: 'unreachable' } }
+              : { ...prev, checking: false, installed: pending }));
           }
         };
-        const install = async () => {
-          const { info } = update;
-          if (info === undefined || updateManager === undefined) {
-            setUpdate({ status: 'error', info, error: 'the plugin manager is not available in this install' });
+
+        const askHostToInstall = async (latest, requestId) => {
+          const canUpdate = updateManager !== undefined && typeof updateManager.updateBundle === 'function';
+          const canInstall = updateManager !== undefined && typeof updateManager.installBundle === 'function';
+          if (!canUpdate && !canInstall) return undefined;
+          const installSpec = async (spec) => {
+            const reply = await updateManager.installBundle(spec, { requestId });
+            if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
+            return reply.value;
+          };
+          const refuse = (result) => {
+            const refusal = String(result?.error?.diagnostic ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== '');
+            const why = refusal.find((line) => line.startsWith('dsh:')) ?? refusal.at(-1) ?? result?.error?.code ?? 'install failed';
+            setUpdateState((prev) => ({ ...prev, installing: false, installed: '', asked: '', installError: String(why).slice(0, 160) }));
+            return { application: 'refused' };
+          };
+          const landedOnDisk = (result) => typeof result?.version === 'string' && versionOf(result.version) !== undefined;
+          if (canUpdate) {
+            const reply = await updateManager.updateBundle(NS, latest, { requestId });
+            if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
+            const result = reply.value?.result ?? reply.value;
+            if (result?.application !== 'failed' && result?.application !== 'cancelled') return result;
+            if (landedOnDisk(result)) return result;
+            if (result?.error?.code === 'invalid-spec' || result?.error?.code === 'already-installed') return undefined;
+            return refuse(result);
+          }
+          const result = await installSpec(NS + '@' + latest);
+          if (result?.application !== 'failed' && result?.application !== 'cancelled') return result;
+          if (landedOnDisk(result)) return result;
+          if (result?.error?.code === 'already-installed') return undefined;
+          return refuse(result);
+        };
+
+        const installUpdate = async () => {
+          const latest = (updateState.update?.latest ?? '').replace(/^v/, '');
+          if (versionOf(latest) === undefined) {
+            setUpdateState((prev) => ({ ...prev, installing: false, installError: 'unsupported-version' }));
             return;
           }
-          setUpdate({ status: 'installing', info });
+          setUpdateState((prev) => ({ ...prev, installing: true, installed: '', installError: '' }));
+          const requestId = NS + '-update-' + latest + '-' + Date.now();
           try {
-            const requestId = NS + '-update-' + info.latest + '-' + Date.now();
-            const installSpec = async (spec) => {
-              const reply = await updateManager.installBundle(spec, { requestId });
-              if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
-              return reply.value;
-            };
-            let result = await installSpec(NPM_NAME + '@' + info.latest);
-            if (result?.error?.code === 'already-installed') result = await installSpec('https://registry.npmjs.org/' + NPM_NAME + '/-/' + NPM_NAME + '-' + info.latest + '.tgz');
-            const diagnosticLines = String(result?.error?.diagnostic ?? '').split(String.fromCharCode(10)).map((line) => line.trim()).filter((line) => line !== '');
-            const firstLine = () => diagnosticLines.find((line) => line.startsWith('dsh:')) ?? diagnosticLines.at(-1) ?? result?.error?.code ?? result?.application;
+            const result = await askHostToInstall(latest, requestId);
+            if (result === undefined) {
+              const response = await fetch(API_BASE + '/.ns/update/install', { method: 'POST', headers: authHeaders({ 'content-type': 'application/json' }), body: JSON.stringify({ version: latest }) });
+              const answer = await response.json().catch(() => ({}));
+              if (!answer.ok) {
+                setUpdateState((prev) => ({ ...prev, installing: false, installError: answer.error === 'local-development' ? 'local-development' : String(answer.error ?? 'install failed').slice(0, 160) }));
+                return;
+              }
+              const installed = typeof answer.installed === 'string' && versionOf(answer.installed) !== undefined ? answer.installed : latest;
+              remember(installed);
+              setUpdateState((prev) => ({ ...prev, installing: false, installed, asked: latest }));
+              return;
+            }
+            if (result.application === 'refused') return;
+            const lines = String(result?.error?.diagnostic ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== '');
+            const reason = lines.find((line) => line.startsWith('dsh:')) ?? lines.at(-1) ?? result?.error?.code ?? 'install failed';
             const live = result?.application === 'applied';
-            if (!live && result?.application !== 'restart-required' && result?.version !== info.latest) throw new Error(firstLine());
-            if (result?.application === 'failed') console.warn(`dsh-nextsteps: ${info.latest} is installed; dsh could not start it before a restart: ${firstLine()}`);
-            try { localStorage.setItem(UPDATE_KEY, info.latest); } catch { }
-            setUpdate(live
-              ? { status: 'current', info: { ...info, current: info.latest, newer: false } }
-              : { status: 'restart', info });
+            const overridden = result?.application === 'overridden';
+            const reported = typeof result?.version === 'string' && versionOf(result.version) !== undefined ? result.version : undefined;
+            if (!live && !overridden && result?.application !== 'restart-required' && reported === undefined) {
+              setUpdateState((prev) => ({ ...prev, installing: false, installError: String(reason).slice(0, 160) }));
+              return;
+            }
+            const landed = reported ?? latest;
+            remember(landed);
+            if (live) {
+              setUpdateState((prev) => ({ ...prev, installing: false, installed: '', version: landed, asked: '', update: prev.update === null ? prev.update : { ...prev.update, newer: false } }));
+              return;
+            }
+            const startFailed = result?.application === 'failed';
+            setUpdateState((prev) => ({ ...prev, installing: false, installed: landed, asked: latest, installError: startFailed ? String(reason).slice(0, 160) : '' }));
+            return;
           } catch (error) {
-            setUpdate({ status: 'error', info, error: String(error?.message ?? error) });
+            setUpdateState((prev) => ({ ...prev, installing: false, installError: String(error?.message ?? error).slice(0, 160) }));
           }
         };
-        const info = update.info ?? {};
-        const successColor = 'var(--dsw-alias-state-success-primary, #22c55e)';
-        let statusText;
-        let statusColor = 'var(--dsw-alias-label-tertiary)';
-        if (update.status === 'checking') statusText = t('checking');
-        else if (update.status === 'restart') { statusText = t('restartMsg').replace('{v}', info.latest ?? ''); statusColor = successColor; }
-        else if (update.status === 'installing') statusText = t('installing').replace('{v}', info.latest ?? '');
-        else if (update.status === 'available') { statusText = t('available').replace('{v}', info.latest ?? ''); statusColor = successColor; }
-        else if (update.status === 'manual') statusText = t('manualCopy');
-        else if (update.status === 'current') statusText = t('upToDate');
-        else if (update.status === 'error') statusText = t('checkFailed').replace('{e}', update.error ?? '?');
-        else statusText = t('noReleases');
+
+        const u = updateState.update;
+        const pendingVersion = [updateState.installed, u?.installed]
+          .filter((value) => typeof value === 'string' && versionOf(value) !== undefined)
+          .reduce((best, value) => (best === undefined || isNewer(value, best) ? value : best), undefined);
+        const runningVersion = updateState.version || pluginVersion;
+        const pendingIsNewer = pendingVersion !== undefined && (versionOf(runningVersion) === undefined || compareVersions(pendingVersion, runningVersion) > 0);
+        const heldBack = pendingVersion !== undefined && versionOf(runningVersion) !== undefined && compareVersions(pendingVersion, runningVersion) <= 0 && versionOf(updateState.asked ?? '') !== undefined && isNewer(updateState.asked, pendingVersion);
+        const pendingMsg = heldBack ? t('heldBackMsg').replace('{v}', pendingVersion).replace('{asked}', updateState.asked) : t('installedMsg').replace('{v}', pendingVersion);
+        const updateStatus = u === null ? t('none') : u.error ? t('error') + ' (' + u.error + ')' : updateState.installing ? t('installingMsg').replace('{v}', (u.latest ?? '').replace(/^v/, '')) : u.newer ? t('available') + ': ' + u.latest : t('upToDate');
         const controlStyle = { background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 8px', fontSize: 13 };
         const linkStyle = { background: 'none', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 10px', color: 'var(--dsw-alias-label-primary)', fontSize: 12, cursor: 'pointer', textDecoration: 'none' };
         const row = (label, tip, control, key) => h('div', { key, title: tip, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '14px 0', borderBottom: '.5px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
@@ -1867,14 +2000,16 @@ window.__ModuleLoader__.load({
           row(t('discarded'), discardedEntries.length === 0 ? t('discardedEmpty') : '', discardedList, 'discarded'),
           h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '14px 0', borderBottom: '.5px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
             h('div', { style: { minWidth: 0 } },
-              h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, t('updates')),
-              h('div', { style: { fontSize: 12, color: statusColor, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', alignItems: 'center' } },
-                h('span', null, t('current') + ': ' + (info.current ?? pluginVersion ?? '?')),
-                h('span', null, statusText))),
+              h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, t('update')),
+              h('div', { style: { fontSize: 12, color: pendingIsNewer || updateState.installing ? 'var(--dsw-alias-state-success-primary, #22c55e)' : u !== null && u.newer ? 'var(--dsw-alias-state-success-primary, #22c55e)' : 'var(--dsw-alias-label-tertiary)', marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', alignItems: 'center' } },
+                h('span', null, t('current') + ': ' + (runningVersion || pendingVersion || '—')),
+                h('span', null, updateState.checking ? t('checking') : updateStatus))),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' } },
-              update.status === 'available' ? h('button', { onClick: install, style: { ...linkStyle, fontWeight: 600 } }, t('updateNow')) : null,
-              h('button', { onClick: check, style: linkStyle }, t('check')),
-              typeof info.url === 'string' ? h('a', { href: info.url, target: '_blank', rel: 'noreferrer', style: linkStyle }, t('openRelease')) : null)),
+              u !== null && u.newer && !pendingIsNewer ? h('button', { onClick: installUpdate, disabled: updateState.installing, style: { ...linkStyle, fontWeight: 600, opacity: updateState.installing ? 0.6 : 1, cursor: updateState.installing ? 'wait' : 'pointer' } }, t('updateNow')) : null,
+              h('button', { onClick: checkUpdate, style: linkStyle }, t('check')),
+              u !== null && typeof u.url === 'string' && u.url !== '' ? h('a', { href: u.url, target: '_blank', rel: 'noreferrer', style: linkStyle, title: t('open') }, t('open')) : null)),
+          updateState.installError !== '' ? h('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, padding: '8px 0' } }, updateState.installError === 'local-development' ? t('localDev') : updateState.installError === 'unsupported-version' ? t('unsupportedVersion') : t('installError') + ' (' + updateState.installError + ')') : null,
+          pendingIsNewer || heldBack ? h('div', { style: { color: 'var(--dsw-alias-state-success-primary, #22c55e)', fontSize: 12, padding: '8px 0' } }, pendingMsg) : null,
           h('div', { style: { display: 'flex', gap: 8, padding: '14px 0', flexWrap: 'wrap' } },
             h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('repo')),
             h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps/issues', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('issues'))),

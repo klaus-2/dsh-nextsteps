@@ -817,28 +817,15 @@ test("the script guard keeps the target script for ja, ko and hi", async () => {
   }
 });
 
-test("the update route reports the current version", async () => {
-  const release = { tag_name: "v9.9.9", html_url: "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v9.9.9", body: "notes" };
-  const original = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    if (url.includes("api.github.com") || url.includes("about:blank")) return new Response(JSON.stringify(release), { status: 200, headers: { "content-type": "application/json" } });
-    if (url.includes("registry.npmjs.org")) return new Response(JSON.stringify({ version: "9.9.9" }), { status: 200, headers: { "content-type": "application/json" } });
-    return original(input);
-  };
-  try {
-    const { ctx, routes } = stubContext();
-    const mod = await import(moduleUrl.href);
-    await mod.apply(ctx);
-    const response = await routes.get(`/api/${pluginId}.update`).fetch(new Request("http://x"));
-    const body = await response.json();
-    assertEqual(response.status, 200);
-    assertEqual(body.name, pluginId);
-    assert(body.current !== undefined, "the update route reports the current version");
-    assertEqual(body.newer, true, "a newer release is reported");
-  } finally {
-    globalThis.fetch = original;
-  }
+test("the secret route hands the instance secret to the client", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.secret`).fetch(new Request("http://x"));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.ok, true, "the secret route answers ok");
+  assert(typeof body.secret === "string" && body.secret.length > 0, "the secret route answers with the instance secret");
 });
 
 test("the style rule reaches the inline section and the generator, and not the rewrite", async () => {

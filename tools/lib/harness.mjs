@@ -61,8 +61,10 @@ export async function withIsolatedHome(run) {
   const dir = await mkdtemp(path.join(tmpdir(), "dsh-regression-"));
   const previousProfile = process.env.USERPROFILE;
   const previousHome = process.env.HOME;
+  const previousProfileDir = process.env.DSH_PROFILE_DIR;
   process.env.USERPROFILE = dir;
   process.env.HOME = dir;
+  process.env.DSH_PROFILE_DIR = path.join(dir, ".dsh", "profiles", "desktop");
   try {
     return await run(dir);
   } finally {
@@ -70,6 +72,8 @@ export async function withIsolatedHome(run) {
     else process.env.USERPROFILE = previousProfile;
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
+    if (previousProfileDir === undefined) delete process.env.DSH_PROFILE_DIR;
+    else process.env.DSH_PROFILE_DIR = previousProfileDir;
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -184,8 +188,9 @@ export function fakeClientCtx(overrides = {}) {
       register(namespace, code, dictionary) {
         locale.push({ namespace, code, dictionary });
       },
-      bind() {
-        return (key) => key;
+      bind(namespace) {
+        const registered = locale.find((entry) => entry.namespace === namespace && entry.code === "en") ?? locale.at(0);
+        return (key) => registered?.dictionary?.[key] ?? key;
       }
     },
     effect(fn, label) {
@@ -337,6 +342,15 @@ export async function click(element) {
 
 export async function flush(rounds = 4) {
   for (let index = 0; index < rounds; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+export async function waitFor(condition, timeoutMs = 5000, stepMs = 25) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  return condition();
 }
 
 export function makeLocalStorage(initial = {}) {
@@ -519,6 +533,37 @@ export function evaluateObjectLiteral(text, filename = "literal") {
 export function evaluateExpression(text, filename = "expression") {
   if (text === undefined) return undefined;
   return vm.runInNewContext(`(${text})`, { t: (key) => key }, { filename });
+}
+
+export function extractFunction(source, name) {
+  const plain = source.indexOf(`function ${name}(`);
+  const withAsync = source.indexOf(`async function ${name}(`);
+  let anchor = plain;
+  if (withAsync !== -1 && (plain === -1 || withAsync < plain)) anchor = withAsync;
+  if (anchor === -1) return undefined;
+  return extractBlock(source, anchor);
+}
+
+function extractBlock(source, anchor) {
+  const start = source.indexOf("{", anchor);
+  if (start === -1) return undefined;
+  let depth = 0;
+  let quote = "";
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote !== "") {
+      if (char === "\\") { index += 1; continue; }
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") { quote = char; continue; }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(anchor, index + 1);
+    }
+  }
+  return undefined;
 }
 
 export function collectCallArguments(source, callee) {

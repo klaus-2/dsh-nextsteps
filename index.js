@@ -1,15 +1,327 @@
 // SPDX-License-Identifier: MIT
+import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const TOOL_NAME = 'suggest_followups';
-const name = 'dsh-nextsteps';
 const inject = ['tools', 'connection'];
-const NPM_NAME = 'dsh-nextsteps';
+const PLUGIN_NAME = 'dsh-nextsteps';
+const name = PLUGIN_NAME;
+const PLUGIN_VERSION = '1.7.1';
+const REPO_URL = 'https://github.com/klaus-2/dsh-nextsteps';
+const VERSION_PATTERN = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
+const DEFAULT_PORT = 47497;
+const PORT_ATTEMPTS = 20;
+const RESERVE = '/.ns/';
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const SECRET_HEADER = 'x-dsh-nextsteps-secret';
+const PUBLIC_PATHS = new Set(['/.ns/health']);
+const APP_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveProfileDir(packageDir, home) {
+  const parts = packageDir.split(path.sep);
+  const at = parts.lastIndexOf('profiles');
+  if (at !== -1 && at + 1 < parts.length && parts[at + 1] !== '') return parts.slice(0, at + 2).join(path.sep);
+  return path.join(home, '.dsh', 'profiles', 'desktop');
+}
+
+const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? resolveProfileDir(PLUGIN_DIR, homedir());
+const RUNTIME_PNPM_CJS = process.env.DSH_RUNTIME_PNPM ?? path.join(homedir(), '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.cjs');
+const PNPM_TIMEOUT_MS = 180000;
+const MAX_TIMER_MS = 2147483647;
+const pnpmTimeoutMs = () => {
+  const asked = Number(process.env.DSH_PNPM_TIMEOUT_MS);
+  return Number.isFinite(asked) && asked > 0 && asked <= MAX_TIMER_MS ? asked : PNPM_TIMEOUT_MS;
+};
+
+let installInProgress = false;
+
+function pnpmProfileAdd(spec) {
+  const useRuntime = existsSync(RUNTIME_PNPM_CJS);
+  const command = useRuntime ? process.execPath : 'pnpm';
+  const ageArgs = ['--config.minimumReleaseAge=0', '--config.minimumReleaseAgeStrict=false'];
+  const args = useRuntime ? [RUNTIME_PNPM_CJS, 'add', spec, ...ageArgs] : ['add', spec, ...ageArgs];
+  return new Promise((resolve) => {
+    let output = '';
+    let timedOut = false;
+    const timeoutMs = pnpmTimeoutMs();
+    const child = spawn(command, args, { cwd: PROFILE_DIR, env: process.env, windowsHide: true });
+    const collect = (chunk) => {
+      output += String(chunk);
+      if (output.length > 20000) output = output.slice(-10000);
+    };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch {} }, timeoutMs);
+    child.on('exit', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, output: output.slice(-3000), timedOut, timeoutMs }); });
+    child.on('error', (error) => { clearTimeout(timer); resolve({ code: -1, output: String(error).slice(0, 300), timedOut, timeoutMs }); });
+  });
+}
+
+function onDiskVersion() {
+  try { return JSON.parse(readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8')).version ?? null; } catch { return null; }
+}
+
+function installedUpdate() {
+  const disk = onDiskVersion();
+  if (typeof disk !== 'string' || !VERSION_PATTERN.test(disk)) return undefined;
+  return compareVersions(disk, PLUGIN_VERSION) > 0 ? disk : undefined;
+}
+
+function compareVersions(a, b) {
+  const pa = String(a).replace(/^v/, '').split('.').map((x) => Number(x) || 0);
+  const pb = String(b).replace(/^v/, '').split('.').map((x) => Number(x) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) ? -1 : 1;
+  }
+  return 0;
+}
+
+async function fetchLatestRelease() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  let version = '';
+  try {
+    const response = await fetch('https://registry.npmjs.org/dsh-nextsteps/latest', {
+      signal: controller.signal,
+      headers: { 'user-agent': 'dsh-nextsteps', accept: 'application/json' }
+    });
+    if (!response.ok) return { error: `http ${response.status}` };
+    const payload = await response.json();
+    version = typeof payload.version === 'string' ? payload.version : '';
+    if (version === '') return { error: 'no-releases' };
+  } catch (error) {
+    return { error: String(error?.message ?? error).slice(0, 120) };
+  } finally {
+    clearTimeout(timer);
+  }
+  return {
+    latest: `v${version}`,
+    newer: compareVersions(version, PLUGIN_VERSION) > 0,
+    url: `${REPO_URL}/releases/tag/v${version}`
+  };
+}
+
+const SECRET_FILE = path.join(PROFILE_DIR, 'dsh-nextsteps', 'instance.secret');
+let instanceSecretValue = null;
+
+function instanceSecret() {
+  if (instanceSecretValue !== null) return instanceSecretValue;
+  try {
+    const stored = readFileSync(SECRET_FILE, 'utf8').trim();
+    if (/^[0-9a-f]{64}$/.test(stored)) {
+      instanceSecretValue = stored;
+      return instanceSecretValue;
+    }
+  } catch {}
+  const fresh = randomBytes(32).toString('hex');
+  try {
+    mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
+    writeFileSync(SECRET_FILE, fresh, { mode: 0o600 });
+    try { chmodSync(SECRET_FILE, 0o600); } catch {}
+  } catch {}
+  instanceSecretValue = fresh;
+  return instanceSecretValue;
+}
+
+function secretMatches(candidate) {
+  if (typeof candidate !== 'string' || candidate === '') return false;
+  const expected = Buffer.from(instanceSecret(), 'utf8');
+  const given = Buffer.from(candidate, 'utf8');
+  if (given.length !== expected.length) return false;
+  return timingSafeEqual(expected, given);
+}
+
+function requestIsAuthorized(req, url) {
+  const header = req.headers?.[SECRET_HEADER];
+  if (typeof header === 'string' && secretMatches(header)) return true;
+  const authorization = req.headers?.authorization;
+  if (typeof authorization === 'string' && /^Bearer\s+/i.test(authorization) && secretMatches(authorization.replace(/^Bearer\s+/i, '').trim())) return true;
+  const key = url?.searchParams?.get('key');
+  if (typeof key === 'string' && secretMatches(key)) return true;
+  return false;
+}
+
+function hostIsLocal(host, port) {
+  if (typeof host !== 'string' || host === '') return true;
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+}
+
+async function readJsonBody(req) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new Error('body too large');
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+let serverInstance = undefined;
+
+async function startServer(options = {}) {
+  if (serverInstance !== undefined && options.port === undefined) return serverInstance;
+  const basePort = typeof options.port === 'number' ? options.port : DEFAULT_PORT;
+  instanceSecret();
+
+  let boundPort = basePort;
+  async function route(req, res) {
+    const port = boundPort;
+    const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
+    const pathname = url.pathname;
+
+    if (!hostIsLocal(req.headers?.host, port)) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: 'invalid host' }));
+      return;
+    }
+
+    const origin = typeof req.headers?.origin === 'string' ? req.headers.origin : undefined;
+    const authorized = requestIsAuthorized(req, url);
+    const appOrigin = origin !== undefined && (origin === 'dsh-app://app' || APP_ORIGIN.test(origin));
+
+    if (req.method === 'OPTIONS' && pathname.startsWith(RESERVE)) {
+      if (!authorized && !appOrigin) {
+        res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      res.writeHead(204, {
+        ...(origin === undefined ? {} : { 'access-control-allow-origin': origin }),
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': `content-type, ${SECRET_HEADER}, authorization`,
+        'access-control-max-age': '86400',
+        vary: 'Origin'
+      });
+      res.end();
+      return;
+    }
+
+    const publicPath = PUBLIC_PATHS.has(pathname);
+    if (pathname.startsWith(RESERVE) && !publicPath && !authorized) {
+      res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+
+    const cors = authorized
+      ? { ...(origin === undefined ? {} : { 'access-control-allow-origin': origin }), vary: 'Origin' }
+      : appOrigin
+        ? { 'access-control-allow-origin': origin, vary: 'Origin' }
+        : {};
+
+    if (pathname === '/.ns/health') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+      res.end(JSON.stringify({ ok: true, name: PLUGIN_NAME, port }));
+      return;
+    }
+
+    if (pathname === '/.ns/update' && req.method === 'GET') {
+      const update = await fetchLatestRelease();
+      const installed = installedUpdate();
+      const updateInfo = installed === undefined ? update : { ...update, installed };
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+      res.end(JSON.stringify({ ok: true, version: PLUGIN_VERSION, repo: REPO_URL, update: updateInfo }));
+      return;
+    }
+
+    if (pathname === '/.ns/update/install' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const version = typeof body?.version === 'string' && VERSION_PATTERN.test(body.version) ? body.version : '';
+      if (version === '') {
+        res.writeHead(400, { 'content-type': 'application/json', ...cors });
+        res.end(JSON.stringify({ ok: false, error: 'bad request' }));
+        return;
+      }
+      if (installInProgress) {
+        res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+        res.end(JSON.stringify({ ok: false, error: 'install-in-progress' }));
+        return;
+      }
+      if (existsSync(path.join(PLUGIN_DIR, '.git'))) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+        res.end(JSON.stringify({ ok: false, error: 'local-development' }));
+        return;
+      }
+      installInProgress = true;
+      let result;
+      try {
+        result = await pnpmProfileAdd(`dsh-nextsteps@${version}`);
+      } finally {
+        installInProgress = false;
+      }
+      const installed = onDiskVersion();
+      if (result.code === 0 && typeof installed === 'string' && VERSION_PATTERN.test(installed)) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+        res.end(JSON.stringify({ ok: true, installed }));
+      } else {
+        const diagnostic = result.timedOut === true
+          ? `the install was stopped after ${Math.round(result.timeoutMs / 1000)}s`
+          : result.output.split('\n').filter((line) => line.trim() !== '').pop() ?? `pnpm exit ${result.code}`;
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
+        res.end(JSON.stringify({ ok: false, error: String(diagnostic).slice(0, 200) }));
+      }
+      return;
+    }
+
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', ...(pathname.startsWith(RESERVE) ? cors : {}) });
+    res.end(JSON.stringify({ error: 'not found' }));
+  }
+
+  const server = createServer(async (req, res) => {
+    try {
+      await route(req, res);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+      }
+      res.end(JSON.stringify({ error: String(error?.message ?? error).slice(0, 300) }));
+    }
+  });
+
+  let lastError = null;
+  const port = await new Promise((resolve) => {
+    let attempt = 0;
+    const tryListen = (candidate) => {
+      server.once('error', (error) => {
+        lastError = error;
+        attempt += 1;
+        if (attempt < PORT_ATTEMPTS) tryListen(candidate + 1);
+        else resolve(null);
+      });
+      server.listen(candidate, '127.0.0.1', () => {
+        server.removeAllListeners('error');
+        resolve(candidate);
+      });
+    };
+    tryListen(basePort);
+  });
+
+  if (port === null) throw new Error(`dsh-nextsteps: sem porta livre a partir de ${basePort}: ${String(lastError)}`);
+  boundPort = port;
+  server.port = port;
+  if (options.port === undefined) {
+    serverInstance = server;
+    server.on('close', () => {
+      if (serverInstance === server) serverInstance = undefined;
+    });
+  }
+  return server;
+}
+
 const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.json');
-const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const GENERATE_TIMEOUT_MS = 30000;
 const VALIDATE_TIMEOUT_MS = 4000;
 const GENERATE_MAX_TOKENS = 500;
@@ -375,11 +687,6 @@ function toolSpec(ctx, getSettings) {
   };
 }
 
-function parseVersion(value) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? ''));
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
-}
-
 const get = (ctx, serviceName) => { try { return ctx.get?.(serviceName); } catch { return undefined; } };
 
 async function modelCatalog(ctx) {
@@ -574,51 +881,30 @@ function raceWithSignal(promise, signal) {
   });
 }
 
-function newerVersion(latest, current) {
-  for (let index = 0; index < 3; index += 1) {
-    if ((latest[index] ?? 0) !== (current[index] ?? 0)) return (latest[index] ?? 0) > (current[index] ?? 0);
-  }
-  return false;
-}
-
-async function releaseNotes(fetchImpl, version, signal) {
-  try {
-    const response = await fetchImpl(`https://api.github.com/repos/klaus-2/dsh-nextsteps/releases/tags/v${version}`, {
-      signal: signal === undefined ? AbortSignal.timeout(6000) : AbortSignal.any([signal, AbortSignal.timeout(6000)]),
-      headers: { accept: 'application/vnd.github+json', 'user-agent': NPM_NAME }
-    });
-    if (!response.ok) return undefined;
-    const release = await response.json();
-    return typeof release.body === 'string' ? release.body.slice(0, 4000) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function checkUpdate(fetchImpl = fetch, pkg = PACKAGE, signal) {
-  const current = parseVersion(pkg.version);
-  const managed = pkg.name === NPM_NAME && current !== undefined;
-  const response = await fetchImpl(`https://registry.npmjs.org/${NPM_NAME}/latest`, {
-    signal: signal === undefined ? AbortSignal.timeout(10000) : AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-    headers: { accept: 'application/json', 'user-agent': NPM_NAME }
-  });
-  if (!response.ok) throw new Error(`the registry answered ${response.status}`);
-  const payload = await response.json();
-  const latest = parseVersion(payload?.version);
-  if (latest === undefined) throw new Error('the registry has no x.y.z version');
-  const info = { name: NPM_NAME, current: pkg.version, latest: latest.join('.'), managed, newer: false, url: `https://github.com/klaus-2/dsh-nextsteps/releases/tag/v${latest.join('.')}` };
-  const notes = await releaseNotes(fetchImpl, latest.join('.'), signal);
-  if (notes !== undefined) info.notes = notes;
-  if (current === undefined || !newerVersion(latest, current)) return info;
-  return { ...info, newer: true };
-}
-
 async function apply(ctx) {
   let settings = settingsLoad();
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
   const reapplyTool = (next) => {
     settings = next;
   };
+  try {
+    await startServer();
+  } catch (error) {
+    console.error('dsh-nextsteps: could not start server:', error);
+  }
+  try {
+    ctx.connection?.fetch?.register({
+      path: '/api/dsh-nextsteps.secret',
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: async () => new Response(JSON.stringify({ ok: true, secret: instanceSecret() }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+      })
+    });
+  } catch (error) {
+    console.error('dsh-nextsteps: could not register the secret route:', error);
+  }
   try {
     ctx.tools.register(toolSpec(ctx, () => settings));
   } catch (error) {
@@ -639,7 +925,7 @@ async function apply(ctx) {
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
     fetch: async (request) => {
-      if (request.method === 'GET') return json({ ok: true, settings: settingsLoad(), version: PACKAGE.version });
+      if (request.method === 'GET') return json({ ok: true, settings: settingsLoad(), version: PLUGIN_VERSION });
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: 'bad request' }, 400); }
       const current = settingsLoad();
@@ -745,19 +1031,6 @@ async function apply(ctx) {
       }
     }
   });
-  ctx.connection?.fetch?.register({
-    path: '/api/dsh-nextsteps.update',
-    methods: ['GET'],
-    requestBody: 'buffered',
-    fetch: async (request) => {
-      try {
-        const info = await checkUpdate(fetch, PACKAGE, request.signal);
-        return json({ ...info, installed: undefined });
-      } catch (error) {
-        return json({ error: String(error?.message ?? error) }, 502);
-      }
-    }
-  });
 }
 
-export { name, inject, apply, checkUpdate };
+export { name, inject, apply, startServer };

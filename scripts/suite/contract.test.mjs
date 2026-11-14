@@ -64,8 +64,9 @@ test("the client sends the four new settings and nothing the host ignores", () =
 
 test("the plugin identity is the same on both halves", () => {
   assertIncludes(clientSource, `id: '${pluginId}',`, "the client registers the plugin id");
-  assertIncludes(hostSource, `const name = '${pluginId}';`, "the host registers the plugin name");
-  assertIncludes(hostSource, `const NPM_NAME = '${pluginId}';`, "the host watches the npm package");
+  assertIncludes(hostSource, `const PLUGIN_NAME = '${pluginId}';`, "the host registers the plugin name");
+  assertIncludes(hostSource, "const name = PLUGIN_NAME;", "the plugin name is single-sourced");
+  assertIncludes(hostSource, `https://registry.npmjs.org/${pluginId}/latest`, "the host reads the installable version from the npm registry");
 });
 
 test("the storage keys belong to the plugin", () => {
