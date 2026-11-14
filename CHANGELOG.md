@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-11-14
+
+The plugin update system moves to a loopback server of the plugin's own, authenticated by an instance secret, and the version check reads the npm registry only. Updates install through the dsh plugin manager when it is available and through the plugin's own pnpm install route when it is not.
+
+### Added
+
+- **Update checks read the npm registry.** The version check asks `registry.npmjs.org` for the latest `dsh-nextsteps` release and never touches the GitHub API, so a release without notes still shows up in the update row. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+- **Update now works without a plugin manager.** When the dsh plugin manager refuses the spec or is absent, the plugin's own install route runs `pnpm add dsh-nextsteps@X.Y.Z` with the runtime pnpm, and the row names the version that actually landed on disk — including the case where pnpm holds a too-recent release back. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+- **Development copies are refused politely.** A checkout carrying `.git` answers the update row with "Local development copy — update with git pull." instead of a generic install failure. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+
+### Changed
+
+- **The update flow runs on the plugin's own loopback server.** Health, update check and install live behind `127.0.0.1` ports 47497–47516 under a `/.ns/` prefix, authenticated with an instance secret stored in the plugin profile (`dsh-nextsteps/instance.secret`); the dsh channel keeps settings, models, model test and generation, and gains a secret route the panel reads. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+- **The version you see is the version that runs.** The panel reports the version from a `PLUGIN_VERSION` constant in `index.js`, and the publish workflow fails when it drifts from `package.json`. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+
+### Fixed
+
+- **A failed update check no longer claims there are no releases published.** An unreachable registry or server shows the failure inline, and a check that fails while an install is pending keeps showing the version that awaits the restart. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+- **Discovery retries instead of dying once.** If the loopback server or the secret route is unreachable in one check, the next "Check for updates" walks the port block again instead of staying unreachable for the whole session. ([`100ee32`](https://github.com/klaus-2/dsh-nextsteps/commit/100ee32))
+
 ## [1.7.1] — 2026-11-13
 
 ### Fixed
