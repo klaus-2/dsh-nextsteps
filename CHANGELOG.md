@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-11-14
+
+### Fixed
+
+- **Suggestion generation re-rolls a failed model call within the latency budget.** One failed or timed-out upstream round used to end the request as "the generator answered with HTTP 502"; the plugin now tries the model call again within the configured budget before it reports a failure, and the failure line carries the actual server error instead of the bare status code. ([`9fe7824`](https://github.com/klaus-2/dsh-nextsteps/commit/9fe7824))
+- **A truncated model answer no longer discards its complete suggestions.** An answer cut off by the token cap parsed as nothing and the cards showed "the generator answered without suggestions"; the generator now recovers the complete suggestion objects from the truncated text, and the answer token cap rose from 500 to 1024 so a six-suggestion reply does not truncate in the first place. ([`9fe7824`](https://github.com/klaus-2/dsh-nextsteps/commit/9fe7824))
+- **A turn without conversation content explains itself.** Asking for suggestions on a turn with no messages answered an empty list that the panel reported as a generic generation failure; the route now refuses with "this turn has no conversation content to suggest from". ([`9fe7824`](https://github.com/klaus-2/dsh-nextsteps/commit/9fe7824))
+
 ## [1.8.0] — 2026-11-14
 
 The plugin update system moves to a loopback server of the plugin's own, authenticated by an instance secret, and the version check reads the npm registry only. Updates install through the dsh plugin manager when it is available and through the plugin's own pnpm install route when it is not.
