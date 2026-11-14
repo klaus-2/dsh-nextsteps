@@ -250,7 +250,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       }))).json();
       harness.check("the generator answers", generated.ok === true && generated.followups.length === 1, JSON.stringify(generated).slice(0, 140));
       harness.eq("the selected model is used", llm.calls[0]?.route, { provider: "deepseek", model: "deepseek-chat" });
-      harness.eq("the token budget is capped", llm.calls[0]?.controls.maxTokens, 500);
+      harness.eq("the token budget is capped", llm.calls[0]?.controls.maxTokens, 1024);
       harness.includes("the generator is told the language", llm.calls[0]?.system ?? "", "English");
       harness.includes("the generator carries the override", llm.calls[0]?.system ?? "", "ABSOLUTE LANGUAGE RULE");
       harness.includes("the generator treats the transcript as data", llm.calls[0]?.system ?? "", "DATA");
@@ -564,7 +564,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
 
-    harness.section("host: a plain conversation with auto answers without suggestions");
+    harness.section("host: a plain conversation without content is refused");
     {
       await host.routes.get("/api/dsh-nextsteps.settings").fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
@@ -579,7 +579,7 @@ export async function runHostSuite(harness, { pluginDir }) {
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
       }));
       const body = await response.json();
-      harness.check("an empty transcript answers without suggestions", response.status === 200 && body.followups.length === 0, JSON.stringify(body).slice(0, 120));
+      harness.check("an empty transcript is refused with a clear error", response.status === 400 && String(body.error).includes("no conversation content"), JSON.stringify(body).slice(0, 120));
       harness.eq("an empty transcript does not call the model", llm.calls.length, 0);
       host.setService("sessionQuery", fakeSessionQuery(turnEvents(12)));
     }
@@ -596,15 +596,17 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.includes("the explicit tool description is static", host.tools.get("suggest_followups").description, "BEFORE writing your final answer");
       harness.excludes("the explicit tool description no longer names a language", host.tools.get("suggest_followups").description, "Japanese");
 
-      llm.calls.length = 0;
+      const japanese = fakeLlm({ text: JSON.stringify({ followups: [{ prompt: "テストを実行する", label: "テスト" }] }) });
+      host.setService("llm", japanese);
       await host.routes.get("/api/dsh-nextsteps.generate").fetch(new Request("http://x/api/dsh-nextsteps.generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: "session-1", afterSeq: 12 })
       }));
-      harness.eq("the default model is called once without a chosen model", llm.calls.length, 1);
-      harness.eq("the default route comes from the agent model", llm.calls[0]?.route, { provider: "deepseek", model: "deepseek-chat" });
-      harness.includes("the generator speaks the chosen language", llm.calls[0]?.system ?? "", "Japanese");
+      harness.eq("the default model is called once without a chosen model", japanese.calls.length, 1);
+      harness.eq("the default route comes from the agent model", japanese.calls[0]?.route, { provider: "deepseek", model: "deepseek-chat" });
+      harness.includes("the generator speaks the chosen language", japanese.calls[0]?.system ?? "", "Japanese");
+      host.setService("llm", llm);
     }
 
     harness.section("host: the non-latin script guard discards a wrong-script reply");

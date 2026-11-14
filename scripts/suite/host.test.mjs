@@ -817,6 +817,300 @@ test("the script guard keeps the target script for ja, ko and hi", async () => {
   }
 });
 
+test("the generate route re-rolls a failed model call and answers with the good attempt", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llmCalls = [];
+  let calls = 0;
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      calls += 1;
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          if (calls === 1) {
+            yield { type: "finish", reason: { kind: "error", failure: { message: "upstream exploded" } } };
+            return;
+          }
+          yield { type: "text-delta", text: '{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}' };
+          yield { type: "finish", reason: { kind: "stop" } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups.length, 1, "the good attempt reaches the client");
+  assertEqual(body.followups[0].prompt, "Rodar os testes");
+  assertEqual(llmCalls.length, 2, "the failed attempt was re-rolled once");
+});
+
+test("a truncated model answer is salvaged into its complete suggestions", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({
+    services: { sessionQuery },
+    llmText: '{"followups":[{"prompt":"Rodar os testes","label":"Testes"},{"prompt":"Revisar o build"'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups.length, 1, "the complete item survives the truncation");
+  assertEqual(body.followups[0].prompt, "Rodar os testes");
+});
+
+test("the generate route answers 502 with the model failure after the attempts are spent", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llmCalls = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          yield { type: "finish", reason: { kind: "error", failure: { message: "upstream exploded" } } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 502);
+  assertIncludes(body.error, "upstream exploded", "the failure detail reaches the client body");
+  assertEqual(llmCalls.length, 3, "every attempt ran before the failure surfaced");
+});
+
+test("a turn without conversation content answers 400 instead of an empty list", async () => {
+  const events = [
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "sessionQuery" ? sessionQuery : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 400);
+  assertIncludes(body.error, "no conversation content");
+});
+
+test("a wrong-script answer is re-rolled and the compliant attempt wins", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const texts = [
+    '{"followups":[{"prompt":"Run the tests","label":"Tests"}]}',
+    '{"followups":[{"prompt":"テストを実行する","label":"テスト"}]}'
+  ];
+  const llmCalls = [];
+  let calls = 0;
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      const text = texts[Math.min(calls, texts.length - 1)];
+      calls += 1;
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          yield { type: "text-delta", text };
+          yield { type: "finish", reason: { kind: "stop" } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "zh-CN", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups.length, 1, "the compliant attempt reaches the client");
+  assertEqual(body.followups[0].prompt, "テストを実行する");
+  assertEqual(llmCalls.length, 2, "the wrong-script attempt was re-rolled once");
+});
+
+test("the salvage ignores braces inside strings while recovering the truncated items", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({
+    services: { sessionQuery },
+    llmText: '{"followups":[{"prompt":"usar { e } com cuidado","label":"Testes"},{"prompt":"Revisar o build"'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups.length, 1, "the string braces did not break the salvage");
+  assertEqual(body.followups[0].prompt, "usar { e } com cuidado");
+});
+
+test("a prose wrapped answer salvages each item once", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({
+    services: { sessionQuery },
+    llmText: 'Vejo duas opções: {"followups":[{"prompt":"Rodar os testes","label":"Testes"}]} e também {"followups":[{"prompt":"Revisar o build","label":"Build"}]}'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups.length, 2, "each item is salvaged exactly once");
+  assertEqual(body.followups[0].prompt, "Rodar os testes");
+  assertEqual(body.followups[1].prompt, "Revisar o build");
+});
+
+test("a cancelled generation is never answered as an empty success", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const controller = new AbortController();
+  const llmCalls = [];
+  let calls = 0;
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      calls += 1;
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          if (calls === 1) {
+            yield { type: "text-delta", text: '{"followups":[{"prompt":"Run the tests","label":"Tests"}]}' };
+            yield { type: "finish", reason: { kind: "stop" } };
+            return;
+          }
+          controller.abort();
+          yield { type: "finish", reason: { kind: "aborted" } };
+        }
+      };
+    }
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => (name === "llm" ? llm : name === "sessionQuery" ? sessionQuery : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) } : undefined);
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "zh-CN", model: "" })
+  }));
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  let response;
+  try {
+    response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "s1", afterSeq: 9 }),
+      signal: controller.signal
+    }));
+  } finally {
+    console.warn = originalWarn;
+  }
+  const body = await response.json();
+  assertEqual(response.status, 502, "the cancellation is not answered as a success");
+  assertIncludes(body.error, "cancelled");
+  assert(!warnings.some((line) => line.includes("generation failed")), `a routine cancellation never warns: ${warnings.join(" | ")}`);
+});
+
 test("the secret route hands the instance secret to the client", async () => {
   const { ctx, routes } = stubContext();
   const mod = await import(moduleUrl.href);

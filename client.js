@@ -1293,7 +1293,8 @@ window.__ModuleLoader__.load({
             const data = await responseJson(response);
             if (state.cancelled) return;
             if (!response.ok) {
-              failure = new Error(`the generator answered with HTTP ${response.status}`);
+              const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
+              failure = new Error(`the generator answered with HTTP ${response.status}${detail}`);
               retryable = response.status >= 500;
             } else {
               const followups = validateFollowups(Array.isArray(data?.followups) ? data.followups : null);

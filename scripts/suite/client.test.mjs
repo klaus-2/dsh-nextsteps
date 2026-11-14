@@ -945,6 +945,27 @@ test("a failed generation offers a retry that asks the host once more", async ()
   }
 });
 
+test("the failure line carries the detail the host sent with the status", async () => {
+  const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
+  const { client, ctx, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "upstream exploded" }), { status: 502, headers: { "content-type": "application/json" } })
+  });
+  try {
+    const tail = tailOf(registrations);
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: ctx.locale.bind("dsh-nextsteps") });
+    await settled(client);
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: ctx.locale.bind("dsh-nextsteps") });
+    const retry = retryNodeOf(rendered);
+    assert(retry !== undefined, "the failed generation renders the retry block");
+    assert(textOf(retry).includes("Generation failed: the generator answered with HTTP 502: upstream exploded"), `the failure line carries the host detail: ${textOf(retry)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("a conflict keeps no retry offer", async () => {
   const settings = { ...NEW_SETTINGS, lang: "zh-CN" };
   const { client, registrations } = clientWithRoutes({
