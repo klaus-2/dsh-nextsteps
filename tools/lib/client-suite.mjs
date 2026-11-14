@@ -37,6 +37,8 @@ function fakeConversation(sent, options = {}) {
   };
 }
 
+const updateStateOf = (stub) => stub.getStates()[1];
+
 export async function runClientSuite(harness, { pluginDir }) {
   const clientPath = path.join(pluginDir, "client.js");
   const source = readFileSync(clientPath, "utf8");
@@ -375,7 +377,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       harness.eq("the secret is fetched once and reused", flowCalls.filter((entry) => entry.url.includes("/api/dsh-nextsteps.secret")).length, 1);
       harness.eq("the applied install remembers the version", withManager.localStorage.getItem("dsh-nextsteps.updated"), "1.0.17");
       const settled = renderOnce(withManager.stub, withManager.settings, { t: (key) => key });
-      const updateState = settled.states?.[1];
+      const updateState = updateStateOf(withManager.stub);
       harness.check("the running version moves to what landed", updateState?.version === "1.0.17" && updateState?.update?.newer === false, JSON.stringify(updateState));
       const gone = findElements(settled.tree, (element) => element.props?.children === "updateNow");
       harness.eq("the update button disappears once the release is applied", gone.length, 0);
@@ -522,13 +524,13 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.eq("the unidentified host is never asked for the secret", calls.filter((call) => call.url.includes("/api/dsh-nextsteps.secret")).length, 0);
     harness.eq("no private request reaches the unidentified host", calls.filter((call) => call.url.includes("/.ns/update")).length, 0);
     harness.check("no credentials are sent anywhere", calls.every((call) => Object.keys(call.headers).every((key) => !/secret/i.test(key))), JSON.stringify(calls.slice(0, 2)));
-    const state = stub.getStates()[1];
+    const state = updateStateOf(stub);
     harness.check("the check ends unreachable, not silent", state?.checking === false && state?.update?.error === "unreachable", JSON.stringify(state));
 
     const secretless = [];
-    const stub2 = createReactStub();
-    const { module: module2 } = loadClientModule(clientPath, {
-      react: stub2.React,
+    const secretlessStub = createReactStub();
+    const { module: secretlessModule } = loadClientModule(clientPath, {
+      react: secretlessStub.React,
       localStorage: makeLocalStorage(),
       fetch: async (url, options) => {
         const target = String(url);
@@ -537,17 +539,17 @@ export async function runClientSuite(harness, { pluginDir }) {
         return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });
       }
     });
-    const client2 = fakeClientCtx({});
-    module2.apply(client2.ctx);
-    client2.resolve();
-    const settings2 = client2.slots.find((slot) => slot.spec.name === "settings.section").component;
-    const rendered2 = renderOnce(stub2, settings2, {});
-    for (const effect of rendered2.effects) effect();
+    const secretlessClient = fakeClientCtx({});
+    secretlessModule.apply(secretlessClient.ctx);
+    secretlessClient.resolve();
+    const secretlessSettings = secretlessClient.slots.find((slot) => slot.spec.name === "settings.section").component;
+    const secretlessRendered = renderOnce(secretlessStub, secretlessSettings, {});
+    for (const effect of secretlessRendered.effects) effect();
     await waitFor(() => secretless.filter((call) => call.url.endsWith("/.ns/health")).length === 1, 2000, 10);
     await flush(4);
     harness.eq("a host that answers without its secret is not authenticated to", secretless.filter((call) => call.url.includes("/.ns/update")).length, 0);
     harness.check("the first walk sends no credentials", secretless.every((call) => Object.keys(call.headers).every((key) => !/secret/i.test(key))), `calls=${secretless.length}`);
-    const checkTree = renderOnce(stub2, settings2, { t: (key) => key });
+    const checkTree = renderOnce(secretlessStub, secretlessSettings, { t: (key) => key });
     const check = findElements(checkTree.tree, (element) => element.props?.children === "check");
     if (check.length === 1) {
       await check[0].props.onClick();
@@ -656,7 +658,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     await click(refused);
     harness.eq("the plugin's own route installs the version", refused.routeCalls.length, 1);
     harness.eq("the route is asked for the exact version", refused.routeCalls[0]?.version, "1.0.24");
-    harness.eq("the version that landed is named", refused.stub.getStates()[1].installed, "1.0.24");
+    harness.eq("the version that landed is named", updateStateOf(refused.stub).installed, "1.0.24");
     harness.eq("the version that landed is remembered", refused.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
 
     const cancelled = await build({
@@ -665,9 +667,9 @@ export async function runClientSuite(harness, { pluginDir }) {
       }
     });
     await click(cancelled);
-    harness.eq("a cancellation names nothing as installed", cancelled.stub.getStates()[1].installed, "");
+    harness.eq("a cancellation names nothing as installed", updateStateOf(cancelled.stub).installed, "");
     harness.eq("a cancellation is not remembered as installed", cancelled.localStorage.getItem("dsh-nextsteps.updated"), null);
-    harness.check("a cancellation is reported", cancelled.stub.getStates()[1].installError !== "", String(cancelled.stub.getStates()[1].installError));
+    harness.check("a cancellation is reported", updateStateOf(cancelled.stub).installError !== "", String(updateStateOf(cancelled.stub).installError));
 
     const managerCalls = [];
     const recovered = await build({
@@ -684,7 +686,7 @@ export async function runClientSuite(harness, { pluginDir }) {
     harness.eq("the plugin's own route installs the version", recovered.routeCalls.length, 1);
     harness.eq("the route is asked for the exact version", recovered.routeCalls[0]?.version, "1.0.24");
     harness.eq("the copy that landed is remembered", recovered.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
-    harness.eq("the refusal does not survive the recovery", recovered.stub.getStates()[1].installError, "");
+    harness.eq("the refusal does not survive the recovery", updateStateOf(recovered.stub).installError, "");
   }
 
   harness.section("client: a development copy refuses to be installed over");
@@ -798,7 +800,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       await buttons[0].props.onClick();
       await flush(4);
       harness.eq("the landed version is remembered", localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
-      const state = stub.getStates()[1];
+      const state = updateStateOf(stub);
       harness.check("the state names what landed and why it did not start", state?.installed === "1.0.24" && String(state?.installError).includes("could not be started"), JSON.stringify(state));
       harness.eq("the plugin's own route is not asked when the manager landed the version", routeCalls.length, 0);
     }
