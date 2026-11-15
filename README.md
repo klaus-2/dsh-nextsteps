@@ -49,6 +49,17 @@ dsh plugin --profile web add dsh-nextsteps
 - **A live region** announces each action to screen readers, and the same text is shown next to the cards so nothing is announced silently.
 - **Performance metrics** in the settings — the average and the worst duration of the generation, the capture and the card build, with the sample count; a stage with no samples says so instead of showing a fake zero.
 - **A latency budget** for the generator (5 000–120 000 ms) and a bounded suggestion length (60–600 characters), so a slow model cannot hold a turn forever.
+- **Confirm before sending** — an optional setting turns the first click on a card (and on the new-conversation action) into an armed state; the second click sends, the editor keeps the draft while armed and cancelling disarms.
+- **Insert into the composer** — a card action that places the prompt in the composer draft without sending it, so you can edit first.
+- **Regenerate a single card** — replaces one suggestion with a fresh single-card generation, keeping the rest of the round intact.
+- **Per-conversation generation model** — the conversation options panel can pick a model that rides the generate request, alongside the language and followups overrides.
+- **Avoid already-sent suggestions** — the generator receives the prompts already present in the conversation (clicked ones first) and is told not to repeat them.
+- **Card origin label** — the last card of a round shows the model that produced it and when, and the label persists with the capture.
+- **Safety badges** — heuristic checks flag suggestions that look like prompt-injection attempts or carry credential-like strings; the card shows a badge and sending stays possible.
+- **Favourites management** — search, edit the text, bulk copy/remove, JSON export and import (backup and moving between machines), and drag or keyboard reordering; the Markdown export follows the saved order.
+- **Elapsed time while generating** — an mm:ss counter under the answer, in both generation modes.
+- **Character counter** in the editor, against the configured suggestion length.
+- **Gear icon** in the card header opens the plugin's settings page when the host exposes the navigation service.
 - An incremental capture history: each session keeps its own key and an index tracks the order, so a session you never open is never read.
 - Settings page inside the dsh settings — language, followups per turn, styles, generation mode, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates.
 - An explicit language (or an explicit model) switches to a separate clean model call, so the cards hold that language even in a conversation written in another one; `Auto` with no model follows the conversation inside the turn.
@@ -85,12 +96,23 @@ Open the dsh settings and find the **Nextsteps** section:
 | Latency budget | How long the generator may run before the request is given up (5 000–120 000 ms). |
 | Suggestion length | How long a single prompt may be (60–600 characters). |
 | Show header | The small label above the cards. |
+| Confirm before sending | The first click on a card arms the send and the second confirms; it also applies to the new-conversation action. |
+| Retention | Delete stored suggestions older than this many days. 0 turns it off (0-365). Favourites are kept. |
+| Transcript scope | How much of the turn the generator sees: the full transcript or only the last user and assistant messages. |
 
 The same page also shows the **performance** table (generation, persistence and rendering, with the average, the worst and the sample count), your **favourites** (copy or remove them) and the **discarded** suggestions (restore them). Those three live only on your machine — they are never sent to the host as settings.
 
+## Privacy and safety
+
+- **Private conversation** — a switch in the conversation options keeps that conversation's cards memory-only: nothing is written to disk while it is on, the stored records of the conversation are purged, and the local audit log drops its entries. The panel shows a warning if the storage refuses the purge.
+- **Retention** — an optional age limit (0-365 days) deletes stored suggestions in the background; favourites are kept.
+- **Local audit log** — the settings page shows when suggestions were generated and sent, identified by a short hash and length only, never the text; one button clears it.
+- **Minimal transcript scope** — an optional setting sends the generator only the last user and assistant messages of the turn instead of the whole transcript (the pure Auto mode reads the conversation inside the turn by nature).
+- **Redacted logs** — the plugin's log lines carry error codes, identifiers and metrics, never suggestion text; a suite tripwire guards that.
+
 ## Updates
 
-The same settings page asks the npm registry for the latest `dsh-nextsteps` release. When a newer version is published, **Update now** installs it through the dsh plugin manager; if the manager is missing or rejects the install spec, the plugin's own loopback service runs the install with pnpm instead. Either way the installed version is shown and you are asked to restart. Updates only ever install the `dsh-nextsteps` npm package — a development copy is detected and left alone.
+The same settings page asks the npm registry for the latest `dsh-nextsteps` release. When a newer version is published, the plugin first checks that the version exists on the registry, then **Update now** installs it through the dsh plugin manager. The installed version is shown and you are asked to restart. Updates only ever install the `dsh-nextsteps` npm package — a development copy is detected and left alone.
 
 ## Requirements
 

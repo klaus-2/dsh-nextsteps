@@ -49,6 +49,17 @@ dsh plugin --profile web add dsh-nextsteps
 - **Uma região viva** anuncia cada ação para leitores de tela, e o mesmo texto aparece ao lado dos cards — nada é anunciado em silêncio.
 - **Métricas de desempenho** nas configurações — a duração média e a pior da geração, da captura e da construção dos cards, com a contagem de amostras; um estágio sem amostras diz isso em vez de mostrar um zero falso.
 - **Um orçamento de latência** para o gerador (5 000–120 000 ms) e um tamanho de sugestão limitado (60–600 caracteres), para que um modelo lento não segure um turno para sempre.
+- **Confirmação antes de enviar** — uma configuração opcional torna o primeiro clique num cartão (e na ação de nova conversa) um estado armado; o segundo clique envia, o editor mantém o rascunho enquanto armado e o cancelamento desarma.
+- **Inserir no compositor** — uma ação do cartão coloca o prompt no rascunho do compositor sem enviar, para você editar antes.
+- **Regenerar um único cartão** — substitui uma sugestão por uma geração nova de cartão único, mantendo o restante da rodada intacto.
+- **Modelo de geração por conversa** — o painel de opções da conversa pode escolher um modelo que vai na requisição de geração, junto com os overrides de idioma e quantidade.
+- **Evitar sugestões já enviadas** — o gerador recebe os prompts já presentes na conversa (os clicados primeiro) e é instruído a não repeti-los.
+- **Rótulo de origem do cartão** — o último cartão da rodada mostra o modelo que o produziu e quando, e o rótulo persiste com o capture.
+- **Selos de segurança** — verificações heurísticas marcam sugestões que parecem tentativas de injeção de prompt ou contêm strings semelhantes a credenciais; o cartão mostra um selo e o envio continua possível.
+- **Gestão de favoritos** — busca, edição do texto, copiar/remover em lote, exportação e importação em JSON (backup e troca de máquina) e reordenação por arraste ou teclado; a exportação em Markdown segue a ordem salva.
+- **Tempo decorrido na geração** — um contador mm:ss sob a resposta, nos dois modos de geração.
+- **Contador de caracteres** no editor, contra o tamanho de sugestão configurado.
+- **Engrenagem** no cabeçalho do cartão abre a página de configurações do plugin quando o host expõe o serviço de navegação.
 - Um histórico de capturas incremental: cada sessão guarda sua própria chave e um índice registra a ordem, então uma sessão que você nunca abre nunca é lida.
 - Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações.
 - Um idioma explícito (ou um modelo explícito) passa a usar uma chamada limpa separada, então os cards mantêm esse idioma mesmo numa conversa escrita em outro; `Automático` sem modelo segue a conversa dentro do turno.
@@ -85,12 +96,23 @@ Abra as configurações do dsh e encontre a seção **Nextsteps**:
 | Orçamento de latência | Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5 000–120 000 ms). |
 | Tamanho da sugestão | Quanto tempo um prompt pode ter (60–600 caracteres). |
 | Mostrar cabeçalho | O pequeno rótulo acima dos cards. |
+| Confirmação antes de enviar | O primeiro clique num cartão arma o envio e o segundo confirma; vale também para a ação de nova conversa. |
+| Retenção | Apaga as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365). Os favoritos são mantidos. |
+| Escopo do histórico | Quanto do turno o gerador enxerga: o histórico completo ou só as últimas mensagens de usuário e assistente. |
 
 A mesma página mostra também a tabela de **desempenho** (geração, persistência e renderização, com a média, o pior tempo e a contagem de amostras), seus **favoritos** (copie ou remova) e as sugestões **descartadas** (restaure). Essas três coisas ficam só na sua máquina — nunca são enviadas ao host como configurações.
 
+## Privacidade e segurança
+
+- **Conversa privada** — um interruptor nas opções da conversa mantém os cartões dela apenas em memória: nada é escrito em disco enquanto ativo, os registros armazenados da conversa são apagados e o registro de auditoria local descarta suas entradas. O painel mostra um aviso se o armazenamento recusar a purga.
+- **Retenção** — um limite opcional de idade (0-365 dias) apaga as sugestões armazenadas em segundo plano; os favoritos são mantidos.
+- **Registro de auditoria local** — a página de configurações mostra quando sugestões foram geradas e enviadas, identificadas por um hash curto e um tamanho apenas, nunca o texto; um botão apaga tudo.
+- **Escopo mínimo do histórico** — uma configuração opcional envia ao gerador apenas as últimas mensagens de usuário e assistente do turno, em vez do transcript inteiro (o modo puro Auto lê a conversa dentro do turno por natureza).
+- **Logs redigidos** — as linhas de log do plugin carregam códigos de erro, identificadores e métricas, nunca texto de sugestão; uma tripwire da suíte garante isso.
+
 ## Atualizações
 
-A mesma página de configurações pergunta ao npm registry qual é a versão mais recente de `dsh-nextsteps`. Quando uma versão mais nova é publicada, **Atualizar agora** instala pelo gerenciador de plugins do dsh; se o gerenciador estiver ausente ou recusar a spec de instalação, o serviço loopback do próprio plugin roda a instalação com pnpm. Em qualquer caminho, a versão instalada é mostrada e você é convidado a reiniciar. As atualizações instalam somente o pacote npm `dsh-nextsteps` — cópias de desenvolvimento são detectadas e deixadas em paz.
+A mesma página de configurações pergunta ao npm registry qual é a versão mais recente de `dsh-nextsteps`. Quando uma versão mais nova é publicada, o plugin primeiro confere se a versão existe no registry e então **Atualizar agora** instala pelo gerenciador de plugins do dsh. A versão instalada é mostrada e você é convidado a reiniciar. As atualizações instalam somente o pacote npm `dsh-nextsteps` — cópias de desenvolvimento são detectadas e deixadas em paz.
 
 ## Requisitos
 
