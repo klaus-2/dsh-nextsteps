@@ -329,11 +329,28 @@ window.__ModuleLoader__.load({
       }
       scheduleRemove(CAPTURE_SESSION_KEY + '.' + sessionId);
       const sid = contentHash(sessionId);
-      const entries = readAudit();
-      const kept = entries.filter((entry) => entry.sid !== sid);
-      if (kept.length === entries.length) return;
-      if (kept.length === 0) scheduleRemove(AUDIT_KEY);
-      else scheduleWrite(AUDIT_KEY, JSON.stringify(kept.slice(-AUDIT_LIMIT)));
+      const auditEntries = storeStateForWrite(AUDIT_KEY, readAudit);
+      const auditKept = auditEntries.filter((entry) => entry.sid !== sid);
+      if (auditKept.length !== auditEntries.length) {
+        if (auditKept.length === 0) scheduleRemove(AUDIT_KEY);
+        else scheduleWrite(AUDIT_KEY, JSON.stringify(auditKept.slice(-AUDIT_LIMIT)));
+      }
+      const discardEntries = Object.entries(storeStateForWrite(DISCARDED_KEY, readDiscarded));
+      const discardKept = discardEntries.filter(([, value]) => value === null || typeof value !== 'object' || value.sessionId !== sessionId);
+      if (discardKept.length !== discardEntries.length) {
+        if (discardKept.length === 0) scheduleRemove(DISCARDED_KEY);
+        else {
+          const payload = {};
+          for (const [key, value] of discardKept) payload[key] = value;
+          scheduleWrite(DISCARDED_KEY, JSON.stringify(payload));
+        }
+      }
+      const legacy = readJson(CAPTURES_KEY, null);
+      if (legacy !== null && typeof legacy === 'object' && !Array.isArray(legacy) && legacy[sessionId] !== undefined) {
+        delete legacy[sessionId];
+        if (Object.keys(legacy).length === 0) scheduleRemove(CAPTURES_KEY);
+        else scheduleWrite(CAPTURES_KEY, JSON.stringify(legacy));
+      }
     }
 
     function writePrivateSession(sessionId, on) {
@@ -697,10 +714,23 @@ window.__ModuleLoader__.load({
         : [];
     }
 
+    function storeStateForWrite(key, readStore) {
+      const pending = pendingWrites.get(key);
+      if (pending !== undefined && pending.remove === false && typeof pending.value === 'string') {
+        try {
+          const parsed = JSON.parse(pending.value);
+          if (parsed !== null && typeof parsed === 'object') return parsed;
+        } catch {
+          return readStore();
+        }
+      }
+      return readStore();
+    }
+
     function recordAudit(kind, text, sessionId) {
       if (isPrivateSession(sessionId)) return;
       if (typeof text !== 'string' || text === '') return;
-      const entries = readAudit();
+      const entries = storeStateForWrite(AUDIT_KEY, readAudit);
       entries.push({ at: Date.now(), kind, hash: contentHash(text), len: text.length, sid: contentHash(sessionId) });
       scheduleWrite(AUDIT_KEY, JSON.stringify(entries.slice(-AUDIT_LIMIT)));
     }

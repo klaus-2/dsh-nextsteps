@@ -4706,15 +4706,16 @@ test("a private session keeps the inline tail behavior", async () => {
   }
 });
 
-test("enabling private purges the session's stored captures and audit while other sessions keep writing", async () => {
-  const storage = memoryStorage();
+test("enabling private purges the session's captures, discards and audit while other sessions keep writing", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.discarded": JSON.stringify({ k1: { prompt: "descartada", label: null, at: 1, sessionId: "s1", turn: 1 }, k2: { prompt: "outra conversa", label: null, at: 2, sessionId: "s2", turn: 1 } }) });
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
   try {
     const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
     capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
     client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the capture is on disk before the toggle");
-    assert(Array.isArray(auditEntriesOf(client.storage)) && auditEntriesOf(client.storage).length > 0, "the seeded capture left an audit entry");
+    assertEqual(auditEntriesOf(client.storage).length, 2, "both seeded captures left audit entries");
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
     const { checkbox } = await openPrivateToggle(client, tail, props);
@@ -4722,14 +4723,49 @@ test("enabling private purges the session's stored captures and audit while othe
     client.instance.flushWrites();
     assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the stored captures are purged when the session turns private");
     assert(!String(client.storage.getItem("dsh-nextsteps.captures.index")).includes('"s1"'), "the index no longer tracks the private session");
-    assertEqual(auditEntriesOf(client.storage), null, "the audit entries of the private session are purged");
+    assertEqual(auditEntriesOf(client.storage).length, 1, "only the other session's audit entry survives the purge");
+    const discarded = JSON.parse(client.storage.getItem("dsh-nextsteps.discarded"));
+    assertEqual(Object.keys(discarded), ["k2"], "the private session's discards are purged and the other session's stay");
     capture.component({ sessionId: "s1", callId: "call-2", block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "outra", label: "Outra" }] }) }] } });
     client.instance.flushWrites();
     assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the private session writes nothing new");
-    capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
-    client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s2") !== null, "the other session writes normally");
     assert(String(client.storage.getItem("dsh-nextsteps.captures.index")).includes("s2"), "the index tracks the other session");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("turning private again purges the session's deferred legacy captures instead of migrating them", async () => {
+  const legacy = JSON.stringify({ s1: { "call-legacy": { turn: 1, followups: [{ prompt: "legado", label: null }], clickedId: "sf-legacy" } } });
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.v1": legacy,
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({ "call-1": { turn: 1, followups: [{ prompt: "memória", label: null }], clickedId: "sf-mem" } }),
+    "dsh-nextsteps.private-sessions": JSON.stringify({ s1: true })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    client.instance.flushWrites();
+    assert(client.storage.getItem("dsh-nextsteps.captures.v1") !== null, "the legacy store is deferred while the session is private");
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await openPrivateToggle(client, tail, props);
+    checkbox.props.onChange({ target: { checked: false } });
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.v1"), null, "the deferred legacy captures of the private session are purged");
+    const second = loadClient({ storage: client.storage, routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+    try {
+      const { ctx } = fakeSlotHost(second.react);
+      second.instance.apply(ctx);
+      await settled(second);
+      second.instance.flushWrites();
+      assertEqual(second.storage.getItem("dsh-nextsteps.captures.v1"), null, "nothing is migrated afterwards");
+      assertEqual(second.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the purged legacy entries never land on disk");
+    } finally {
+      second.fetchStub.restore();
+    }
   } finally {
     client.fetchStub.restore();
   }
