@@ -7,7 +7,7 @@
   "srFollowupSent": "后续操作已发送",
   "sendFailed": "发送失败：",
   "meta": {
-    "title": "Nextsteps - Dev",
+    "title": "Nextsteps",
     "description": "在每个智能体回合下方推荐后续步骤提示——单击即可发送。"
   },
   "intro": "在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。",

@@ -7,7 +7,7 @@
   "srFollowupSent": "Follow-up enviado",
   "sendFailed": "Não consegui enviar: ",
   "meta": {
-    "title": "Nextsteps - Dev",
+    "title": "Nextsteps",
     "description": "Sugestões de próximos passos sob cada turno do agente — um clique envia o followup."
   },
   "intro": "Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.",
