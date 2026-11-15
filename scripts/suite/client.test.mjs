@@ -4760,3 +4760,151 @@ test("the legacy migration is deferred while a private session holds pending ent
     client.fetchStub.restore();
   }
 });
+
+suite("client: the local audit log");
+
+function auditEntriesOf(storage) {
+  const raw = storage.getItem("dsh-nextsteps.audit.v1");
+  return raw === null ? null : JSON.parse(raw);
+}
+
+test("a generated capture audits hash and length only", async () => {
+  const sent = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    sendStub(ctx, sent);
+    const prompt = "Rodar o build";
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock(prompt, "Rodar build") });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const favorite = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionFavorite");
+    favorite.props.onClick();
+    client.instance.flushWrites();
+    const favorites = JSON.parse(client.storage.getItem("dsh-nextsteps.favorites"));
+    const favoriteHash = Object.keys(favorites)[0];
+    const entries = auditEntriesOf(client.storage);
+    assert(entries !== null && entries.length === 1, "one audit entry is written");
+    assertEqual(entries[0].kind, "generated", "the capture is audited as generated");
+    assertEqual(entries[0].hash, favoriteHash, "the hash is the content hash of the suggestion text");
+    assertEqual(entries[0].len, prompt.length, "the length is the suggestion length");
+    assert(typeof entries[0].sid === "string" && entries[0].sid !== "", "the session is hashed, never raw");
+    assert(typeof entries[0].at === "number", "the entry carries the timestamp");
+    const raw = client.storage.getItem("dsh-nextsteps.audit.v1");
+    assert(!raw.includes(prompt), "the storage never carries the suggestion text");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a successful send audits the sent prompt", async () => {
+  const sent = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    sendStub(ctx, sent);
+    const prompt = "Rodar o build";
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock(prompt, "Rodar build") });
+    client.instance.flushWrites();
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await cardsOf(rendered)[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    client.instance.flushWrites();
+    const entries = auditEntriesOf(client.storage);
+    assert(entries !== null && entries.length === 2, "the generated and the sent events are both audited");
+    const sentEntry = entries[1];
+    assertEqual(sentEntry.kind, "sent", "the send is audited as sent");
+    assertEqual(sentEntry.len, prompt.length, "the sent length matches the prompt");
+    assert(typeof sentEntry.hash === "string" && sentEntry.hash !== "", "the sent hash is recorded");
+    assert(!client.storage.getItem("dsh-nextsteps.audit.v1").includes(prompt), "the storage never carries the sent text");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a private session and the fixture source write no audit entries", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    assertEqual(auditEntriesOf(client.storage), null, "a private session never audits");
+    const second = loadClient({
+      routes: {
+        "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, lang: "pt-BR" }, version: "1.0.0" },
+        "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "do fixture", label: "Fix" }], model: "fixture", source: "fixture" }
+      }
+    });
+    try {
+      const { ctx, registrations: regs2 } = fakeSlotHost(second.react);
+      second.instance.apply(ctx);
+      await settled(second);
+      const tail = regs2.find((entry) => entry.spec?.name === "conversation.chat.turnTail").component;
+      tail({ sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key });
+      for (const effect of second.react.__effects ?? []) await effect();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      second.instance.flushWrites();
+      assertEqual(second.storage.getItem("dsh-nextsteps.audit.v1"), null, "a fixture capture never audits");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the audit store holds the last two hundred entries", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    for (let index = 0; index < 205; index += 1) {
+      const text = "x".repeat(5 + (index % 196));
+      capture.component({ sessionId: "s1", callId: "call-" + index, block: { kind: "tool-result", callId: "call-" + index, name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: text, label: null }] }) }] } });
+      client.instance.flushWrites();
+    }
+    const entries = auditEntriesOf(client.storage);
+    assert(entries !== null, "the audit store exists");
+    assertEqual(entries.length, 200, "the store holds exactly the cap");
+    assertEqual(entries[0].len, 10, "the oldest kept entry is the sixth capture");
+    assertEqual(entries[199].len, 13, "the newest entry is the last capture");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the audit row lists entries and the armed button clears them", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.audit.v1": JSON.stringify([
+      { at: 1000, kind: "generated", hash: "abcdef123", len: 12, sid: "s1hash" },
+      { at: 2000, kind: "sent", hash: "987654321", len: 9, sid: "s1hash" }
+    ])
+  });
+  const client = loadClient({ storage, routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await settled(client);
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = settings.component({ t: (key) => key });
+    const rows = walk(tree, (node) => node.type === "button" && node.children.includes("auditClear"));
+    assertEqual(rows.length, 1, "the audit row offers the clear button");
+    const auditDiv = walk(tree, (node) => Array.isArray(node.children) && node.children.some((child) => typeof child === "string" && child.includes("#98765432") && child.includes("auditKindSent")))[0];
+    assert(auditDiv !== undefined, "the newest entry is listed first with a short hash");
+    const oldest = walk(tree, (node) => Array.isArray(node.children) && node.children.some((child) => typeof child === "string" && child.includes("#abcdef12") && child.includes("auditKindGenerated")))[0];
+    assert(oldest !== undefined, "the older entry is listed with its kind");
+    rows[0].props.onClick();
+    const armed = settings.component({ t: (key) => key });
+    assertEqual(walk(armed, (node) => node.type === "button" && node.children.includes("auditClear")).length, 1, "the first click only arms the button");
+    walk(armed, (node) => node.type === "button" && node.children.includes("auditClear"))[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEqual(client.storage.getItem("dsh-nextsteps.audit.v1"), null, "the second click clears the storage");
+    const cleared = settings.component({ t: (key) => key });
+    assert(walk(cleared, (node) => node.children.includes("auditCleared")).length === 1, "the clearing is announced");
+    assert(walk(cleared, (node) => node.children.includes("auditEmpty")).length === 1, "the row says the log is empty");
+  } finally {
+    client.fetchStub.restore();
+  }
+});

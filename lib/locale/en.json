@@ -149,5 +149,11 @@
   "srSecretsWarning": "A suggestion looks like it contains a credential or secret.",
   "sessionPrivate": "Private conversation",
   "srPrivateOn": "This conversation is private; suggestions stay in memory only.",
-  "srPrivateOff": "This conversation is no longer private."
+  "srPrivateOff": "This conversation is no longer private.",
+  "audit": "Audit log",
+  "auditEmpty": "No audited events yet.",
+  "auditClear": "Clear audit log",
+  "auditCleared": "The audit log was cleared.",
+  "auditKindGenerated": "generated",
+  "auditKindSent": "sent"
 }

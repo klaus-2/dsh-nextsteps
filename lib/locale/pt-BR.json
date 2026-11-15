@@ -149,5 +149,11 @@
   "srSecretsWarning": "Uma sugestão parece conter uma credencial ou segredo.",
   "sessionPrivate": "Conversa privada",
   "srPrivateOn": "Esta conversa é privada; as sugestões ficam apenas em memória.",
-  "srPrivateOff": "Esta conversa não é mais privada."
+  "srPrivateOff": "Esta conversa não é mais privada.",
+  "audit": "Registro de auditoria",
+  "auditEmpty": "Nenhum evento auditado ainda.",
+  "auditClear": "Apagar registro",
+  "auditCleared": "O registro de auditoria foi apagado.",
+  "auditKindGenerated": "gerado",
+  "auditKindSent": "enviado"
 }

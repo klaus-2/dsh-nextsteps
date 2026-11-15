@@ -149,5 +149,11 @@
   "srSecretsWarning": "有建议疑似包含凭据或密钥。",
   "sessionPrivate": "私人对话",
   "srPrivateOn": "此对话为私人模式；建议仅保留在内存中。",
-  "srPrivateOff": "此对话不再是私人模式。"
+  "srPrivateOff": "此对话不再是私人模式。",
+  "audit": "审计日志",
+  "auditEmpty": "尚无审计事件。",
+  "auditClear": "清空审计日志",
+  "auditCleared": "审计日志已清空。",
+  "auditKindGenerated": "生成",
+  "auditKindSent": "发送"
 }
