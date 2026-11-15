@@ -4,6 +4,7 @@ import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId, isDevCopy } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
 import { FUZZ_COUNT, FUZZ_SEED, IN_MEMORY_PAYLOADS, assertFollowupsShape, buildPayload, fuzzMessage, mulberry32 } from "./fuzz-kit.mjs";
+import { assistantMessage, sessionOf, toolCall, turnEnd, userMessage } from "../../tools/lib/turn-fixtures.mjs";
 
 suite("host: tool, settings and routes");
 
@@ -1793,4 +1794,89 @@ test("the fixture respects the maxFollowups setting", async () => {
     assertEqual(body.followups.length, 3, "six fixture cards are cut to the maxFollowups setting");
     assertEqual(body.followups[0].prompt, "card 0", "the first fixture card survives the cut");
   });
+});
+
+suite("host: card-to-turn attribution");
+
+async function attributionContext({ events, lang = "pt-BR", llmText = '{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}' } = {}) {
+  const { ctx, routes, registered, llmCalls } = stubContext({
+    services: { sessionQuery: sessionOf(events) },
+    llmText
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang, model: "", generationMode: "auto" })
+  }));
+  const route = routes.get(`/api/${pluginId}.generate`);
+  const post = (body) => route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }));
+  return { registered, post, llmCalls };
+}
+
+test("the rewrite of the latest turn is served through the harness", async () => {
+  const events = [
+    userMessage(1, "corrija o parser"),
+    toolCall(2, "call-1"),
+    assistantMessage(3, "feito"),
+    turnEnd(4, 1)
+  ];
+  const { registered, post, llmCalls } = await attributionContext({ events });
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const response = await post({ sessionId: "s1", afterSeq: 4 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.source, "rewrite", "the rewrite registered by the tool call is served");
+  assertEqual(body.followups[0].prompt, "Rodar os testes", "the rewritten card rides the answer");
+  assertEqual(llmCalls.length, 1, "only the rewrite call ran");
+});
+
+test("the rewrite is consumed once and never served again", async () => {
+  const events = [
+    userMessage(1, "corrija o parser"),
+    toolCall(2, "call-1"),
+    assistantMessage(3, "feito"),
+    turnEnd(4, 1)
+  ];
+  const { registered, post, llmCalls } = await attributionContext({ events });
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const first = await (await post({ sessionId: "s1", afterSeq: 4 })).json();
+  assertEqual(first.source, "rewrite", "the first request is served the rewrite");
+  const second = await post({ sessionId: "s1", afterSeq: 4 });
+  const secondBody = await second.json();
+  assertEqual(second.status, 200, JSON.stringify(secondBody).slice(0, 200));
+  assertEqual(secondBody.source, "transcript", "the consumed rewrite falls back to the transcript path");
+  assertEqual(llmCalls.length, 2, "the rewrite and the transcript each ran one llm call");
+});
+
+test("a tool call of another tool is ignored in the attribution", async () => {
+  const events = [
+    userMessage(1, "corrija o parser"),
+    toolCall(2, "call-1", "other_tool"),
+    assistantMessage(3, "feito"),
+    turnEnd(4, 1)
+  ];
+  const { post } = await attributionContext({ events });
+  const response = await post({ sessionId: "s1", afterSeq: 4 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.source, "transcript", "the call of another tool never carries a rewrite");
+});
+
+test("the probe reads the turn end through the harness", async () => {
+  const completed = await attributionContext({ events: [userMessage(1, "comecou"), toolCall(2, "call-1"), assistantMessage(3, "feito"), turnEnd(4, 1)] });
+  const completedBody = await (await completed.post({ sessionId: "s1", afterSeq: 4, validate: true })).json();
+  assertEqual(completedBody.ok, true, "the probe answers ok");
+  assertEqual(completedBody.completed, true, "a completed turn-end at afterSeq answers completed");
+  const movedOn = await attributionContext({ events: [userMessage(1, "comecou"), turnEnd(4, 1), turnEnd(9, 2)] });
+  const movedBody = await (await movedOn.post({ sessionId: "s1", afterSeq: 4, validate: true })).json();
+  assertEqual(movedBody.completed, false, "a newer turn end bars the earlier afterSeq");
+  const aborted = await attributionContext({ events: [userMessage(1, "comecou"), turnEnd(4, 1, "aborted")] });
+  const abortedBody = await (await aborted.post({ sessionId: "s1", afterSeq: 4, validate: true })).json();
+  assertEqual(abortedBody.completed, false, "an aborted turn-end is not completed");
 });
