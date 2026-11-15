@@ -3234,6 +3234,114 @@ test("the favourites grip drags one row onto another and persists the order", as
   }
 });
 
+test("the confirm-before-send setting arms the card send and the new chat", async () => {
+  const calls = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, confirmBeforeSend: true }, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return { binding: () => ({ send: async (text) => { calls.push(["send", text]); } }) };
+      if (name === "uiWorkspace") return { startSession: (workspaceId, options) => { calls.push(["startSession", options?.prompt]); } };
+      return undefined;
+    };
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const card = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
+    await card.props.onClick();
+    assertEqual(calls, [], "the armed click sends nothing");
+    const armed = renderTail(client, tail, props);
+    const confirmRow = walk(armed, (node) => node.props?.className === "dsh-sf-confirm")[0];
+    assert(confirmRow !== undefined, "the armed state renders the confirmation row");
+    assert(textOf(confirmRow).includes("sendConfirm"), `the row asks for the confirmation: ${textOf(confirmRow)}`);
+    const yes = buttonsOf(confirmRow).find((node) => node.children.includes("sendConfirmYes"));
+    await yes.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(calls, [["send", "Rodar o build"]], "the confirmation sends the prompt");
+    const after = renderTail(client, tail, props);
+    const newChat = buttonsOf(after).find((node) => node.props?.["aria-label"] === "actionNewChat");
+    await newChat.props.onClick();
+    assertEqual(calls.length, 1, "the armed new-chat calls nothing");
+    const chatArmed = renderTail(client, tail, props);
+    const chatRow = walk(chatArmed, (node) => node.props?.className === "dsh-sf-confirm")[0];
+    assert(chatRow !== undefined && textOf(chatRow).includes("newChatConfirm"), `the chat confirmation names the new conversation: ${chatRow === undefined ? "none" : textOf(chatRow)}`);
+    const chatYes = buttonsOf(chatRow).find((node) => node.children.includes("sendConfirmYes"));
+    await chatYes.props.onClick();
+    assertEqual(calls, [["send", "Rodar o build"], ["startSession", "Rodar o build"]], "the confirmed new chat starts the session with the suggestion");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("without the setting the card sends immediately and an armed send can be cancelled", async () => {
+  const calls = [];
+  const off = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, confirmBeforeSend: false }, version: "1.0.0" } });
+  try {
+    await settled(off.client);
+    off.ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return { binding: () => ({ send: async (text) => { calls.push(["send", text]); } }) };
+      return undefined;
+    };
+    const capture = off.registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(off.registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(off.client, tail, props);
+    const card = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
+    await card.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(calls, [["send", "Rodar o build"]], "the card sends immediately when the setting is off");
+    const after = renderTail(off.client, tail, props);
+    assertEqual(walk(after, (node) => node.props?.className === "dsh-sf-confirm").length, 0, "no confirmation row renders when the setting is off");
+  } finally {
+    off.client.fetchStub.restore();
+  }
+
+  const on = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, confirmBeforeSend: true }, version: "1.0.0" } });
+  try {
+    await settled(on.client);
+    on.ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return { binding: () => ({ send: async (text) => { calls.push(["send", text]); } }) };
+      return undefined;
+    };
+    const capture = on.registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s2",
+      callId: "call-2",
+      block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(on.registrations);
+    const props = { sessionId: "s2", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(on.client, tail, props);
+    const card = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
+    await card.props.onClick();
+    const armed = renderTail(on.client, tail, props);
+    const confirmRow = walk(armed, (node) => node.props?.className === "dsh-sf-confirm")[0];
+    assert(confirmRow !== undefined, "the armed state renders the confirmation row");
+    const cancel = buttonsOf(confirmRow).find((node) => node.children.includes("editCancel"));
+    await cancel.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(calls.filter((entry) => entry[1] === "Rodar o build").length, 1, "the cancelled send never fires");
+    const cleared = renderTail(on.client, tail, props);
+    assertEqual(walk(cleared, (node) => node.props?.className === "dsh-sf-confirm").length, 0, "the cancel clears the armed state");
+  } finally {
+    on.client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {

@@ -351,7 +351,8 @@ function settingsLoad() {
       styles: stylesOf(stored.styles) ?? [...DEFAULT_STYLES],
       generationMode: generationModeOf(stored.generationMode) ?? DEFAULT_GENERATION_MODE,
       latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
-      maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS
+      maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS,
+      confirmBeforeSend: stored.confirmBeforeSend === true
     };
   } catch {
     return {
@@ -362,7 +363,8 @@ function settingsLoad() {
       styles: [...DEFAULT_STYLES],
       generationMode: DEFAULT_GENERATION_MODE,
       latencyBudgetMs: GENERATE_TIMEOUT_MS,
-      maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS
+      maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
+      confirmBeforeSend: false
     };
   }
 }
@@ -938,7 +940,8 @@ async function apply(ctx) {
         styles: stylesOf(body?.styles) ?? current.styles,
         generationMode: generationModeOf(body?.generationMode) ?? current.generationMode,
         latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
-        maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars
+        maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars,
+        confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend
       };
       await settingsSave(next);
       reapplyTool(next);

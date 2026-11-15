@@ -148,6 +148,34 @@ test("the settings route keeps a model as provider/model", async () => {
   assertEqual(body.settings.model, "demo/demo-model");
 });
 
+test("the settings route coerces the confirm-before-send flag", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  const on = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirmBeforeSend: true })
+  }));
+  const onBody = await on.json();
+  assertEqual(onBody.settings.confirmBeforeSend, true, "a boolean true is stored");
+  const junk = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirmBeforeSend: "yes" })
+  }));
+  const junkBody = await junk.json();
+  assertEqual(junkBody.settings.confirmBeforeSend, true, "a non-boolean keeps the current value");
+  const off = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirmBeforeSend: false })
+  }));
+  const offBody = await off.json();
+  assertEqual(offBody.settings.confirmBeforeSend, false, "a boolean false is stored");
+});
+
 test("the model catalog lists the providers the host offers", async () => {
   const { ctx, routes } = stubContext({ llmModels: [{ id: "demo-model", name: "Demo Model" }] });
   const mod = await import(moduleUrl.href);
