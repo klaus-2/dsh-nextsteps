@@ -2787,6 +2787,43 @@ test("the generating indicator clears once the generation settles without orphan
   }
 });
 
+test("the suggestion editor counts the characters against the configured cap", async () => {
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, maxSuggestionChars: 200 }, version: "1.0.0" } });
+  try {
+    await settled(client);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const t = ctx.locale.bind("dsh-nextsteps");
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t };
+    const rendered = renderTail(client, tail, props);
+    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === t("actionEdit"));
+    assert(edit !== undefined, "the card offers the edit action");
+    await edit.props.onClick();
+    const withEditor = renderTail(client, tail, props);
+    const editor = walk(withEditor, (node) => String(node.props?.className ?? "") === "dsh-sf-editor")[0];
+    assert(editor !== undefined, "the editor opens under the card");
+    const area = walk(editor, (node) => node.type === "textarea")[0];
+    area.props.onChange({ target: { value: "a".repeat(190) } });
+    const counted = renderTail(client, tail, props);
+    const counter = walk(counted, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-charcount"))[0];
+    assert(counter !== undefined, "the editor shows the character counter");
+    assert(textOf(counter).includes("10"), `the counter reports the remaining characters: ${textOf(counter)}`);
+    assert(!String(counter.props.className).includes("dsh-sf-charcount-over"), "the under-limit counter carries no over flag");
+    area.props.onChange({ target: { value: "b".repeat(210) } });
+    const over = renderTail(client, tail, props);
+    const overCounter = walk(over, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-charcount"))[0];
+    assert(String(overCounter.props.className).includes("dsh-sf-charcount-over"), "the counter flags the over-limit state");
+    assert(textOf(overCounter).includes("10"), `the counter reports the excess characters: ${textOf(overCounter)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {

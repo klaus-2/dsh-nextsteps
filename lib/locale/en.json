@@ -56,6 +56,8 @@
   "editConfirm": "Send",
   "editCancel": "Cancel",
   "editPrompt": "The suggestion text",
+  "charsRemaining": "{n} characters left",
+  "charsOver": "{n} characters over the limit",
   "addSuggestion": "Add suggestion",
   "manualPlaceholder": "Write your own suggestion",
   "manualSave": "Save",

@@ -56,6 +56,8 @@
   "editConfirm": "发送",
   "editCancel": "取消",
   "editPrompt": "建议文本",
+  "charsRemaining": "还可输入 {n} 个字符",
+  "charsOver": "超出限制 {n} 个字符",
   "addSuggestion": "添加建议",
   "manualPlaceholder": "写下你自己的建议",
   "manualSave": "保存",
