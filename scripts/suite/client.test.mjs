@@ -2924,6 +2924,77 @@ test("the favourites search filters the list without touching the store", async 
   }
 });
 
+function favoriteHash(text) {
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
+  return (hash >>> 0).toString(36);
+}
+
+test("editing a favourite re-keys it and keeps its date and label", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Run the full suite")]: { prompt: "Run the full suite", label: "Run suite", at: 2000 },
+      [favoriteHash("Wire the retry path")]: { prompt: "Wire the retry path", label: "Retry", at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "favoriteEdit");
+    assert(edit !== undefined, "the favourite row offers the edit button");
+    await edit.props.onClick();
+    const withEditor = settings.component({ t: (key) => key });
+    const area = walk(withEditor, (node) => node.type === "textarea" && node.props?.["aria-label"] === "editPrompt")[0];
+    assert(area !== undefined, "the inline editor opens with a textarea");
+    area.props.onChange({ target: { value: "  Run the whole suite  " } });
+    const withDraft = settings.component({ t: (key) => key });
+    const save = buttonsOf(withDraft).find((node) => node.children.includes("manualSave"));
+    await save.props.onClick();
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assert(stored[favoriteHash("Run the full suite")] === undefined, "the old hash left the store");
+    assertEqual(Object.keys(stored).length, 2, "the store keeps one entry per favourite");
+    const updated = stored[favoriteHash("Run the whole suite")];
+    assert(updated !== undefined, "the trimmed text is stored under its fresh hash");
+    assertEqual(updated.at, 2000, "the edit keeps the original date");
+    assertEqual(updated.label, "Run suite", "the edit keeps the label");
+    const after = settings.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("srFavoriteEdited"), `the edit is announced: ${JSON.stringify(notice.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("editing a favourite onto an existing text is refused with a notice", async () => {
+  const seed = {
+    [favoriteHash("Run the full suite")]: { prompt: "Run the full suite", label: "Run suite", at: 2000 },
+    [favoriteHash("Wire the retry path")]: { prompt: "Wire the retry path", label: "Retry", at: 1000 }
+  };
+  const storage = memoryStorage({ "dsh-nextsteps.favorites": JSON.stringify(seed) });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "favoriteEdit");
+    await edit.props.onClick();
+    const withEditor = settings.component({ t: (key) => key });
+    const area = walk(withEditor, (node) => node.type === "textarea" && node.props?.["aria-label"] === "editPrompt")[0];
+    area.props.onChange({ target: { value: "Wire the retry path" } });
+    const withDraft = settings.component({ t: (key) => key });
+    const save = buttonsOf(withDraft).find((node) => node.children.includes("manualSave"));
+    await save.props.onClick();
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.favorites"]), seed, "the store is untouched by the duplicate edit");
+    const after = settings.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("favoriteDuplicate"), `the duplicate is announced: ${JSON.stringify(notice.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
