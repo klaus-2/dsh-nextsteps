@@ -329,13 +329,13 @@ window.__ModuleLoader__.load({
       }
       scheduleRemove(CAPTURE_SESSION_KEY + '.' + sessionId);
       const sid = contentHash(sessionId);
-      const auditEntries = storeStateForWrite(AUDIT_KEY, readAudit);
+      const auditEntries = storeStateForWrite(AUDIT_KEY, readAudit, []);
       const auditKept = auditEntries.filter((entry) => entry.sid !== sid);
       if (auditKept.length !== auditEntries.length) {
         if (auditKept.length === 0) scheduleRemove(AUDIT_KEY);
         else scheduleWrite(AUDIT_KEY, JSON.stringify(auditKept.slice(-AUDIT_LIMIT)));
       }
-      const discardEntries = Object.entries(storeStateForWrite(DISCARDED_KEY, readDiscarded));
+      const discardEntries = Object.entries(storeStateForWrite(DISCARDED_KEY, readDiscarded, {}));
       const discardKept = discardEntries.filter(([, value]) => value === null || typeof value !== 'object' || value.sessionId !== sessionId);
       if (discardKept.length !== discardEntries.length) {
         if (discardKept.length === 0) scheduleRemove(DISCARDED_KEY);
@@ -345,8 +345,12 @@ window.__ModuleLoader__.load({
           scheduleWrite(DISCARDED_KEY, JSON.stringify(payload));
         }
       }
-      const legacy = readJson(CAPTURES_KEY, null);
-      if (legacy !== null && typeof legacy === 'object' && !Array.isArray(legacy) && legacy[sessionId] !== undefined) {
+      const legacyState = storeStateForWrite(CAPTURES_KEY, () => {
+        const parsed = readJson(CAPTURES_KEY, null);
+        return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      }, {});
+      const legacy = legacyState;
+      if (legacy[sessionId] !== undefined) {
         delete legacy[sessionId];
         if (Object.keys(legacy).length === 0) scheduleRemove(CAPTURES_KEY);
         else scheduleWrite(CAPTURES_KEY, JSON.stringify(legacy));
@@ -714,14 +718,17 @@ window.__ModuleLoader__.load({
         : [];
     }
 
-    function storeStateForWrite(key, readStore) {
+    function storeStateForWrite(key, readStore, emptyState) {
       const pending = pendingWrites.get(key);
-      if (pending !== undefined && pending.remove === false && typeof pending.value === 'string') {
-        try {
-          const parsed = JSON.parse(pending.value);
-          if (parsed !== null && typeof parsed === 'object') return parsed;
-        } catch {
-          return readStore();
+      if (pending !== undefined) {
+        if (pending.remove === true) return emptyState;
+        if (typeof pending.value === 'string') {
+          try {
+            const parsed = JSON.parse(pending.value);
+            if (parsed !== null && typeof parsed === 'object') return parsed;
+          } catch {
+            return readStore();
+          }
         }
       }
       return readStore();
@@ -1231,7 +1238,7 @@ window.__ModuleLoader__.load({
       };
 
       const discard = (captureKey, prompt, label, turn) => {
-        const store = readDiscarded();
+        const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
         store[captureKey] = { prompt, label, at: Date.now(), sessionId, turn };
         if (isPrivateSession(sessionId)) {
           refreshLocalStores(undefined, store);
@@ -1384,7 +1391,7 @@ window.__ModuleLoader__.load({
       const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
 
       const undoDiscard = (captureKey) => {
-        const store = readDiscarded();
+        const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
         if (store[captureKey] === undefined) return;
         delete store[captureKey];
         if (!isPrivateSession(sessionId)) scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
@@ -2339,6 +2346,7 @@ window.__ModuleLoader__.load({
           for (const timerId of auditTimersRef.current) window.clearTimeout(timerId);
           auditTimersRef.current.clear();
           setAuditClearArmed(false);
+          pendingWrites.delete(AUDIT_KEY);
           removeNow(AUDIT_KEY);
           setAudit([]);
           setLocalNotice(t('auditCleared'));
@@ -2875,7 +2883,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'dsh-sf-action',
               onClick: () => {
-                const store = readDiscarded();
+                const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
                 delete store[captureKey];
                 scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
                 refreshLocal();
