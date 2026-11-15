@@ -7,7 +7,7 @@
   "srFollowupSent": "Follow-up enviado",
   "sendFailed": "Não consegui enviar: ",
   "meta": {
-    "title": "Nextsteps",
+    "title": "Nextsteps - Dev",
     "description": "Sugestões de próximos passos sob cada turno do agente — um clique envia o followup."
   },
   "intro": "Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.",
@@ -100,7 +100,7 @@
   "modelTestFail": "Indisponível ({e})",
   "generationFailed": "Falha ao gerar: ",
   "retryGeneration": "Tentar novamente",
-  "originLabel": "via {model} ({source})",
+  "originLabel": "via {model}",
   "sessionOptions": "Opções da conversa",
   "sessionLangGlobal": "Igual ao global",
   "sessionReset": "Redefinir",
@@ -156,5 +156,24 @@
   "auditClear": "Apagar registro",
   "auditCleared": "O registro de auditoria foi apagado.",
   "auditKindGenerated": "gerado",
-  "auditKindSent": "enviado"
+  "auditKindSent": "enviado",
+  "originRewrite": "da resposta deste turno",
+  "originFixture": "do fixture de teste",
+  "setCardActions": "Ações do cartão",
+  "setCardActionsTip": "Escolha quais ações cada cartão mostra e em qual ordem. Desmarque para ocultar; com tudo desmarcado nenhuma ação aparece.",
+  "cardActionsHiddenAll": "Nenhuma ação é mostrada nos cartões.",
+  "generationTimeoutTip": "O gerador esgotou o tempo — tente de novo ou aumente o orçamento de latência nas configurações.",
+  "tabGeneration": "Geração",
+  "tabCards": "Cartões",
+  "tabPrivacy": "Privacidade",
+  "tabFavourites": "Favoritos",
+  "tabAbout": "Sobre",
+  "secGeneration": "Como as sugestões são geradas",
+  "secLimits": "Tempo e tamanho",
+  "secAppearance": "Aparência dos cartões",
+  "secActions": "Ações dos cartões",
+  "secPrivacy": "Seus dados neste computador",
+  "secAudit": "Registro de auditoria",
+  "secAbout": "Versão e atualizações",
+  "secPerformance": "Desempenho"
 }

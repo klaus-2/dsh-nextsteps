@@ -1426,13 +1426,16 @@ test("the stylesheet carries the cardline and hover-reveal contract", () => {
   assertIncludes(source, ".dsh-sf-cardline { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }", "the cardline row is styled");
   assertIncludes(source, ".dsh-sf-cardline.is-dragging { opacity: 0.5; }", "the dragging state dims the cardline");
   assertIncludes(source, ".dsh-sf-grip { cursor: grab; touch-action: none; flex: none; user-select: none; }", "the grip keeps its cursor and blocks touch scrolling during a drag");
-  assertIncludes(source, ".dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; opacity: 0; pointer-events: none;", "the per-card actions start hidden but focusable");
-  assertIncludes(source, ".dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; pointer-events: auto; }", "hover and focus reveal the per-card actions");
-  assertIncludes(source, "@media (hover: none) { .dsh-sf-item-actions { opacity: 1; pointer-events: auto; } }", "touch devices keep the actions visible");
+  assertIncludes(source, ".dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; opacity: 0.45; transition: opacity 120ms ease; }", "the per-card actions stay clickable and merely dim when unhovered");
+  assertIncludes(source, ".dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; }", "hover and focus highlight the per-card actions");
+  assertIncludes(source, ".dsh-sf-item .dsh-sf-action { min-width: 20px; padding: 1px 5px; font-size: 10px; }", "the per-card actions stay compact");
+  assert(!source.includes(".dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; opacity: 0.45; transition: opacity 120ms ease; pointer-events"), "no pointer-events gate steals the first click");
   const itemActionRows = [...source.matchAll(/className: 'dsh-sf-item-actions'/g)].length;
-  assertEqual(itemActionRows, 1, "only the per-card row carries the reveal class");
+  assertEqual(itemActionRows, 2, "the per-card row and the settings preview carry the reveal class");
   const sharedActionRows = [...source.matchAll(/className: 'dsh-sf-actions'/g)].length;
-  assertEqual(sharedActionRows, 4, "the editor, manual, undo and footer rows keep the always-visible class");
+  assertEqual(sharedActionRows, 3, "the editor, manual and footer rows keep the always-visible class");
+  assertIncludes(source, "className: 'dsh-sf-action dsh-sf-undo'", "the undo button carries its own compact class");
+  assertIncludes(source, ".dsh-sf-status { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; max-width: 100%; }", "the notice and the undo share one status line");
   assert(!source.includes("onDragStart"), "the dead HTML5 drag start is gone");
   assert(!source.includes("onDragOver"), "the dead HTML5 drag over is gone");
   assert(!source.includes("dataTransfer"), "the dead HTML5 drag payload is gone");
@@ -2495,11 +2498,11 @@ test("the client clamps the latency budget when the settings do not carry one", 
     }
   };
   const missing = await armDeadline({ lang: "en", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", maxSuggestionChars: 200 });
-  assert(missing.includes(35000), `the missing budget arms the default deadline: ${JSON.stringify(missing)}`);
+  assert(missing.includes(65000), `the missing budget arms the default deadline: ${JSON.stringify(missing)}`);
   const seven = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 7000 });
   assert(seven.includes(12000), `the seven second budget arms twelve seconds: ${JSON.stringify(seven)}`);
   const junk = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: "not a number" });
-  assert(junk.includes(35000), `a non-numeric budget arms the default deadline: ${JSON.stringify(junk)}`);
+  assert(junk.includes(65000), `a non-numeric budget arms the default deadline: ${JSON.stringify(junk)}`);
   assert(junk.every((ms) => Number.isFinite(ms)), `every armed deadline is finite: ${JSON.stringify(junk)}`);
   const tiny = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 1 });
   assert(tiny.includes(10000), `a budget below the floor is clamped: ${JSON.stringify(tiny)}`);
@@ -3380,7 +3383,7 @@ test("a generated card carries its model origin", async () => {
   try {
     await settled(client);
     const tail = tailOf(registrations);
-    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => ({ originLabel: "via {model} ({source})" }[key] ?? key) };
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => ({ originLabel: "via {model}" }[key] ?? key) };
     tail(props);
     for (const effect of client.react.__effects ?? []) await effect();
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3390,8 +3393,8 @@ test("a generated card carries its model origin", async () => {
     assertEqual(stored["generated-1"].origin.source, "transcript", "the capture stores the generation source");
     const rendered = renderTail(client, tail, props);
     const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin")[0];
-    assert(origin !== undefined, "the card renders the origin line");
-    assertEqual(textOf(origin), "via demo-model (transcript)", `the origin line names the model and the source: ${textOf(origin)}`);
+    assert(origin !== undefined, "the tail header renders the origin line");
+    assertEqual(textOf(origin), "via demo-model", `the origin line names the generating model: ${textOf(origin)}`);
   } finally {
     client.fetchStub.restore();
   }
@@ -3407,7 +3410,7 @@ test("a capture without a stored origin renders no origin line", async () => {
   try {
     await settled(client);
     const tail = tailOf(registrations);
-    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => ({ originLabel: "via {model} ({source})" }[key] ?? key) };
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => ({ originLabel: "via {model}" }[key] ?? key) };
     const rendered = renderTail(client, tail, props);
     const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin");
     assertEqual(origin.length, 0, "no origin line renders without a stored origin");

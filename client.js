@@ -13,10 +13,11 @@ window.__ModuleLoader__.load({
     const GENERATION_MODES = ['auto', 'on-demand'];
     const LATENCY_MIN_MS = 5000;
     const LATENCY_MAX_MS = 120000;
-    const LATENCY_DEFAULT_MS = 30000;
+    const LATENCY_DEFAULT_MS = 60000;
     const CHARS_MIN = 60;
     const CHARS_MAX = 600;
     const CHARS_DEFAULT = 200;
+    const CARD_ACTION_IDS = ['copy', 'favorite', 'edit', 'insert', 'discard', 'regenerate', 'moveEarlier', 'moveLater', 'expand', 'newChat'];
     const CAPTURE_LIMIT = 400;
     const METRIC_SAMPLES = 50;
     const WRITE_RETRY_DELAYS_MS = [250, 1000, 4000];
@@ -124,9 +125,9 @@ window.__ModuleLoader__.load({
 .dsh-sf-grip { cursor: grab; touch-action: none; flex: none; user-select: none; }
 .dsh-sf-cardline { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
 .dsh-sf-cardline.is-dragging { opacity: 0.5; }
-.dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
-.dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; pointer-events: auto; }
-@media (hover: none) { .dsh-sf-item-actions { opacity: 1; pointer-events: auto; } }
+.dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; opacity: 0.45; transition: opacity 120ms ease; }
+.dsh-sf-item:hover .dsh-sf-item-actions, .dsh-sf-item:focus-within .dsh-sf-item-actions { opacity: 1; }
+.dsh-sf-item .dsh-sf-action { min-width: 20px; padding: 1px 5px; font-size: 10px; }
 .dsh-sf-card { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: inherit; font-size: 12.5px; line-height: 1.45; padding: 6px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); cursor: pointer; text-align: left; transition: border-color 120ms ease, background 120ms ease, transform 60ms ease; }
 .dsh-sf-card:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-brand-primary); }
 .dsh-sf-card:hover:not(:disabled) .dsh-sf-icon { color: var(--dsw-alias-brand-primary); }
@@ -154,8 +155,11 @@ window.__ModuleLoader__.load({
 .dsh-sf-generating { font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dsh-sf-charcount { font-size: 11px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
 .dsh-sf-charcount-over { color: var(--dsw-alias-state-error-primary); }
-.dsh-sf-confirm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: 100%; }
-.dsh-sf-origin { font-size: 10px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.dsh-sf-confirm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: 100%; padding: 4px 8px; border: 1px solid var(--dsw-alias-brand-primary); border-radius: var(--dsw-radius-md, 10px); background: var(--dsw-alias-bg-layer-2); }
+.dsh-sf-card.is-armed { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-2); }
+.dsh-sf-status { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; max-width: 100%; }
+.dsh-sf-undo { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); text-decoration: underline; background: none; border: none; min-width: 0; }
+.dsh-sf-origin { font-size: 10px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); margin-left: auto; white-space: nowrap; }
 .dsh-sf-warn { color: var(--dsw-alias-state-warning-primary, #f5a623); font-size: 12px; }
 `;
 
@@ -1086,7 +1090,7 @@ window.__ModuleLoader__.load({
       });
     }
 
-    function FollowupsCard({ entries, sessionId, ctx, t, header, generatingLabel, footer, deferred, rootRef, retry, orderKey, afterSeq }) {
+    function FollowupsCard({ entries, sessionId, ctx, t, header, generatingLabel, footer, deferred, rootRef, retry, orderKey, afterSeq, turn }) {
       const [sentLocally, setSentLocally] = React.useState(() => new Set());
       const [failure, setFailure] = React.useState(null);
       const [notice, setNotice] = React.useState('');
@@ -1412,7 +1416,7 @@ window.__ModuleLoader__.load({
       };
 
       const sessionDiscards = Object.entries(discarded)
-        .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId);
+        .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId && (turn === undefined || value.turn === undefined || String(value.turn) === String(turn)));
       sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
       const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
 
@@ -1556,7 +1560,7 @@ window.__ModuleLoader__.load({
               }, '⠿'),
               h('button', {
                 type: 'button',
-                className: 'dsh-sf-card' + (sent ? ' is-sent' : ''),
+                className: 'dsh-sf-card' + (sent ? ' is-sent' : '') + (state.armed === true ? ' is-armed' : ''),
                 disabled: sent,
                 title: prompt,
                 'aria-label': prompt,
@@ -1575,81 +1579,105 @@ window.__ModuleLoader__.load({
                 title: kind === 'secrets' ? t('warnSecrets') : t('warnInjection')
               }, '⚠'))),
             h('span', { className: 'dsh-sf-item-actions' },
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': state.copied === true ? t('copied') : t('actionCopy'),
-                title: state.copied === true ? t('copied') : `${t('actionCopy')} (C)`,
-                'aria-keyshortcuts': 'c',
-                onClick: () => copy(prompt, itemId)
-              }, state.copied === true ? t('copied') : '⧉'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionFavorite'),
-                title: `${t('actionFavorite')} (F)`,
-                'aria-keyshortcuts': 'f',
-                onClick: () => toggleFavorite(favId, prompt, label)
-              }, fav ? '★' : '☆'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionEdit'),
-                title: `${t('actionEdit')} (E)`,
-                'aria-keyshortcuts': 'e',
-                onClick: () => updateItem(itemId, { editing: true, draft: prompt })
-              }, '✎'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionInsertDraft'),
-                title: `${t('actionInsertDraft')} (I)`,
-                'aria-keyshortcuts': 'i',
-                onClick: () => insertDraft(prompt)
-              }, '⤓'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionDiscard'),
-                title: `${t('actionDiscard')} (D)`,
-                'aria-keyshortcuts': 'd',
-                onClick: () => discard(itemId, prompt, label, entry.turn)
-              }, '✕'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionRegenerate'),
-                title: t('actionRegenerate'),
-                disabled: regenState.has(sessionId + '|' + (entry.turn ?? '')) || state.regenerating === true,
-                onClick: () => regenerate(itemId, prompt, label, entry)
-              }, '↻'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionMoveEarlier'),
-                title: t('actionMoveEarlier'),
-                onClick: () => moveItemBy(itemId, -1)
-              }, '↑'),
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionMoveLater'),
-                title: t('actionMoveLater'),
-                onClick: () => moveItemBy(itemId, 1)
-              }, '↓'),
-              canExpand ? h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': state.expanded === true ? t('actionCollapse') : t('actionExpand'),
-                onClick: () => updateItem(itemId, { expanded: state.expanded !== true })
-              }, state.expanded === true ? '⌃' : '…') : null,
-              h('button', {
-                type: 'button',
-                className: 'dsh-sf-action',
-                'aria-label': t('actionNewChat'),
-                title: t('actionNewChat'),
-                onClick: () => requestNewChat(itemId, prompt)
-              }, '↗')),
+              ...pluginSettings.cardActions.flatMap((actionId) => {
+                if (actionId === 'copy') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': state.copied === true ? t('copied') : t('actionCopy'),
+                    title: state.copied === true ? t('copied') : `${t('actionCopy')} (C)`,
+                    'aria-keyshortcuts': 'c',
+                    onClick: () => copy(prompt, itemId)
+                  }, state.copied === true ? t('copied') : '⧉')];
+                }
+                if (actionId === 'favorite') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionFavorite'),
+                    title: `${t('actionFavorite')} (F)`,
+                    'aria-keyshortcuts': 'f',
+                    onClick: () => toggleFavorite(favId, prompt, label)
+                  }, fav ? '★' : '☆')];
+                }
+                if (actionId === 'edit') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionEdit'),
+                    title: `${t('actionEdit')} (E)`,
+                    'aria-keyshortcuts': 'e',
+                    onClick: () => updateItem(itemId, { editing: true, draft: prompt })
+                  }, '✎')];
+                }
+                if (actionId === 'insert') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionInsertDraft'),
+                    title: `${t('actionInsertDraft')} (I)`,
+                    'aria-keyshortcuts': 'i',
+                    onClick: () => insertDraft(prompt)
+                  }, '⤓')];
+                }
+                if (actionId === 'discard') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionDiscard'),
+                    title: `${t('actionDiscard')} (D)`,
+                    'aria-keyshortcuts': 'd',
+                    onClick: () => discard(itemId, prompt, label, entry.turn)
+                  }, '✕')];
+                }
+                if (actionId === 'regenerate') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionRegenerate'),
+                    title: t('actionRegenerate'),
+                    disabled: regenState.has(sessionId + '|' + (entry.turn ?? '')) || state.regenerating === true,
+                    onClick: () => regenerate(itemId, prompt, label, entry)
+                  }, '↻')];
+                }
+                if (actionId === 'moveEarlier') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionMoveEarlier'),
+                    title: t('actionMoveEarlier'),
+                    onClick: () => moveItemBy(itemId, -1)
+                  }, '↑')];
+                }
+                if (actionId === 'moveLater') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionMoveLater'),
+                    title: t('actionMoveLater'),
+                    onClick: () => moveItemBy(itemId, 1)
+                  }, '↓')];
+                }
+                if (actionId === 'expand') {
+                  if (canExpand !== true) return [];
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': state.expanded === true ? t('actionCollapse') : t('actionExpand'),
+                    onClick: () => updateItem(itemId, { expanded: state.expanded !== true })
+                  }, state.expanded === true ? '⌃' : '…')];
+                }
+                if (actionId === 'newChat') {
+                  return [h('button', {
+                    type: 'button',
+                    className: 'dsh-sf-action',
+                    'aria-label': t('actionNewChat'),
+                    title: t('actionNewChat'),
+                    onClick: () => requestNewChat(itemId, prompt)
+                  }, '↗')];
+                }
+                return [];
+              })),
             state.armed === true || state.chatArmed === true ? h('span', { className: 'dsh-sf-confirm' },
               h('span', { className: 'dsh-sf-prompt' }, state.chatArmed === true ? t('newChatConfirm') : t('sendConfirm')),
               h('button', {
@@ -1714,10 +1742,7 @@ window.__ModuleLoader__.load({
                   }
                 }, t('editCancel')))) : null,
             h('span', { className: 'dsh-sf-hints' },
-              `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionInsertDraft')} I · ${t('actionDiscard')} D`),
-            index === followups.length - 1 && origin?.model !== undefined && origin?.source !== undefined
-              ? h('div', { className: 'dsh-sf-origin' }, t('originLabel').replace('{model}', origin.model).replace('{source}', origin.source) + (origin.lang ? ' · ' + origin.lang : ''))
-              : null));
+              `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionInsertDraft')} I · ${t('actionDiscard')} D`)));
         }
       }
       for (const sortedId of orderedIds()) rows.push(rowSpecs.get(sortedId));
@@ -1731,16 +1756,16 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'dsh-sf-placeholder' }, '…')
           : h('div', { className: 'dsh-sf-row' }, rows),
         failure === null ? null : h('div', { className: 'dsh-sf-error' }, failure),
-        h('div', { className: 'dsh-sf-notice', style: notice === '' ? { display: 'none' } : undefined }, notice),
-        h('div', { className: 'dsh-sf-sr', role: 'status' }, notice),
-        recentDiscard === undefined ? null : h('span', { className: 'dsh-sf-actions' },
-          h('button', {
+        h('div', { className: 'dsh-sf-status' },
+          h('div', { className: 'dsh-sf-notice', style: notice === '' ? { display: 'none' } : undefined }, notice),
+          recentDiscard === undefined ? null : h('button', {
             type: 'button',
-            className: 'dsh-sf-action',
+            className: 'dsh-sf-action dsh-sf-undo',
             'aria-label': t('undoDiscard'),
             title: t('undoDiscard'),
             onClick: () => undoDiscard(recentDiscard[0])
           }, t('undoDiscard'))),
+        h('div', { className: 'dsh-sf-sr', role: 'status' }, notice),
         footer ?? null,
         retry ?? null);
     }
@@ -1748,6 +1773,7 @@ window.__ModuleLoader__.load({
     const generationState = new Map();
     const generationAfterSeq = new Map();
     const failedGenerations = new Map();
+    const timedOutGenerations = new Set();
     const regenState = new Map();
     const validatedTurns = new Map();
     const warnedTurns = new Set();
@@ -1828,6 +1854,7 @@ window.__ModuleLoader__.load({
             const data = await responseJson(response);
             if (state.cancelled) return;
             if (!response.ok) {
+              state.timedOut = data?.timedOut === true;
               const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
               failure = new Error(`the generator answered with HTTP ${response.status}${detail}`);
               retryable = response.status >= 500;
@@ -1839,6 +1866,7 @@ window.__ModuleLoader__.load({
               } else {
                 if (revision !== settingsRevision) return;
                 failedGenerations.delete(key);
+                timedOutGenerations.delete(key);
                 const hasOrigin = (typeof data?.model === 'string' && data.model !== '') || (typeof data?.source === 'string' && data.source !== '');
                 const origin = hasOrigin
                   ? {
@@ -1867,6 +1895,8 @@ window.__ModuleLoader__.load({
         if (state.cancelled) return;
         failedGenerations.set(key, String(failure?.message ?? failure));
         if (failedGenerations.size > 200) failedGenerations.delete(failedGenerations.keys().next().value);
+        if (state.timedOut === true) timedOutGenerations.add(key);
+        else timedOutGenerations.delete(key);
         warnGeneration(key, failure);
       } finally {
         if (generationState.get(key) === state) generationState.delete(key);
@@ -1986,6 +2016,7 @@ window.__ModuleLoader__.load({
 
         const retry = failureMessage !== undefined && entries.length === 0 && turn !== undefined ? h('div', { className: 'dsh-sf-retry' },
           h('span', { className: 'dsh-sf-error' }, t('generationFailed') + failureMessage),
+          timedOutGenerations.has(key) ? h('span', { className: 'dsh-sf-placeholder' }, t('generationTimeoutTip')) : null,
           h('button', {
             type: 'button',
             className: 'dsh-sf-action',
@@ -2063,6 +2094,17 @@ window.__ModuleLoader__.load({
           setManualText('');
           setManualOpen(false);
         };
+
+        const origins = entries
+          .map((entry) => entry.origin)
+          .filter((value) => value !== null && typeof value === 'object' && value.model !== undefined && value.source !== undefined)
+          .sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+        const originEntry = origins.length === 0 ? undefined : origins[origins.length - 1];
+        const originText = originEntry === undefined ? null
+          : originEntry.source === 'rewrite' ? t('originRewrite')
+          : originEntry.source === 'fixture' ? t('originFixture')
+          : t('originLabel').replace('{model}', String(originEntry.model));
+        const originSuffix = originEntry !== undefined && typeof originEntry.lang === 'string' && originEntry.lang !== '' ? ' · ' + originEntry.lang : '';
 
         const header = h('div', { className: 'dsh-sf-header-row' },
           pluginSettings.showHeader ? h('div', { className: 'dsh-sf-header' }, t('header')) : null,
@@ -2159,7 +2201,8 @@ window.__ModuleLoader__.load({
               }
             }
           }, '⚙'),
-          gearNotice === true ? h('span', { className: 'dsh-sf-placeholder' }, t('settingsUnavailable')) : null);
+          gearNotice === true ? h('span', { className: 'dsh-sf-placeholder' }, t('settingsUnavailable')) : null,
+          originText === null ? null : h('span', { className: 'dsh-sf-origin', title: originText }, originText + originSuffix));
 
         const footer = onDemand ? h('span', { className: 'dsh-sf-actions' },
           h('button', {
@@ -2183,6 +2226,7 @@ window.__ModuleLoader__.load({
           retry,
           orderKey,
           afterSeq,
+          turn,
           deferred: visible !== true,
           rootRef
         });
@@ -2245,9 +2289,9 @@ window.__ModuleLoader__.load({
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
     const MODEL_TEST_ROUTE = '/api/dsh-nextsteps.model-test';
     const DICTIONARIES = {
-      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","setConfirmSend":"Confirm before sending","setConfirmSendTip":"The first click arms the send and the second confirms; it also applies to new conversation.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","sendConfirm":"Send this suggestion?","sendConfirmYes":"Send now","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srSendConfirm":"The send is armed; click again to confirm.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: ","retryGeneration":"Try again","originLabel":"via {model} ({source})","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","openSettings":"Open Nextsteps settings","settingsUnavailable":"Opening the settings is not available here.","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","srFavoritesReordered":"The favourites were reordered.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatConfirm":"Start a new conversation with this suggestion?","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here.","actionRegenerate":"Regenerate","regenerating":"Regenerating…","srRegenerated":"The suggestion was regenerated.","updatePrecheck":"The version could not be verified on the npm registry.","updateNoManager":"No plugin installer is available in this host.","setRetention":"Retention","setRetentionTip":"Automatically delete stored suggestions older than this many days. 0 turns it off (0-365).","setTranscriptScope":"Transcript scope","setTranscriptScopeTip":"How much of the turn the generator sees. Minimal sends only the last user and assistant messages.","optTranscriptFull":"Full transcript","optTranscriptMinimal":"Minimal (last messages)","warnInjection":"This suggestion looks like a prompt-injection attempt","warnSecrets":"This suggestion looks like it contains a credential or secret","srSecretsWarning":"A suggestion looks like it contains a credential or secret.","sessionPrivate":"Private conversation","srPrivateOn":"This conversation is private; suggestions stay in memory only.","srPrivateOff":"This conversation is no longer private.","privatePurgeFailed":"The stored suggestions of this conversation could not be deleted; check the storage.","audit":"Audit log","auditEmpty":"No audited events yet.","auditClear":"Clear audit log","auditCleared":"The audit log was cleared.","auditKindGenerated":"generated","auditKindSent":"sent"},
-      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","setConfirmSend":"Confirmar antes de enviar","setConfirmSendTip":"O primeiro clique arma o envio e o segundo confirma; vale também para nova conversa.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","sendConfirm":"Enviar esta sugestão?","sendConfirmYes":"Enviar agora","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srSendConfirm":"O envio está aguardando confirmação; clique novamente para confirmar.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: ","retryGeneration":"Tentar novamente","originLabel":"via {model} ({source})","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","openSettings":"Abrir as configurações do Nextsteps","settingsUnavailable":"Abrir as configurações não está disponível aqui.","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","srFavoritesReordered":"Os favoritos foram reordenados.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatConfirm":"Iniciar uma nova conversa com esta sugestão?","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui.","actionRegenerate":"Regenerar","regenerating":"Regenerando…","srRegenerated":"A sugestão foi regenerada.","updatePrecheck":"Não foi possível verificar a versão no registro do npm.","updateNoManager":"Nenhum instalador de plugins está disponível neste host.","setRetention":"Retenção","setRetentionTip":"Apaga automaticamente as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365).","setTranscriptScope":"Escopo do histórico","setTranscriptScopeTip":"Quanto do turno o gerador enxerga. Mínimo envia apenas a última mensagem de usuário e de assistente.","optTranscriptFull":"Histórico completo","optTranscriptMinimal":"Mínimo (últimas mensagens)","warnInjection":"Esta sugestão parece uma tentativa de injeção de prompt","warnSecrets":"Esta sugestão parece conter uma credencial ou segredo","srSecretsWarning":"Uma sugestão parece conter uma credencial ou segredo.","sessionPrivate":"Conversa privada","srPrivateOn":"Esta conversa é privada; as sugestões ficam apenas em memória.","srPrivateOff":"Esta conversa não é mais privada.","privatePurgeFailed":"Não foi possível apagar as sugestões armazenadas desta conversa; verifique o armazenamento.","audit":"Registro de auditoria","auditEmpty":"Nenhum evento auditado ainda.","auditClear":"Apagar registro","auditCleared":"O registro de auditoria foi apagado.","auditKindGenerated":"gerado","auditKindSent":"enviado"},
-      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","setConfirmSend":"发送前确认","setConfirmSendTip":"第一次点击进入待确认状态，第二次点击才会发送；同样适用于新建对话。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","sendConfirm":"发送这条建议？","sendConfirmYes":"立即发送","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srSendConfirm":"发送已待确认；再次点击以确认。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：","retryGeneration":"重试","originLabel":"由 {model}（{source}）生成","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","openSettings":"打开 Nextsteps 设置","settingsUnavailable":"此处无法打开设置。","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatConfirm":"用这条建议新建对话？","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。","actionRegenerate":"重新生成","regenerating":"正在重新生成…","srRegenerated":"建议已重新生成。","updatePrecheck":"无法在 npm registry 上验证该版本。","updateNoManager":"此宿主没有可用的插件安装器。","setRetention":"保留期限","setRetentionTip":"自动删除超过此天数的已存建议。0 表示关闭（0-365）。","setTranscriptScope":"历史记录范围","setTranscriptScopeTip":"生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。","optTranscriptFull":"完整历史记录","optTranscriptMinimal":"最小（最后几条）","warnInjection":"这条建议疑似提示词注入","warnSecrets":"这条建议疑似包含凭据或密钥","srSecretsWarning":"有建议疑似包含凭据或密钥。","sessionPrivate":"私人对话","srPrivateOn":"此对话为私人模式；建议仅保留在内存中。","srPrivateOff":"此对话不再是私人模式。","privatePurgeFailed":"无法删除此对话的已存建议；请检查存储。","audit":"审计日志","auditEmpty":"尚无审计事件。","auditClear":"清空审计日志","auditCleared":"审计日志已清空。","auditKindGenerated":"生成","auditKindSent":"发送"}
+      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","setConfirmSend":"Confirm before sending","setConfirmSendTip":"The first click arms the send and the second confirms; it also applies to new conversation.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","sendConfirm":"Send this suggestion?","sendConfirmYes":"Send now","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srSendConfirm":"The send is armed; click again to confirm.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: ","retryGeneration":"Try again","originLabel":"via {model}","originRewrite":"from this turn's reply","originFixture":"from the test fixture","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","openSettings":"Open Nextsteps settings","settingsUnavailable":"Opening the settings is not available here.","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","srFavoritesReordered":"The favourites were reordered.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatConfirm":"Start a new conversation with this suggestion?","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here.","actionRegenerate":"Regenerate","regenerating":"Regenerating…","srRegenerated":"The suggestion was regenerated.","updatePrecheck":"The version could not be verified on the npm registry.","updateNoManager":"No plugin installer is available in this host.","setCardActions":"Card actions","setCardActionsTip":"Pick which actions each card shows and in which order. Uncheck to hide one; uncheck all to hide every action.","cardActionsHiddenAll":"No actions are shown on the cards.","generationTimeoutTip":"The generator ran out of time — try again, or raise the latency budget in the settings.","tabGeneration":"Generation","tabCards":"Cards","tabPrivacy":"Privacy","tabFavourites":"Favourites","tabAbout":"About","secGeneration":"How the suggestions are generated","secLimits":"Timing and size","secAppearance":"Card appearance","secActions":"Card actions","secPrivacy":"Your data on this machine","secAudit":"Audit log","secAbout":"Version and updates","secPerformance":"Performance","setRetention":"Retention","setRetentionTip":"Automatically delete stored suggestions older than this many days. 0 turns it off (0-365).","setTranscriptScope":"Transcript scope","setTranscriptScopeTip":"How much of the turn the generator sees. Minimal sends only the last user and assistant messages.","optTranscriptFull":"Full transcript","optTranscriptMinimal":"Minimal (last messages)","warnInjection":"This suggestion looks like a prompt-injection attempt","warnSecrets":"This suggestion looks like it contains a credential or secret","srSecretsWarning":"A suggestion looks like it contains a credential or secret.","sessionPrivate":"Private conversation","srPrivateOn":"This conversation is private; suggestions stay in memory only.","srPrivateOff":"This conversation is no longer private.","privatePurgeFailed":"The stored suggestions of this conversation could not be deleted; check the storage.","audit":"Audit log","auditEmpty":"No audited events yet.","auditClear":"Clear audit log","auditCleared":"The audit log was cleared.","auditKindGenerated":"generated","auditKindSent":"sent"},
+      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","setConfirmSend":"Confirmar antes de enviar","setConfirmSendTip":"O primeiro clique arma o envio e o segundo confirma; vale também para nova conversa.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","sendConfirm":"Enviar esta sugestão?","sendConfirmYes":"Enviar agora","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srSendConfirm":"O envio está aguardando confirmação; clique novamente para confirmar.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: ","retryGeneration":"Tentar novamente","originLabel":"via {model}","originRewrite":"da resposta deste turno","originFixture":"do fixture de teste","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","openSettings":"Abrir as configurações do Nextsteps","settingsUnavailable":"Abrir as configurações não está disponível aqui.","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","srFavoritesReordered":"Os favoritos foram reordenados.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatConfirm":"Iniciar uma nova conversa com esta sugestão?","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui.","actionRegenerate":"Regenerar","regenerating":"Regenerando…","srRegenerated":"A sugestão foi regenerada.","updatePrecheck":"Não foi possível verificar a versão no registro do npm.","updateNoManager":"Nenhum instalador de plugins está disponível neste host.","setCardActions":"Ações do cartão","setCardActionsTip":"Escolha quais ações cada cartão mostra e em qual ordem. Desmarque para ocultar; com tudo desmarcado nenhuma ação aparece.","cardActionsHiddenAll":"Nenhuma ação é mostrada nos cartões.","generationTimeoutTip":"O gerador esgotou o tempo — tente de novo ou aumente o orçamento de latência nas configurações.","tabGeneration":"Geração","tabCards":"Cartões","tabPrivacy":"Privacidade","tabFavourites":"Favoritos","tabAbout":"Sobre","secGeneration":"Como as sugestões são geradas","secLimits":"Tempo e tamanho","secAppearance":"Aparência dos cartões","secActions":"Ações dos cartões","secPrivacy":"Seus dados neste computador","secAudit":"Registro de auditoria","secAbout":"Versão e atualizações","secPerformance":"Desempenho","setRetention":"Retenção","setRetentionTip":"Apaga automaticamente as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365).","setTranscriptScope":"Escopo do histórico","setTranscriptScopeTip":"Quanto do turno o gerador enxerga. Mínimo envia apenas a última mensagem de usuário e de assistente.","optTranscriptFull":"Histórico completo","optTranscriptMinimal":"Mínimo (últimas mensagens)","warnInjection":"Esta sugestão parece uma tentativa de injeção de prompt","warnSecrets":"Esta sugestão parece conter uma credencial ou segredo","srSecretsWarning":"Uma sugestão parece conter uma credencial ou segredo.","sessionPrivate":"Conversa privada","srPrivateOn":"Esta conversa é privada; as sugestões ficam apenas em memória.","srPrivateOff":"Esta conversa não é mais privada.","privatePurgeFailed":"Não foi possível apagar as sugestões armazenadas desta conversa; verifique o armazenamento.","audit":"Registro de auditoria","auditEmpty":"Nenhum evento auditado ainda.","auditClear":"Apagar registro","auditCleared":"O registro de auditoria foi apagado.","auditKindGenerated":"gerado","auditKindSent":"enviado"},
+      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","setConfirmSend":"发送前确认","setConfirmSendTip":"第一次点击进入待确认状态，第二次点击才会发送；同样适用于新建对话。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","sendConfirm":"发送这条建议？","sendConfirmYes":"立即发送","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srSendConfirm":"发送已待确认；再次点击以确认。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：","retryGeneration":"重试","originLabel":"由 {model} 生成","originRewrite":"来自本回合的回答","originFixture":"来自测试 fixture","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","openSettings":"打开 Nextsteps 设置","settingsUnavailable":"此处无法打开设置。","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatConfirm":"用这条建议新建对话？","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。","actionRegenerate":"重新生成","regenerating":"正在重新生成…","srRegenerated":"建议已重新生成。","updatePrecheck":"无法在 npm registry 上验证该版本。","updateNoManager":"此宿主没有可用的插件安装器。","setCardActions":"卡片操作","setCardActionsTip":"选择每张卡片显示哪些操作及其顺序。取消勾选即隐藏；全部取消勾选则不显示任何操作。","cardActionsHiddenAll":"卡片上不显示任何操作。","generationTimeoutTip":"生成器超时——请重试，或在设置中提高延迟预算。","tabGeneration":"生成","tabCards":"卡片","tabPrivacy":"隐私","tabFavourites":"收藏","tabAbout":"关于","secGeneration":"建议的生成方式","secLimits":"时间与大小","secAppearance":"卡片外观","secActions":"卡片操作","secPrivacy":"本机上的数据","secAudit":"审计日志","secAbout":"版本与更新","secPerformance":"性能","setRetention":"保留期限","setRetentionTip":"自动删除超过此天数的已存建议。0 表示关闭（0-365）。","setTranscriptScope":"历史记录范围","setTranscriptScopeTip":"生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。","optTranscriptFull":"完整历史记录","optTranscriptMinimal":"最小（最后几条）","warnInjection":"这条建议疑似提示词注入","warnSecrets":"这条建议疑似包含凭据或密钥","srSecretsWarning":"有建议疑似包含凭据或密钥。","sessionPrivate":"私人对话","srPrivateOn":"此对话为私人模式；建议仅保留在内存中。","srPrivateOff":"此对话不再是私人模式。","privatePurgeFailed":"无法删除此对话的已存建议；请检查存储。","audit":"审计日志","auditEmpty":"尚无审计事件。","auditClear":"清空审计日志","auditCleared":"审计日志已清空。","auditKindGenerated":"生成","auditKindSent":"发送"}
     };
     const DEFAULT_SETTINGS = {
       lang: 'auto',
@@ -2260,7 +2304,8 @@ window.__ModuleLoader__.load({
       maxSuggestionChars: CHARS_DEFAULT,
       retentionDays: 0,
       transcriptScope: 'full',
-      confirmBeforeSend: false
+      confirmBeforeSend: false,
+      cardActions: [...CARD_ACTION_IDS]
     };
     let pluginSettings = { ...DEFAULT_SETTINGS };
     let updateManager = undefined;
@@ -2284,7 +2329,8 @@ window.__ModuleLoader__.load({
         settings.generationMode,
         settings.latencyBudgetMs,
         settings.maxSuggestionChars,
-        settings.transcriptScope
+        settings.transcriptScope,
+        JSON.stringify(settings.cardActions ?? [])
       ]);
     }
 
@@ -2699,10 +2745,10 @@ window.__ModuleLoader__.load({
         const updateStatus = u === null ? t('none') : u.error ? t('error') + ' (' + u.error + ')' : updateState.installing ? t('installingMsg').replace('{v}', (u.latest ?? '').replace(/^v/, '')) : u.newer ? t('available') + ': ' + u.latest : t('upToDate');
         const controlStyle = { background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 8px', fontSize: 13 };
         const linkStyle = { background: 'none', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 10px', color: 'var(--dsw-alias-label-primary)', fontSize: 12, cursor: 'pointer', textDecoration: 'none' };
-        const row = (label, tip, control, key) => h('div', { key, title: tip, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '14px 0', borderBottom: '.5px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
+        const row = (label, tip, control, key) => h('div', { key, title: tip, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
           h('div', { style: { minWidth: 0 } },
-            h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, label),
-            tip === '' ? null : h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginTop: 2 } }, tip)),
+            h('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, label),
+            tip === '' ? null : h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginTop: 3, maxWidth: 320 } }, tip)),
           h('div', { style: { flex: 'none', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' } }, control));
 
         const selectedStyles = Array.isArray(settings.styles)
@@ -2930,62 +2976,136 @@ window.__ModuleLoader__.load({
               }
             }, t('discardRestore')))));
 
+        const cardGlyphs = { copy: '⧉', favorite: '☆', edit: '✎', insert: '⤓', discard: '✕', regenerate: '↻', moveEarlier: '↑', moveLater: '↓', expand: '…', newChat: '↗' };
+        const cardLabelKeys = { copy: 'actionCopy', favorite: 'actionFavorite', edit: 'actionEdit', insert: 'actionInsertDraft', discard: 'actionDiscard', regenerate: 'actionRegenerate', moveEarlier: 'actionMoveEarlier', moveLater: 'actionMoveLater', expand: 'actionExpand', newChat: 'actionNewChat' };
+        const cardLabelOf = (id) => t(cardLabelKeys[id] ?? id);
+        const cardActionsCurrent = Array.isArray(settings.cardActions) && settings.cardActions.every((id) => CARD_ACTION_IDS.includes(id)) ? settings.cardActions : [...CARD_ACTION_IDS];
+        const cardActionsHidden = CARD_ACTION_IDS.filter((id) => !cardActionsCurrent.includes(id));
+        const moveCardAction = (id, delta) => {
+          const ids = [...cardActionsCurrent];
+          const at = ids.indexOf(id);
+          const to = at + delta;
+          if (at === -1 || to < 0 || to >= ids.length) return;
+          ids.splice(to, 0, ids.splice(at, 1)[0]);
+          save({ cardActions: ids });
+        };
+        const toggleCardAction = (id, shown) => save({ cardActions: shown === true ? [...cardActionsCurrent, id] : cardActionsCurrent.filter((entry) => entry !== id) });
+        const cardActionRow = (id, index, shown) => h('div', { key: id, style: { display: 'flex', alignItems: 'center', gap: 8, opacity: shown ? 1 : 0.55 } },
+          h('span', { className: 'dsh-sf-action', style: { cursor: 'default' } }, cardGlyphs[id]),
+          h('span', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, cardLabelOf(id)),
+          shown ? h('button', {
+            type: 'button', className: 'dsh-sf-action', 'aria-label': t('actionMoveEarlier') + ' — ' + cardLabelOf(id),
+            disabled: index === 0, onClick: () => moveCardAction(id, -1)
+          }, '↑') : null,
+          shown ? h('button', {
+            type: 'button', className: 'dsh-sf-action', 'aria-label': t('actionMoveLater') + ' — ' + cardLabelOf(id),
+            disabled: index === cardActionsCurrent.length - 1, onClick: () => moveCardAction(id, 1)
+          }, '↓') : null,
+          h('input', { type: 'checkbox', checked: shown === true, 'aria-label': cardLabelOf(id), onChange: (event) => toggleCardAction(id, event.target.checked) }));
+        const cardActionEditor = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 420 } },
+          cardActionsCurrent.length === 0 ? h('div', { className: 'dsh-sf-placeholder' }, t('cardActionsHiddenAll')) : h('div', { className: 'dsh-sf-item-actions', style: { opacity: 1 } },
+            cardActionsCurrent.map((id) => h('button', { key: id, type: 'button', className: 'dsh-sf-action', disabled: true, 'aria-label': cardLabelOf(id), title: cardLabelOf(id) }, cardGlyphs[id]))),
+          cardActionsCurrent.map((id, index) => cardActionRow(id, index, true)),
+          cardActionsHidden.map((id) => cardActionRow(id, -1, false)));
+
+        const [activeTab, setActiveTab] = React.useState('generation');
+        const tabDefs = [['generation', t('tabGeneration')], ['cards', t('tabCards')], ['privacy', t('tabPrivacy')], ['favourites', t('tabFavourites')], ['about', t('tabAbout')]];
+        const cardStyle = { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 12, background: 'var(--dsw-alias-bg-layer-1)', padding: '2px 16px' };
+        const paneStyle = (id) => ({ display: activeTab === id ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' });
+        const wide = { gridColumn: '1 / -1' };
+        const sectionTitle = (text) => h('div', { style: { padding: '10px 0 2px', fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--dsw-alias-brand-primary, var(--dsw-alias-label-secondary))' } }, text);
+        const tabButton = (id, label) => h('button', {
+          key: id, type: 'button', 'aria-label': label, 'aria-pressed': activeTab === id,
+          onClick: () => setActiveTab(id),
+          style: { ...linkStyle, padding: '6px 14px', borderRadius: 8, fontWeight: activeTab === id ? 700 : 400, background: activeTab === id ? 'var(--dsw-alias-bg-layer-2)' : 'transparent', borderColor: activeTab === id ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l1)', color: activeTab === id ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer' }
+        }, label);
+
         return h('div', { 'data-dsh-nextsteps-settings': '' },
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 8 } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 4 } },
             h('img', { src: ICON_DATAURI, width: 96, height: 54, alt: '', style: { borderRadius: 6, border: '1px solid var(--dsw-alias-border-l1)', flex: 'none' } }),
-            h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', lineHeight: '18px' } }, t('intro'))),
-          row(t('setLanguage'), t('setLanguageTip'), h('select', { value: settings.lang, onChange: (event) => save({ lang: event.target.value }), style: controlStyle, 'aria-label': t('setLanguage') },
-                      h('option', { value: 'auto' }, t('optAuto')),
-          ...LANGUAGE_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label))), 'lang'),
-          row(t('setModel'), t('setModelTip'), models === undefined ? h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('checking')) : (models.groups ?? []).length === 0 ? h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('modelUnavailable')) : h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 8 } },
-            h('select', { value: settings.model, onChange: (event) => save({ model: event.target.value }), style: controlStyle, 'aria-label': t('setModel') },
-              h('option', { value: '' }, t('optModelAuto')),
-              ...(models.groups ?? []).map((group) => h('optgroup', { key: group.id, label: group.name },
-                group.models.map((entry) => h('option', { key: group.id + '/' + entry.id, value: group.id + '/' + entry.id }, entry.name === entry.id ? entry.name : entry.name + ' (' + entry.id + ')'))))),
-            h('button', { type: 'button', className: 'dsh-sf-action', disabled: modelTest.phase === 'testing', onClick: runModelTest }, t('testModel')),
-            h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, modelTest.phase === 'testing' ? t('modelTesting') : modelTest.phase === 'ok' ? t('modelTestOk').replace('{ms}', String(modelTest.ms)) : modelTest.phase === 'fail' ? t('modelTestFail').replace('{e}', modelTest.error) : '')), 'model'),
-          row(t('setMax'), t('setMaxTip'), h('input', { type: 'number', min: 1, max: 6, value: settings.maxFollowups, onChange: (event) => save({ maxFollowups: Number(event.target.value) }), style: { ...controlStyle, width: 64 }, 'aria-label': t('setMax') }), 'max'),
-          row(t('setStyles'), t('setStylesTip'), h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } }, styleRows.map((entry) => h('label', { key: entry.id, style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
-            h('input', { type: 'checkbox', checked: selectedStyles.includes(entry.id), onChange: (event) => toggleStyle(entry.id, event.target.checked), 'aria-label': entry.label }),
-            entry.label))), 'styles'),
-          row(t('setGenMode'), t('setGenModeTip'), h('select', { value: generationMode, onChange: (event) => save({ generationMode: event.target.value }), style: controlStyle, 'aria-label': t('setGenMode') },
-            h('option', { value: 'auto' }, t('optGenAuto')),
-            h('option', { value: 'on-demand' }, t('optGenOnDemand'))), 'genmode'),
-          row(t('setTranscriptScope'), t('setTranscriptScopeTip'), h('select', { value: settings.transcriptScope, onChange: (event) => save({ transcriptScope: event.target.value }), style: controlStyle, 'aria-label': t('setTranscriptScope') },
-            h('option', { value: 'full' }, t('optTranscriptFull')),
-            h('option', { value: 'minimal' }, t('optTranscriptMinimal'))), 'transcriptscope'),
-          row(t('setBudget'), t('setBudgetTip'), h('input', { type: 'number', min: LATENCY_MIN_MS, max: LATENCY_MAX_MS, value: latencyBudget, onChange: (event) => save({ latencyBudgetMs: Number(event.target.value) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setBudget') }), 'budget'),
-          row(t('setMaxChars'), t('setMaxCharsTip'), h('input', { type: 'number', min: CHARS_MIN, max: CHARS_MAX, value: maxChars, onChange: (event) => save({ maxSuggestionChars: Number(event.target.value) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setMaxChars') }), 'chars'),
-          row(t('setRetention'), t('setRetentionTip'), h('input', { type: 'number', min: 0, max: 365, value: settings.retentionDays, onChange: (event) => save({ retentionDays: Math.max(0, Math.min(365, Math.floor(Number(event.target.value) || 0))) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setRetention') }), 'retention'),
-          row(t('setHeader'), t('setHeaderTip'), h('input', { type: 'checkbox', checked: settings.showHeader, onChange: (event) => save({ showHeader: event.target.checked }), 'aria-label': t('setHeader') }), 'header'),
-          row(t('setConfirmSend'), t('setConfirmSendTip'), h('input', { type: 'checkbox', checked: settings.confirmBeforeSend === true, onChange: (event) => save({ confirmBeforeSend: event.target.checked }), 'aria-label': t('setConfirmSend') }), 'confirmsend'),
-          row(t('metrics'), t('metrics'), metricTable, 'metrics'),
-          row(t('favorites'), favoriteEntries.length === 0 ? t('favoritesEmpty') : '', h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, favoriteEntries.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: exportFavorites }, t('favoritesExport')), favoriteEntries.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: exportFavoritesJson }, t('favoritesExportJson')), favoriteEntries.length === 0 ? null : h('input', { type: 'text', value: favQuery, onChange: (event) => setFavQuery(event.target.value), placeholder: t('favoritesSearch'), 'aria-label': t('favoritesSearch'), style: controlStyle }), favoriteEntries.length === 0 ? null : h('input', { type: 'file', accept: 'application/json,.json', onChange: (event) => importFavorites(event), style: { ...controlStyle, maxWidth: 240 } }), favoriteEntries.length === 0 ? null : h('span', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-            h('input', { type: 'checkbox', 'aria-label': t('favoriteSelectAll'), checked: allVisibleSelected, onChange: toggleAllVisibleFavorites }),
-            h('button', { type: 'button', className: 'dsh-sf-action', disabled: selectedFavs.size === 0, onClick: copySelectedFavorites }, t('favoriteCopySelected').replace('{n}', String(selectedFavs.size))),
-            h('button', { type: 'button', className: 'dsh-sf-action', disabled: selectedFavs.size === 0, onClick: removeSelectedFavorites }, bulkRemoveArmed ? t('favoriteRemoveConfirm').replace('{n}', String(selectedFavs.size)) : t('favoriteRemoveSelected').replace('{n}', String(selectedFavs.size)))), favoriteList), 'favorites'),
-          row(t('discarded'), discardedEntries.length === 0 ? t('discardedEmpty') : '', discardedList, 'discarded'),
-          row(t('audit'), audit.length === 0 ? t('auditEmpty') : '', h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            audit.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: clearAudit }, t('auditClear')),
-            audit.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 420 } }, audit.slice().reverse().slice(0, 20).map((entry, index) => h('div', { key: entry.at + '-' + index, style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, new Date(entry.at).toLocaleString() + ' · ' + (entry.kind === 'sent' ? t('auditKindSent') : t('auditKindGenerated')) + ' · #' + String(entry.hash).slice(0, 8))))), 'audit'),
-          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '14px 0', borderBottom: '.5px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
             h('div', { style: { minWidth: 0 } },
-              h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, t('update')),
-              h('div', { style: { fontSize: 12, color: pendingIsNewer || updateState.installing ? 'var(--dsw-alias-state-success-primary, #22c55e)' : u !== null && u.newer ? 'var(--dsw-alias-state-success-primary, #22c55e)' : 'var(--dsw-alias-label-tertiary)', marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', alignItems: 'center' } },
-                h('span', null, t('current') + ': ' + (runningVersion || pendingVersion || '—')),
-                h('span', null, updateState.checking ? t('checking') : updateStatus))),
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' } },
-              u !== null && u.newer && !pendingIsNewer ? h('button', { onClick: installUpdate, disabled: updateState.installing, style: { ...linkStyle, fontWeight: 600, opacity: updateState.installing ? 0.6 : 1, cursor: updateState.installing ? 'wait' : 'pointer' } }, t('updateNow')) : null,
-              h('button', { onClick: checkUpdate, style: linkStyle }, t('check')),
-              u !== null && typeof u.url === 'string' && u.url !== '' ? h('a', { href: u.url, target: '_blank', rel: 'noreferrer', style: linkStyle, title: t('open') }, t('open')) : null)),
-          updateState.installError !== '' ? h('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, padding: '8px 0' } }, updateState.installError === 'local-development' ? t('localDev') : updateState.installError === 'unsupported-version' ? t('unsupportedVersion') : updateState.installError === 'precheck' ? t('updatePrecheck') : updateState.installError === 'no-installer' ? t('updateNoManager') : t('installError') + ' (' + updateState.installError + ')') : null,
-          pendingIsNewer || heldBack ? h('div', { style: { color: 'var(--dsw-alias-state-success-primary, #22c55e)', fontSize: 12, padding: '8px 0' } }, pendingMsg) : null,
-          h('div', { style: { display: 'flex', gap: 8, padding: '14px 0', flexWrap: 'wrap' } },
-            h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('repo')),
-            h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps/issues', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('issues'))),
+              h('div', { style: { fontSize: 15, fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, 'Nextsteps'),
+              h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', lineHeight: '18px', marginTop: 2 } }, t('intro')))),
+          h('div', { role: 'tablist', style: { display: 'flex', gap: 6, padding: '12px 0 14px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+            tabDefs.map(([id, label]) => tabButton(id, label))),
+          h('div', { style: paneStyle('generation') },
+            h('div', { style: cardStyle },
+              sectionTitle(t('secGeneration')),
+              row(t('setLanguage'), t('setLanguageTip'), h('select', { value: settings.lang, onChange: (event) => save({ lang: event.target.value }), style: controlStyle, 'aria-label': t('setLanguage') },
+                h('option', { value: 'auto' }, t('optAuto')),
+                ...LANGUAGE_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label))), 'lang'),
+              row(t('setModel'), t('setModelTip'), models === undefined ? h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('checking')) : (models.groups ?? []).length === 0 ? h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('modelUnavailable')) : h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                h('select', { value: settings.model, onChange: (event) => save({ model: event.target.value }), style: controlStyle, 'aria-label': t('setModel') },
+                  h('option', { value: '' }, t('optModelAuto')),
+                  ...(models.groups ?? []).map((group) => h('optgroup', { key: group.id, label: group.name },
+                    group.models.map((entry) => h('option', { key: group.id + '/' + entry.id, value: group.id + '/' + entry.id }, entry.name === entry.id ? entry.name : entry.name + ' (' + entry.id + ')'))))),
+                h('button', { type: 'button', className: 'dsh-sf-action', disabled: modelTest.phase === 'testing', onClick: runModelTest }, t('testModel')),
+                h('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, modelTest.phase === 'testing' ? t('modelTesting') : modelTest.phase === 'ok' ? t('modelTestOk').replace('{ms}', String(modelTest.ms)) : modelTest.phase === 'fail' ? t('modelTestFail').replace('{e}', modelTest.error) : '')), 'model'),
+              row(t('setMax'), t('setMaxTip'), h('input', { type: 'number', min: 1, max: 6, value: settings.maxFollowups, onChange: (event) => save({ maxFollowups: Number(event.target.value) }), style: { ...controlStyle, width: 64 }, 'aria-label': t('setMax') }), 'max'),
+              row(t('setStyles'), t('setStylesTip'), h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } }, styleRows.map((entry) => h('label', { key: entry.id, style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
+                h('input', { type: 'checkbox', checked: selectedStyles.includes(entry.id), onChange: (event) => toggleStyle(entry.id, event.target.checked), 'aria-label': entry.label }),
+                entry.label))), 'styles'),
+              row(t('setGenMode'), t('setGenModeTip'), h('select', { value: generationMode, onChange: (event) => save({ generationMode: event.target.value }), style: controlStyle, 'aria-label': t('setGenMode') },
+                h('option', { value: 'auto' }, t('optGenAuto')),
+                h('option', { value: 'on-demand' }, t('optGenOnDemand'))), 'genmode'),
+              row(t('setTranscriptScope'), t('setTranscriptScopeTip'), h('select', { value: settings.transcriptScope, onChange: (event) => save({ transcriptScope: event.target.value }), style: controlStyle, 'aria-label': t('setTranscriptScope') },
+                h('option', { value: 'full' }, t('optTranscriptFull')),
+                h('option', { value: 'minimal' }, t('optTranscriptMinimal'))), 'transcriptscope')),
+            h('div', { style: cardStyle },
+              sectionTitle(t('secLimits')),
+              row(t('setBudget'), t('setBudgetTip'), h('input', { type: 'number', min: LATENCY_MIN_MS, max: LATENCY_MAX_MS, value: latencyBudget, onChange: (event) => save({ latencyBudgetMs: Number(event.target.value) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setBudget') }), 'budget'),
+              row(t('setMaxChars'), t('setMaxCharsTip'), h('input', { type: 'number', min: CHARS_MIN, max: CHARS_MAX, value: maxChars, onChange: (event) => save({ maxSuggestionChars: Number(event.target.value) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setMaxChars') }), 'chars'))),
+          h('div', { style: paneStyle('cards') },
+            h('div', { style: { ...cardStyle, ...wide } },
+              sectionTitle(t('secActions')),
+              row(t('setCardActions'), t('setCardActionsTip'), cardActionEditor, 'cardactions')),
+            h('div', { style: cardStyle },
+              sectionTitle(t('secAppearance')),
+              row(t('setHeader'), t('setHeaderTip'), h('input', { type: 'checkbox', checked: settings.showHeader, onChange: (event) => save({ showHeader: event.target.checked }), 'aria-label': t('setHeader') }), 'header'),
+              row(t('setConfirmSend'), t('setConfirmSendTip'), h('input', { type: 'checkbox', checked: settings.confirmBeforeSend === true, onChange: (event) => save({ confirmBeforeSend: event.target.checked }), 'aria-label': t('setConfirmSend') }), 'confirmsend'))),
+          h('div', { style: paneStyle('privacy') },
+            h('div', { style: cardStyle },
+              sectionTitle(t('secPrivacy')),
+              row(t('setRetention'), t('setRetentionTip'), h('input', { type: 'number', min: 0, max: 365, value: settings.retentionDays, onChange: (event) => save({ retentionDays: Math.max(0, Math.min(365, Math.floor(Number(event.target.value) || 0))) }), style: { ...controlStyle, width: 96 }, 'aria-label': t('setRetention') }), 'retention')),
+            h('div', { style: { ...cardStyle, ...wide } },
+              sectionTitle(t('secAudit')),
+              row(t('audit'), audit.length === 0 ? t('auditEmpty') : '', h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                audit.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: clearAudit }, t('auditClear')),
+                audit.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 420 } }, audit.slice().reverse().slice(0, 20).map((entry, index) => h('div', { key: entry.at + '-' + index, style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, new Date(entry.at).toLocaleString() + ' · ' + (entry.kind === 'sent' ? t('auditKindSent') : t('auditKindGenerated')) + ' · #' + String(entry.hash).slice(0, 8))))), 'audit'))),
+          h('div', { style: paneStyle('favourites') },
+            h('div', { style: { ...cardStyle, ...wide } },
+              row(t('favorites'), favoriteEntries.length === 0 ? t('favoritesEmpty') : '', h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, favoriteEntries.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: exportFavorites }, t('favoritesExport')), favoriteEntries.length === 0 ? null : h('button', { type: 'button', className: 'dsh-sf-action', onClick: exportFavoritesJson }, t('favoritesExportJson')), favoriteEntries.length === 0 ? null : h('input', { type: 'text', value: favQuery, onChange: (event) => setFavQuery(event.target.value), placeholder: t('favoritesSearch'), 'aria-label': t('favoritesSearch'), style: controlStyle }), favoriteEntries.length === 0 ? null : h('input', { type: 'file', accept: 'application/json,.json', onChange: (event) => importFavorites(event), style: { ...controlStyle, maxWidth: 240 } }), favoriteEntries.length === 0 ? null : h('span', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                h('input', { type: 'checkbox', 'aria-label': t('favoriteSelectAll'), checked: allVisibleSelected, onChange: toggleAllVisibleFavorites }),
+                h('button', { type: 'button', className: 'dsh-sf-action', disabled: selectedFavs.size === 0, onClick: copySelectedFavorites }, t('favoriteCopySelected').replace('{n}', String(selectedFavs.size))),
+                h('button', { type: 'button', className: 'dsh-sf-action', disabled: selectedFavs.size === 0, onClick: removeSelectedFavorites }, bulkRemoveArmed ? t('favoriteRemoveConfirm').replace('{n}', String(selectedFavs.size)) : t('favoriteRemoveSelected').replace('{n}', String(selectedFavs.size)))), favoriteList), 'favorites')),
+            h('div', { style: { ...cardStyle, ...wide } },
+              row(t('discarded'), discardedEntries.length === 0 ? t('discardedEmpty') : '', discardedList, 'discarded'))),
+          h('div', { style: paneStyle('about') },
+            h('div', { style: { ...cardStyle, ...wide } },
+              sectionTitle(t('secAbout')),
+              h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '12px 0', flexWrap: 'wrap' } },
+                h('div', { style: { minWidth: 0 } },
+                  h('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, t('update')),
+                  h('div', { style: { fontSize: 12, color: pendingIsNewer || updateState.installing ? 'var(--dsw-alias-state-success-primary, #22c55e)' : u !== null && u.newer ? 'var(--dsw-alias-state-success-primary, #22c55e)' : 'var(--dsw-alias-label-tertiary)', marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', alignItems: 'center' } },
+                    h('span', null, t('current') + ': ' + (runningVersion || pendingVersion || '—')),
+                    h('span', null, updateState.checking ? t('checking') : updateStatus))),
+                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+                  u !== null && u.newer && !pendingIsNewer ? h('button', { onClick: installUpdate, disabled: updateState.installing, style: { ...linkStyle, fontWeight: 600, opacity: updateState.installing ? 0.6 : 1, cursor: updateState.installing ? 'wait' : 'pointer' } }, t('updateNow')) : null,
+                  h('button', { onClick: checkUpdate, style: linkStyle }, t('check')),
+                  u !== null && typeof u.url === 'string' && u.url !== '' ? h('a', { href: u.url, target: '_blank', rel: 'noreferrer', style: linkStyle, title: t('open') }, t('open')) : null)),
+              updateState.installError !== '' ? h('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, padding: '8px 0' } }, updateState.installError === 'local-development' ? t('localDev') : updateState.installError === 'unsupported-version' ? t('unsupportedVersion') : updateState.installError === 'precheck' ? t('updatePrecheck') : updateState.installError === 'no-installer' ? t('updateNoManager') : t('installError') + ' (' + updateState.installError + ')') : null,
+              pendingIsNewer || heldBack ? h('div', { style: { color: 'var(--dsw-alias-state-success-primary, #22c55e)', fontSize: 12, padding: '8px 0' } }, pendingMsg) : null)),
+            h('div', { style: cardStyle },
+              sectionTitle(t('secPerformance')),
+              row(t('metrics'), t('metrics'), metricTable, 'metrics')),
+            h('div', { style: cardStyle },
+              h('div', { style: { display: 'flex', gap: 8, padding: '12px 0', flexWrap: 'wrap' } },
+                h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('repo')),
+                h('a', { href: 'https://github.com/klaus-2/dsh-nextsteps/issues', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('issues')))),
           h('div', { className: 'dsh-sf-notice', style: { paddingBottom: 8 } }, localNotice));
       };
     }
+
 
     return {
       inject: ['slots', 'locale', 'remote'],

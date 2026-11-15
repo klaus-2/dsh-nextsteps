@@ -97,6 +97,7 @@ Open the dsh settings and find the **Nextsteps** section:
 | Suggestion length | How long a single prompt may be (60–600 characters). |
 | Show header | The small label above the cards. |
 | Confirm before sending | The first click on a card arms the send and the second confirms; it also applies to the new-conversation action. |
+| Card actions | Pick which actions each card shows and in which order. Uncheck to hide one; uncheck all to hide every action. |
 | Retention | Delete stored suggestions older than this many days. 0 turns it off (0-365). Favourites are kept. |
 | Transcript scope | How much of the turn the generator sees: the full transcript or only the last user and assistant messages. |
 

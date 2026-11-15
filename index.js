@@ -275,7 +275,7 @@ async function startServer(options = {}) {
 }
 
 const SETTINGS_FILE = path.join(homedir(), '.dsh', 'dsh-nextsteps', 'settings.json');
-const GENERATE_TIMEOUT_MS = 30000;
+const GENERATE_TIMEOUT_MS = 60000;
 const GENERATE_ATTEMPTS = 3;
 const VALIDATE_TIMEOUT_MS = 4000;
 const GENERATE_MAX_TOKENS = 1024;
@@ -330,6 +330,18 @@ function modelKeyOf(stored) {
   return provider !== '' && model !== '' ? `${provider}/${model}` : '';
 }
 
+const CARD_ACTION_IDS = ['copy', 'favorite', 'edit', 'insert', 'discard', 'regenerate', 'moveEarlier', 'moveLater', 'expand', 'newChat'];
+
+function cardActionsOf(stored) {
+  if (!Array.isArray(stored)) return undefined;
+  const ids = [];
+  for (const entry of stored) {
+    if (typeof entry !== 'string' || !CARD_ACTION_IDS.includes(entry) || ids.includes(entry)) continue;
+    ids.push(entry);
+  }
+  return ids;
+}
+
 function stylesOf(stored) {
   if (!Array.isArray(stored)) return undefined;
   const ids = [];
@@ -377,7 +389,8 @@ function settingsLoad() {
       maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS,
       retentionDays: retentionDaysOf(stored.retentionDays) ?? 0,
       transcriptScope: transcriptScopeOf(stored.transcriptScope) ?? 'full',
-      confirmBeforeSend: stored.confirmBeforeSend === true
+      confirmBeforeSend: stored.confirmBeforeSend === true,
+      cardActions: cardActionsOf(stored.cardActions) ?? [...CARD_ACTION_IDS]
     };
   } catch {
     return {
@@ -391,7 +404,8 @@ function settingsLoad() {
       maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
       retentionDays: 0,
       transcriptScope: 'full',
-      confirmBeforeSend: false
+      confirmBeforeSend: false,
+      cardActions: [...CARD_ACTION_IDS]
     };
   }
 }
@@ -625,12 +639,18 @@ function startRewrite(ctx, settings, drafts, sessionId, callId) {
 }
 
 function lastFollowupCallId(events, afterSeq) {
+  let beginSeq = -1;
+  for (const entry of events) {
+    const event = entry?.event ?? entry;
+    if (event === null || typeof event !== 'object') continue;
+    if (event.type === 'turn/end' && Number.isSafeInteger(event.seq) && Number.isSafeInteger(afterSeq) && event.seq < afterSeq && event.seq > beginSeq) beginSeq = event.seq;
+  }
   let found;
   for (const entry of events) {
     const event = entry?.event ?? entry;
     if (event === null || typeof event !== 'object') continue;
     if (Number.isSafeInteger(event.seq) && Number.isSafeInteger(afterSeq) && event.seq > afterSeq) continue;
-    if (event.type === 'tool/call' && event.data?.name === TOOL_NAME && typeof event.data?.callId === 'string') found = event.data.callId;
+    if (event.type === 'tool/call' && event.data?.name === TOOL_NAME && typeof event.data?.callId === 'string' && (!Number.isSafeInteger(event.seq) || event.seq > beginSeq)) found = event.data.callId;
   }
   return found;
 }
@@ -916,8 +936,8 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal, avoid
     }
   }
   if (callSignal.aborted) {
-    throw Object.assign(new Error(signal?.aborted === true ? 'the generation was cancelled' : 'the generation timed out'), { cancelled: signal?.aborted === true });
-  }
+      throw Object.assign(new Error(signal?.aborted === true ? 'the generation was cancelled' : 'the generation timed out'), { cancelled: signal?.aborted === true, timedOut: signal?.aborted !== true });
+    }
   if (mismatchModel !== undefined) return { followups: [], model: mismatchModel, source: 'transcript' };
   throw lastFailure ?? new Error('the model call failed');
 }
@@ -994,7 +1014,8 @@ async function apply(ctx) {
         maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars,
         retentionDays: retentionDaysOf(body?.retentionDays) ?? current.retentionDays,
         transcriptScope: transcriptScopeOf(body?.transcriptScope) ?? current.transcriptScope,
-        confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend
+        confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend,
+        cardActions: cardActionsOf(body?.cardActions) ?? current.cardActions
       };
       await settingsSave(next);
       reapplyTool(next);
@@ -1105,7 +1126,8 @@ async function apply(ctx) {
           if (warnedGenerations.size > 200) warnedGenerations.delete(warnedGenerations.values().next().value);
           console.warn('dsh-nextsteps: generation failed:', describeError(error));
         }
-        return json({ error: String(error?.message ?? error) }, status);
+        const timedOut = error?.timedOut === true;
+        return json(timedOut === true ? { error: String(error?.message ?? error), timedOut: true } : { error: String(error?.message ?? error) }, status);
       }
     }
   });

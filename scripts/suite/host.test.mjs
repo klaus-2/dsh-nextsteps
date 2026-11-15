@@ -1841,6 +1841,24 @@ test("the rewrite is consumed once and never served again", async () => {
   assertEqual(llmCalls.length, 2, "the rewrite and the transcript each ran one llm call");
 });
 
+test("a rewrite from an earlier turn never serves a later one", async () => {
+  const events = [
+    userMessage(1, "corrija o parser"),
+    toolCall(2, "call-1"),
+    assistantMessage(3, "feito"),
+    turnEnd(4, 1),
+    userMessage(5, "agora o resto"),
+    assistantMessage(6, "feito tambem"),
+    turnEnd(9, 2)
+  ];
+  const { registered, post } = await attributionContext({ events });
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const later = await post({ sessionId: "s1", afterSeq: 9 });
+  const laterBody = await later.json();
+  assertEqual(later.status, 200, JSON.stringify(laterBody).slice(0, 200));
+  assertEqual(laterBody.source, "transcript", "the later turn never serves an earlier turn's rewrite");
+});
+
 test("a tool call of another tool is ignored in the attribution", async () => {
   const events = [
     userMessage(1, "corrija o parser"),

@@ -97,6 +97,7 @@ Abra as configurações do dsh e encontre a seção **Nextsteps**:
 | Tamanho da sugestão | Quanto tempo um prompt pode ter (60–600 caracteres). |
 | Mostrar cabeçalho | O pequeno rótulo acima dos cards. |
 | Confirmação antes de enviar | O primeiro clique num cartão arma o envio e o segundo confirma; vale também para a ação de nova conversa. |
+| Ações do cartão | Escolha quais ações cada cartão mostra e em qual ordem. Desmarque para ocultar; com tudo desmarcado nenhuma ação aparece. |
 | Retenção | Apaga as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365). Os favoritos são mantidos. |
 | Escopo do histórico | Quanto do turno o gerador enxerga: o histórico completo ou só as últimas mensagens de usuário e assistente. |
 

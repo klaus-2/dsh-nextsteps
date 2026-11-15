@@ -7,7 +7,7 @@
   "srFollowupSent": "后续操作已发送",
   "sendFailed": "发送失败：",
   "meta": {
-    "title": "Nextsteps",
+    "title": "Nextsteps - Dev",
     "description": "在每个智能体回合下方推荐后续步骤提示——单击即可发送。"
   },
   "intro": "在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。",
@@ -100,7 +100,7 @@
   "modelTestFail": "不可用（{e}）",
   "generationFailed": "生成失败：",
   "retryGeneration": "重试",
-  "originLabel": "由 {model}（{source}）生成",
+  "originLabel": "由 {model} 生成",
   "sessionOptions": "会话选项",
   "sessionLangGlobal": "跟随全局",
   "sessionReset": "重置",
@@ -156,5 +156,24 @@
   "auditClear": "清空审计日志",
   "auditCleared": "审计日志已清空。",
   "auditKindGenerated": "生成",
-  "auditKindSent": "发送"
+  "auditKindSent": "发送",
+  "originRewrite": "来自本回合的回答",
+  "originFixture": "来自测试 fixture",
+  "setCardActions": "卡片操作",
+  "setCardActionsTip": "选择每张卡片显示哪些操作及其顺序。取消勾选即隐藏；全部取消勾选则不显示任何操作。",
+  "cardActionsHiddenAll": "卡片上不显示任何操作。",
+  "generationTimeoutTip": "生成器超时——请重试，或在设置中提高延迟预算。",
+  "tabGeneration": "生成",
+  "tabCards": "卡片",
+  "tabPrivacy": "隐私",
+  "tabFavourites": "收藏",
+  "tabAbout": "关于",
+  "secGeneration": "建议的生成方式",
+  "secLimits": "时间与大小",
+  "secAppearance": "卡片外观",
+  "secActions": "卡片操作",
+  "secPrivacy": "本机上的数据",
+  "secAudit": "审计日志",
+  "secAbout": "版本与更新",
+  "secPerformance": "性能"
 }

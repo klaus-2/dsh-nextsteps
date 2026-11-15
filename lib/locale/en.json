@@ -7,7 +7,7 @@
   "srFollowupSent": "Followup sent",
   "sendFailed": "Could not send: ",
   "meta": {
-    "title": "Nextsteps",
+    "title": "Nextsteps - Dev",
     "description": "Suggested next-step prompts under every finished agent turn — one click sends the followup."
   },
   "intro": "Suggested next-step prompts under every finished agent turn — one click sends the followup.",
@@ -100,7 +100,7 @@
   "modelTestFail": "Unavailable ({e})",
   "generationFailed": "Generation failed: ",
   "retryGeneration": "Try again",
-  "originLabel": "via {model} ({source})",
+  "originLabel": "via {model}",
   "sessionOptions": "Conversation options",
   "sessionLangGlobal": "Same as global",
   "sessionReset": "Reset",
@@ -156,5 +156,24 @@
   "auditClear": "Clear audit log",
   "auditCleared": "The audit log was cleared.",
   "auditKindGenerated": "generated",
-  "auditKindSent": "sent"
+  "auditKindSent": "sent",
+  "originRewrite": "from this turn's reply",
+  "originFixture": "from the test fixture",
+  "setCardActions": "Card actions",
+  "setCardActionsTip": "Pick which actions each card shows and in which order. Uncheck to hide one; uncheck all to hide every action.",
+  "cardActionsHiddenAll": "No actions are shown on the cards.",
+  "generationTimeoutTip": "The generator ran out of time — try again, or raise the latency budget in the settings.",
+  "tabGeneration": "Generation",
+  "tabCards": "Cards",
+  "tabPrivacy": "Privacy",
+  "tabFavourites": "Favourites",
+  "tabAbout": "About",
+  "secGeneration": "How the suggestions are generated",
+  "secLimits": "Timing and size",
+  "secAppearance": "Card appearance",
+  "secActions": "Card actions",
+  "secPrivacy": "Your data on this machine",
+  "secAudit": "Audit log",
+  "secAbout": "Version and updates",
+  "secPerformance": "Performance"
 }

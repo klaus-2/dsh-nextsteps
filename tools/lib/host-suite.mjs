@@ -851,7 +851,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       const defaults = (await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings"))).json()).settings;
       harness.eq("the styles default to the three angles", defaults.styles, ["next-action", "explore", "deep-dive"]);
       harness.eq("the generation mode defaults to auto", defaults.generationMode, "auto");
-      harness.eq("the latency budget defaults to thirty seconds", defaults.latencyBudgetMs, 30000);
+      harness.eq("the latency budget defaults to sixty seconds", defaults.latencyBudgetMs, 60000);
       harness.eq("the suggestion length defaults to two hundred", defaults.maxSuggestionChars, 200);
 
       const accepted = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
@@ -897,7 +897,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       await route.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 })
+        body: JSON.stringify({ styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 60000, maxSuggestionChars: 200 })
       }));
     }
 
@@ -1034,7 +1034,7 @@ export async function runHostSuite(harness, { pluginDir }) {
       await settingsRoute.fetch(new Request("http://x/api/dsh-nextsteps.settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ maxSuggestionChars: 200, latencyBudgetMs: 30000 })
+        body: JSON.stringify({ maxSuggestionChars: 200, latencyBudgetMs: 60000 })
       }));
     }
 
