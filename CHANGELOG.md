@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-15
+
+### Changed
+
+- **Package metadata rebuilt for plugin-directory search.** The npm description now
+  covers the terms people actually search ("follow-up prompts", "suggested next
+  steps", "clickable cards") and states the 15-language support up front; keywords
+  expand from 8 to 20 across the follow-up/followup/next-step spelling variants
+  plugin directories match on.
+
 ## [1.9.0] - 2026-11-15
 
 This release ships the validated dev cycle: fully configurable card actions, a

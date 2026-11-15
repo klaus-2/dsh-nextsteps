@@ -1,6 +1,6 @@
 {
   "name": "dsh-nextsteps",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -32,16 +32,28 @@
       ]
     }
   },
-  "description": "Suggested next-step prompts under every finished agent turn in the DeepSeek Harness chat — one click sends the followup.",
+  "description": "Suggested follow-up prompts for DeepSeek Harness chat: AI-generated next steps as clickable cards under every agent turn — one click sends the reply, zero typing. 15 languages.",
   "keywords": [
     "deepseek-harness",
-    "dsh-plugin",
     "dsh",
-    "followups",
+    "dsh-plugin",
+    "deepseek-harness-plugin",
+    "suggested-prompts",
+    "follow-up",
+    "followup",
+    "prompt-suggestions",
     "next-steps",
-    "suggestions",
-    "ai-agents",
-    "human-in-the-loop"
+    "quick-replies",
+    "chat-ui",
+    "chat-ux",
+    "conversation",
+    "productivity",
+    "ai-chat",
+    "ai-agent",
+    "llm",
+    "i18n",
+    "multilingual",
+    "ui-experience"
   ],
   "license": "MIT",
   "homepage": "https://github.com/klaus-2/dsh-nextsteps#readme",
