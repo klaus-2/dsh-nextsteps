@@ -148,6 +148,19 @@ async function readJsonBody(req) {
 
 let serverInstance = undefined;
 
+function describeError(error) {
+  if (error === null || typeof error !== 'object') return String(error);
+  const status = error.status !== undefined ? ' status=' + String(error.status) : '';
+  const code = typeof error.code === 'string' ? ' code=' + error.code : '';
+  return String(error.name ?? 'Error') + status + code;
+}
+
+function urlOf(raw) {
+  const text = String(raw ?? '');
+  const query = text.indexOf('?');
+  return query === -1 ? text : text.slice(0, query);
+}
+
 async function startServer(options = {}) {
   if (serverInstance !== undefined && options.port === undefined) return serverInstance;
   const basePort = typeof options.port === 'number' ? options.port : DEFAULT_PORT;
@@ -223,7 +236,7 @@ async function startServer(options = {}) {
     try {
       await route(req, res);
     } catch (error) {
-      console.error(`dsh-nextsteps: route ${req.method} ${req.url ?? ''} failed:`, String(error?.stack ?? error).slice(0, 600));
+      console.error(`dsh-nextsteps: route ${req.method} ${urlOf(req.url)} failed:`, describeError(error));
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
       }
@@ -595,7 +608,7 @@ function startRewrite(ctx, settings, drafts, sessionId, callId) {
   const promise = rewriteDrafts(ctx, settings, drafts);
   rewrites.set(key, { promise, at: Date.now() });
   pruneRewrites();
-  promise.catch((error) => console.warn('dsh-nextsteps: rewrite failed:', error));
+  promise.catch((error) => console.warn('dsh-nextsteps: rewrite failed:', describeError(error)));
   return promise;
 }
 
@@ -661,7 +674,7 @@ async function modelCatalog(ctx) {
       const models = (await llm.listModels(provider.id)).map((entry) => ({ id: entry.id, name: entry.name }));
       if (models.length > 0) out.groups.push({ id: provider.id, name: provider.name ?? provider.id, models });
     } catch (error) {
-      console.warn('dsh-nextsteps: the model list for', provider.id, 'is unavailable:', error);
+      console.warn('dsh-nextsteps: the model list for', provider.id, 'is unavailable:', describeError(error));
       continue;
     }
   }
@@ -876,7 +889,7 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal, avoid
       lastFailure = new Error('the model answer carried no usable suggestions');
     } catch (error) {
       lastFailure = error;
-      console.warn('dsh-nextsteps: the model call attempt', attempt + 1, 'of', GENERATE_ATTEMPTS, 'failed:', error?.message ?? error);
+      console.warn('dsh-nextsteps: the model call attempt', attempt + 1, 'of', GENERATE_ATTEMPTS, 'failed:', describeError(error));
     }
   }
   if (callSignal.aborted) {
@@ -1065,7 +1078,7 @@ async function apply(ctx) {
         if (!warnedGenerations.has(warnKey)) {
           warnedGenerations.add(warnKey);
           if (warnedGenerations.size > 200) warnedGenerations.delete(warnedGenerations.values().next().value);
-          console.warn('dsh-nextsteps: generation failed:', error);
+          console.warn('dsh-nextsteps: generation failed:', describeError(error));
         }
         return json({ error: String(error?.message ?? error) }, status);
       }

@@ -65,7 +65,7 @@ window.__ModuleLoader__.load({
           console.info('dsh-nextsteps: the secret route answered ok=' + (j?.ok === true));
         }
       } catch (error) {
-        console.info('dsh-nextsteps: the secret request failed ' + String(error?.message ?? error).slice(0, 80));
+        console.info('dsh-nextsteps: the secret request failed ' + describeError(error));
       }
       return INSTANCE_SECRET;
     }
@@ -791,6 +791,19 @@ window.__ModuleLoader__.load({
         : String(error);
     }
 
+    function describeError(error) {
+      if (error === null || typeof error !== 'object') return String(error);
+      const status = error.status !== undefined ? ' status=' + String(error.status) : '';
+      const code = typeof error.code === 'string' ? ' code=' + error.code : '';
+      return String(error.name ?? 'Error') + status + code;
+    }
+
+    function urlOf(raw) {
+      const text = String(raw ?? '');
+      const query = text.indexOf('?');
+      return query === -1 ? text : text.slice(0, query);
+    }
+
     async function copyText(text) {
       try {
         const clipboard = typeof navigator === 'undefined' || navigator === null ? undefined : navigator.clipboard;
@@ -855,7 +868,7 @@ window.__ModuleLoader__.load({
             try {
               actions.submit();
             } catch (error) {
-              console.warn('dsh-nextsteps: composer submit failed:', error);
+              console.warn('dsh-nextsteps: composer submit failed:', describeError(error));
               reject(error);
               return;
             }
@@ -992,7 +1005,7 @@ window.__ModuleLoader__.load({
             setNotice(announcement);
           })
           .catch((error) => {
-            console.warn('dsh-nextsteps: send failed:', error);
+            console.warn('dsh-nextsteps: send failed:', describeError(error));
             setFailure(errorMessage(error));
           })
           .finally(() => {
@@ -1084,7 +1097,7 @@ window.__ModuleLoader__.load({
         try {
           workspace.startSession(undefined, { prompt, whenDraftExists: 'replace' });
         } catch (error) {
-          console.warn('dsh-nextsteps: new conversation failed:', error);
+          console.warn('dsh-nextsteps: new conversation failed:', describeError(error));
           setNotice(t('newChatUnavailable'));
         }
       };
@@ -1501,7 +1514,7 @@ window.__ModuleLoader__.load({
       if (warnedTurns.has(key)) return;
       warnedTurns.add(key);
       if (warnedTurns.size > 200) warnedTurns.delete(warnedTurns.values().next().value);
-      console.warn('dsh-nextsteps: generation failed:', error);
+      console.warn('dsh-nextsteps: generation failed:', describeError(error));
     }
 
     function cancelGeneration(sessionId, turn) {

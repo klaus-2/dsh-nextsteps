@@ -195,3 +195,16 @@ function exists(target) {
     }
   }
 }
+
+test("the console sites carry no suggestion identifiers", () => {
+  for (const [name, source] of [["client.js", clientSource], ["index.js", hostSource]]) {
+    const sites = [...source.matchAll(/console\.(log|warn|error|info|debug)\s*\(([^)]*)\)/g)];
+    assert(sites.length > 0, `${name} carries console sites`);
+    for (const site of sites) {
+      const args = site[2].replace(/system prompt/g, "");
+      assert(!/\bprompt\b/.test(args), `${name} console site carries a prompt identifier: ${site[2].slice(0, 100)}`);
+      assert(!/\bfollowups\b/.test(args), `${name} console site carries a followups identifier: ${site[2].slice(0, 100)}`);
+      assert(!/\btranscript\b/.test(args), `${name} console site carries a transcript identifier: ${site[2].slice(0, 100)}`);
+    }
+  }
+});
