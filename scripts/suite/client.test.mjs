@@ -4800,6 +4800,41 @@ test("the legacy migration is deferred while a private session holds pending ent
   }
 });
 
+test("an audit recording during a pending purge remove neither crashes nor resurrects entries", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    assertEqual(auditEntriesOf(client.storage).length, 1, "the seeded capture left one audit entry");
+    const originalRemove = storage.removeItem.bind(storage);
+    let removeFailed = false;
+    storage.removeItem = (key) => {
+      if (key === "dsh-nextsteps.audit.v1" && !removeFailed) {
+        removeFailed = true;
+        throw new Error("quota");
+      }
+      return originalRemove(key);
+    };
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await openPrivateToggle(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    assert(removeFailed, "the audit remove is pending after the failed flush");
+    capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    client.instance.flushWrites();
+    const audit = auditEntriesOf(client.storage);
+    assert(Array.isArray(audit) && audit.length === 1, "the other session's audit entry is recorded without resurrecting the purged one");
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the purged captures stay purged");
+    assert(client.storage.getItem("dsh-nextsteps.captures.session.s2") !== null, "the other session's capture is on disk");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("client: the local audit log");
 
 function auditEntriesOf(storage) {

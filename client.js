@@ -737,7 +737,7 @@ window.__ModuleLoader__.load({
     function recordAudit(kind, text, sessionId) {
       if (isPrivateSession(sessionId)) return;
       if (typeof text !== 'string' || text === '') return;
-      const entries = storeStateForWrite(AUDIT_KEY, readAudit);
+      const entries = storeStateForWrite(AUDIT_KEY, readAudit, []);
       entries.push({ at: Date.now(), kind, hash: contentHash(text), len: text.length, sid: contentHash(sessionId) });
       scheduleWrite(AUDIT_KEY, JSON.stringify(entries.slice(-AUDIT_LIMIT)));
     }
