@@ -4556,3 +4556,207 @@ test("a secret announces once through the single live region", async () => {
     client.fetchStub.restore();
   }
 });
+
+suite("client: the private conversation mode");
+
+function privateStorage(extra = {}) {
+  return memoryStorage({ "dsh-nextsteps.private-sessions": JSON.stringify({ s1: true }), ...extra });
+}
+
+function captureBlock(text = "Rodar o build", label = "Rodar build") {
+  return { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: text, label }] }) }] };
+}
+
+function sendStub(ctx, sent) {
+  ctx.get = (name) => {
+    if (name === "sessions") return { binding: (id) => ({ id }) };
+    if (name === "conversation") return { binding: () => ({ send: async (text) => { sent.push(text); } }) };
+    return undefined;
+  };
+}
+
+function cardsOf(tree) {
+  return walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
+}
+
+async function openPrivateToggle(client, tail, props) {
+  const rendered = renderTail(client, tail, props);
+  const options = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions");
+  assert(options !== undefined, "the conversation options open");
+  options.props.onClick();
+  const opened = renderTail(client, tail, props);
+  const label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0];
+  assert(label !== undefined, "the private toggle is rendered");
+  const checkbox = walk(label, (node) => node.type === "input" && node.props?.type === "checkbox")[0];
+  return { opened, checkbox, labelOf: (tree) => walk(tree, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0] };
+}
+
+test("the private toggle persists the flag and announces the change", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox, labelOf } = await openPrivateToggle(client, tail, props);
+    assertEqual(checkbox.props.checked, false, "the toggle starts off");
+    checkbox.props.onChange({ target: { checked: true } });
+    const turned = renderTail(client, tail, props);
+    assertEqual(labelOf(turned) && walk(labelOf(turned), (node) => node.type === "input")[0].props.checked, true, "the toggle reads the stored flag");
+    assert(walk(turned, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-placeholder") && node.children.includes("srPrivateOn")).length === 1, "the header names the private state");
+    client.instance.flushWrites();
+    assert(String(client.storage.getItem("dsh-nextsteps.private-sessions")).includes("s1"), "the private flag is stored");
+    walk(labelOf(turned), (node) => node.type === "input")[0].props.onChange({ target: { checked: false } });
+    const offed = renderTail(client, tail, props);
+    assertEqual(labelOf(offed) && walk(labelOf(offed), (node) => node.type === "input")[0].props.checked, false, "the toggle reads off after unchecking");
+    assert(walk(offed, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-placeholder") && node.children.includes("srPrivateOff")).length === 1, "the header names the end of privacy");
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.private-sessions"), null, "the flag storage is removed when no session is private");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a private session keeps captures in memory only", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "no per-session store is written");
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.index"), null, "no index is written");
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assertEqual(cardsOf(rendered).length, 1, "the private capture still renders from memory");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("private interactions keep the stores untouched while a normal session writes", async () => {
+  const storage = privateStorage();
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const sent = [];
+    sendStub(ctx, sent);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const send = cardsOf(rendered)[0];
+    await send.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const favorite = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionFavorite");
+    favorite.props.onClick();
+    const discard = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionDiscard");
+    discard.props.onClick();
+    client.instance.flushWrites();
+    assertEqual(sent.length, 1, "the send still works");
+    assertEqual(client.storage.getItem("dsh-nextsteps.clicked"), null, "no clicked store is written");
+    assertEqual(client.storage.getItem("dsh-nextsteps.favorites"), null, "no favourites store is written");
+    assertEqual(client.storage.getItem("dsh-nextsteps.discarded"), null, "no discarded store is written");
+    const second = loadClient({ storage: memoryStorage(), routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+    try {
+      const sent2 = [];
+      const { ctx: ctx2, registrations: regs2 } = fakeSlotHost(second.react);
+      sendStub(ctx2, sent2);
+      second.instance.apply(ctx2);
+      const capture2 = regs2.find((entry) => entry.spec?.name === "tool.call.toolview");
+      capture2.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+      const tail2 = tailOf(regs2);
+      const rendered2 = renderTail(second, tail2, props);
+      await cardsOf(rendered2)[0].props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      buttonsOf(rendered2).find((node) => node.props?.["aria-label"] === "actionFavorite").props.onClick();
+      buttonsOf(rendered2).find((node) => node.props?.["aria-label"] === "actionDiscard").props.onClick();
+      second.instance.flushWrites();
+      assert(second.storage.getItem("dsh-nextsteps.clicked") !== null, "a normal session writes the clicked store");
+      assert(second.storage.getItem("dsh-nextsteps.favorites") !== null, "a normal session writes the favourites store");
+      assert(second.storage.getItem("dsh-nextsteps.discarded") !== null, "a normal session writes the discarded store");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a private session keeps the inline tail behavior", async () => {
+  const storage = privateStorage();
+  const generateCalls = [];
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      generateCalls.push(String(init?.body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
+  }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-raw", block: { kind: "tool-result", callId: "call-raw", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "cru", label: "Cru" }] }) }] } });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", seq: 9, t: (key) => key });
+    assert(cardsOf(rendered).length >= 1, "the raw card renders, so privacy never turns host mode on");
+    assertEqual(generateCalls.length, 0, "the tail never asks the host to generate");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("existing captures survive the private toggle and other sessions keep writing", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the capture is on disk before the toggle");
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await openPrivateToggle(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    const before = client.storage.getItem("dsh-nextsteps.captures.session.s1");
+    capture.component({ sessionId: "s1", callId: "call-2", block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "outra", label: "Outra" }] }) }] } });
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), before, "the private session writes nothing new");
+    capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
+    client.instance.flushWrites();
+    assert(client.storage.getItem("dsh-nextsteps.captures.session.s2") !== null, "the other session writes normally");
+    assert(String(client.storage.getItem("dsh-nextsteps.captures.index")).includes("s2"), "the index tracks the other session");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the legacy migration is deferred while a private session holds pending entries", async () => {
+  const legacy = JSON.stringify({ s1: { "call-legacy": { turn: 1, followups: [{ prompt: "legado", label: null }], clickedId: "sf-legacy" } } });
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.v1": legacy,
+    "dsh-nextsteps.private-sessions": JSON.stringify({ s1: true })
+  });
+  const { client } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    client.instance.flushWrites();
+    assert(client.storage.getItem("dsh-nextsteps.captures.v1") !== null, "the legacy store stays untouched");
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "no migrated session store is written");
+    const second = loadClient({ storage: client.storage, routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+    try {
+      second.storage.removeItem("dsh-nextsteps.private-sessions");
+      const { ctx } = fakeSlotHost(second.react);
+      second.instance.apply(ctx);
+      await settled(second);
+      second.instance.flushWrites();
+      assertEqual(second.storage.getItem("dsh-nextsteps.captures.v1"), null, "the legacy store is migrated and removed once nothing is private");
+      assert(second.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the migrated session store exists");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});

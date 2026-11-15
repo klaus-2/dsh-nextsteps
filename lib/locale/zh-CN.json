@@ -146,5 +146,8 @@
   "optTranscriptMinimal": "最小（最后几条）",
   "warnInjection": "这条建议疑似提示词注入",
   "warnSecrets": "这条建议疑似包含凭据或密钥",
-  "srSecretsWarning": "有建议疑似包含凭据或密钥。"
+  "srSecretsWarning": "有建议疑似包含凭据或密钥。",
+  "sessionPrivate": "私人对话",
+  "srPrivateOn": "此对话为私人模式；建议仅保留在内存中。",
+  "srPrivateOff": "此对话不再是私人模式。"
 }
