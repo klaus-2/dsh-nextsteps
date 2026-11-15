@@ -1,6 +1,3 @@
-// Seeded payload fuzzing kit shared by the host and the client suites.
-// The seed is a fixed constant in the code: the same seed must always build the
-// same payloads, so a failure names an exact payload any later run reproduces.
 export const FUZZ_SEED = 20251114;
 export const FUZZ_COUNT = 512;
 
@@ -27,7 +24,6 @@ let fixedCache;
 function fixedPayloads() {
   if (fixedCache !== undefined) return fixedCache;
   fixedCache = [
-    // (a) wrong types at the top level
     null,
     true,
     false,
@@ -39,35 +35,29 @@ function fixedPayloads() {
     "x".repeat(1e6),
     "\u0000",
     "high surrogate alone: \ud83d",
-    // (b) arrays of the wrong shape
     [],
     [null],
     [1],
     [[]],
     [deepValue(50)],
     Array.from({ length: 10000 }, (entry, index) => (index % 2 === 0 ? null : { prompt: PROMPT + " " + index })),
-    // (c) envelopes
     {},
     { followups: null },
     { followups: "x" },
     { __proto__: { x: 1 }, followups: [{ prompt: "proto", label: "P" }] },
     { followups: [{ prompt: "p" }], extra: "ignored" },
-    // (d) invalid items
     { followups: [{ prompt: "" }] },
     { followups: [{ prompt: "   " }] },
     { followups: [{ prompt: null }] },
     { followups: [{ prompt: 123 }] },
     { followups: [{ prompt: "p", label: 42 }] },
     { followups: [{ prompt: { deep: { deeper: 1 } } }] },
-    // (e) truncated or stuck model text, kept as raw strings
     '{"followups":[{"prompt":',
     "```json\n{\"followups\":[{\"prompt\":\"fenced\",\"label\":\"F\"}]}\n```",
     'The model said: {"followups":[{"prompt":"salvaged","label":"S"}]} and then rambled on about braces } and quotes ".',
     '{"prompt":"x"}'.repeat(1000),
     JSON.stringify(deepValue(1000)),
-    // (f) double-parse strings
     JSON.stringify(JSON.stringify({ followups: [{ prompt: "double", label: "D" }] })),
-    // (g) valid limits
     Array.from({ length: 6 }, (entry, index) => ({ prompt: PROMPT + " " + index, label: "L" + index })),
     Array.from({ length: 7 }, (entry, index) => ({ prompt: PROMPT + " " + index, label: "L" + index })),
     { followups: [{ prompt: "q".repeat(200), label: "edge" }] },
@@ -99,12 +89,6 @@ function mutatedPayload(index) {
   return JSON.stringify({ followups: items });
 }
 
-// Indexes 0..FUZZ_COUNT-1 are JSON-representable payloads. The hostile in-memory
-// cases live in IN_MEMORY_PAYLOADS: they cannot arrive over JSON (the host
-// serializes tool arguments), but the tool contract is "execute returns a string"
-// for direct in-process callers too. Repro of the historical throw: a getter that
-// throws on `followups`/`prompt` made coerceFollowups and validationProblem
-// propagate the getter's error out of execute().
 export function buildPayload(index) {
   if (!Number.isInteger(index) || index < 0 || index >= FUZZ_COUNT) {
     throw new Error(`buildPayload expects an index in [0, ${FUZZ_COUNT}), received ${index}`);
@@ -131,9 +115,6 @@ export function fuzzMessage(index, payload, note) {
   return `${note} [seed ${FUZZ_SEED} index ${index}] ${serialized.slice(0, 300)}`;
 }
 
-// The shared invariant over any served followups list. The caps are parameterized
-// because only the server truncates labels (index.js slices the label to 40); the
-// client keeps the label whole, so the client passes labelCap: null.
 export function assertFollowupsShape(list, { promptCap, labelCap = 40, max = 6 }, message) {
   const fail = (why) => {
     throw new Error(`${message ?? "the followups broke their shape"}: ${why}`);

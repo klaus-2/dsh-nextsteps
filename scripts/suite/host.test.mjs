@@ -10,9 +10,6 @@ suite("host: tool, settings and routes");
 
 const moduleUrl = new URL(`../../index.js?test=${Date.now()}`, import.meta.url);
 
-// The fixture mode reads the env var per request inside the route handler; a
-// developer machine that exports it must not flip the whole suite into fixture
-// answers, so the value is neutralized before any test runs.
 delete process.env.DSH_NEXTSTEPS_FIXTURE;
 
 function stubContext({ services, llmModels, llmText } = {}) {
@@ -1557,9 +1554,6 @@ test("the rewrite path serves cached drafts untouched by the avoid rule", async 
 
 suite("host: seeded payload fuzzing");
 
-// One shared fuzz surface: a finished turn-1 session and a mutable llm whose
-// answer text changes per iteration, so every payload travels through the real
-// route and validators — nothing is reimplemented here.
 const fuzzEvents = [
   { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please fix the parser" }], source: { kind: "user" } } },
   { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
@@ -1585,8 +1579,6 @@ async function fuzzContext() {
   const { ctx, routes, registered } = stubContext({ services: { sessionQuery, llm } });
   const mod = await import(moduleUrl.href);
   await mod.apply(ctx);
-  // Pin every knob the served shape depends on: earlier tests poison the shared
-  // settings profile, so the fuzz caps must be set explicitly here.
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1601,8 +1593,6 @@ async function fuzzContext() {
   return { surface, registered, post };
 }
 
-// The fuzz loop answers through a hostile model, so the per-attempt warnings are
-// expected noise: each iteration still asserts the real answer (status and body).
 function silenceFuzzNoise(run) {
   const realWarn = console.warn;
   console.warn = () => {};
@@ -1720,9 +1710,6 @@ async function fixtureContext({ withLlm = false, events = fixtureEvents } = {}) 
   return { post, llmCalls };
 }
 
-// The env var is process-global: every fixture test saves, sets and restores it
-// in a finally, so no state leaks into the tests that follow. The await keeps
-// the restore pending until the async body settles, not just until it starts.
 async function withFixtureEnv(value, run) {
   const previous = process.env.DSH_NEXTSTEPS_FIXTURE;
   try {

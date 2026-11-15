@@ -23,12 +23,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # The regression suite still covers the in-app install route that was
-      # removed in 8778594, so it reports 9 known install/update failures
-      # (pre-existing debt, not from this change). It runs so the failures stay
-      # visible in CI without blocking it. When tools/ is reconciled with the
-      # removed route, drop this flag and gate on `npm test` again. The hard
-      # gates below are the unit suite and the enforced coverage thresholds.
       - run: npm run regression
         continue-on-error: true
       - run: npm run test:unit
