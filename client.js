@@ -321,10 +321,27 @@ window.__ModuleLoader__.load({
       return readPrivateSessions().has(sessionId);
     }
 
+    function purgeSessionRecords(sessionId) {
+      const index = readIndex();
+      if (index.sessions[sessionId] !== undefined) {
+        removeSession(index, sessionId);
+        scheduleWrite(CAPTURES_INDEX_KEY, JSON.stringify(index));
+      }
+      scheduleRemove(CAPTURE_SESSION_KEY + '.' + sessionId);
+      const sid = contentHash(sessionId);
+      const entries = readAudit();
+      const kept = entries.filter((entry) => entry.sid !== sid);
+      if (kept.length === entries.length) return;
+      if (kept.length === 0) scheduleRemove(AUDIT_KEY);
+      else scheduleWrite(AUDIT_KEY, JSON.stringify(kept.slice(-AUDIT_LIMIT)));
+    }
+
     function writePrivateSession(sessionId, on) {
       const next = readPrivateSessions();
-      if (on) next.add(sessionId);
-      else next.delete(sessionId);
+      if (on) {
+        next.add(sessionId);
+        purgeSessionRecords(sessionId);
+      } else next.delete(sessionId);
       const payload = {};
       for (const id of next) payload[id] = true;
       if (Object.keys(payload).length === 0) scheduleRemove(PRIVATE_KEY);

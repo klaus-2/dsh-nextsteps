@@ -4706,7 +4706,7 @@ test("a private session keeps the inline tail behavior", async () => {
   }
 });
 
-test("existing captures survive the private toggle and other sessions keep writing", async () => {
+test("enabling private purges the session's stored captures and audit while other sessions keep writing", async () => {
   const storage = memoryStorage();
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
   try {
@@ -4714,15 +4714,18 @@ test("existing captures survive the private toggle and other sessions keep writi
     capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
     client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the capture is on disk before the toggle");
+    assert(Array.isArray(auditEntriesOf(client.storage)) && auditEntriesOf(client.storage).length > 0, "the seeded capture left an audit entry");
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
     const { checkbox } = await openPrivateToggle(client, tail, props);
     checkbox.props.onChange({ target: { checked: true } });
     client.instance.flushWrites();
-    const before = client.storage.getItem("dsh-nextsteps.captures.session.s1");
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the stored captures are purged when the session turns private");
+    assert(!String(client.storage.getItem("dsh-nextsteps.captures.index")).includes('"s1"'), "the index no longer tracks the private session");
+    assertEqual(auditEntriesOf(client.storage), null, "the audit entries of the private session are purged");
     capture.component({ sessionId: "s1", callId: "call-2", block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "outra", label: "Outra" }] }) }] } });
     client.instance.flushWrites();
-    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), before, "the private session writes nothing new");
+    assertEqual(client.storage.getItem("dsh-nextsteps.captures.session.s1"), null, "the private session writes nothing new");
     capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
     client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s2") !== null, "the other session writes normally");
