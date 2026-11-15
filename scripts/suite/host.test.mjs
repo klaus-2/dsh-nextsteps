@@ -9,6 +9,11 @@ suite("host: tool, settings and routes");
 
 const moduleUrl = new URL(`../../index.js?test=${Date.now()}`, import.meta.url);
 
+// The fixture mode reads the env var per request inside the route handler; a
+// developer machine that exports it must not flip the whole suite into fixture
+// answers, so the value is neutralized before any test runs.
+delete process.env.DSH_NEXTSTEPS_FIXTURE;
+
 function stubContext({ services, llmModels, llmText } = {}) {
   const defaults = {
     systemPrompt: { section: (spec) => sections.push(spec) },
@@ -1684,4 +1689,108 @@ test("the seeded payloads are reproducible", () => {
   for (let index = 0; index < 64; index += 1) {
     assertEqual(seeded(), again(), `the PRNG stream at ${index} is reproducible [seed ${FUZZ_SEED}]`);
   }
+});
+
+suite("host: the deterministic fixture mode");
+
+const fixtureEvents = [
+  { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please fix the parser" }], source: { kind: "user" } } },
+  { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+];
+
+async function fixtureContext({ withLlm = false, events = fixtureEvents } = {}) {
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes, llmCalls } = stubContext(withLlm
+    ? { services: { sessionQuery }, llmText: '{"followups":[{"prompt":"From the model","label":"Model"}]}' }
+    : { services: { sessionQuery } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "", generationMode: "auto", maxFollowups: 3, maxSuggestionChars: 200 })
+  }));
+  const route = routes.get(`/api/${pluginId}.generate`);
+  const post = (body) => route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }));
+  return { post, llmCalls };
+}
+
+// The env var is process-global: every fixture test saves, sets and restores it
+// in a finally, so no state leaks into the tests that follow. The await keeps
+// the restore pending until the async body settles, not just until it starts.
+async function withFixtureEnv(value, run) {
+  const previous = process.env.DSH_NEXTSTEPS_FIXTURE;
+  try {
+    if (value === undefined) delete process.env.DSH_NEXTSTEPS_FIXTURE;
+    else process.env.DSH_NEXTSTEPS_FIXTURE = value;
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.DSH_NEXTSTEPS_FIXTURE;
+    else process.env.DSH_NEXTSTEPS_FIXTURE = previous;
+  }
+}
+
+test("a valid fixture answers the fixed cards without calling the llm", async () => {
+  await withFixtureEnv('[{"prompt":"Fixo","label":"Fixo"},{"prompt":"Segundo"}]', async () => {
+    const { post, llmCalls } = await fixtureContext();
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.source, "fixture", "the answer names the fixture source");
+    assertEqual(body.model, "fixture", "the answer names the fixture model");
+    assertEqual(body.rev, "sf-2", "the answer carries the plugin revision");
+    assertEqual(body.followups, [
+      { prompt: "Fixo", label: "Fixo" },
+      { prompt: "Segundo", label: null }
+    ], "the fixture value is normalized by the real validators");
+    assertEqual(llmCalls.length, 0, "the fixture mode never calls the llm");
+  });
+});
+
+test("the probe validate stays ahead of the fixture", async () => {
+  await withFixtureEnv('[{"prompt":"Fixo","label":"Fixo"}]', async () => {
+    const { post } = await fixtureContext();
+    const response = await post({ sessionId: "s1", afterSeq: 9, validate: true });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.ok, true, "the probe answers ok");
+    assertEqual(body.completed, true, "the turn is completed");
+    assert(body.followups === undefined && body.source === undefined, "the probe answer carries no fixture cards");
+  });
+});
+
+test("an unusable fixture value is refused with 400", async () => {
+  await withFixtureEnv("not json", async () => {
+    const { post } = await fixtureContext();
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(response.status, 400, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.error, "the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON", "the refusal names the fixture variable");
+  });
+});
+
+test("without the env var the route follows the normal transcript path", async () => {
+  await withFixtureEnv(undefined, async () => {
+    const { post, llmCalls } = await fixtureContext({ withLlm: true });
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.source, "transcript", "the normal path generates from the transcript");
+    assertEqual(llmCalls.length, 1, "the normal path calls the llm once");
+  });
+});
+
+test("the fixture respects the maxFollowups setting", async () => {
+  await withFixtureEnv(JSON.stringify({ followups: Array.from({ length: 6 }, (entry, index) => ({ prompt: `card ${index}`, label: "L" })) }), async () => {
+    const { post } = await fixtureContext();
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.followups.length, 3, "six fixture cards are cut to the maxFollowups setting");
+    assertEqual(body.followups[0].prompt, "card 0", "the first fixture card survives the cut");
+  });
 });

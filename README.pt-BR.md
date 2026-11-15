@@ -97,6 +97,19 @@ A mesma página de configurações pergunta ao npm registry qual é a versão ma
 - DeepSeek Harness 0.2.x (desktop, perfil web).
 - Node.js 20+.
 
+## Desenvolvimento
+
+- `npm test` roda a suíte de regressão e a suíte de testes unitários.
+- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre o `index.js`.
+
+Para geração determinística durante o QA manual, exporte `DSH_NEXTSTEPS_FIXTURE` com um payload JSON de followups; a rota de geração então responde com esses cartões (normalizados pelos validadores reais, `model: "fixture"`, `source: "fixture"`) e nunca chama o LLM:
+
+```bash
+DSH_NEXTSTEPS_FIXTURE='[{"prompt":"Run the tests","label":"Tests"}]'
+```
+
+Esse interruptor existe só para testes e QA manual: sem a variável a rota se comporta exatamente como antes (e, enquanto ela está definida, ignora os overrides de idioma, contagem e modelo do corpo), e o probe `validate: true` não é afetado.
+
 ## Registro de mudanças
 
 O [CHANGELOG.md](CHANGELOG.md) lista todas as mudanças publicadas.

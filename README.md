@@ -97,6 +97,19 @@ The same settings page asks the npm registry for the latest `dsh-nextsteps` rele
 - DeepSeek Harness 0.2.x (desktop, web profile).
 - Node.js 20+.
 
+## Development
+
+- `npm test` runs the regression suite and the unit suite.
+- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js`.
+
+For deterministic generation during manual QA, export `DSH_NEXTSTEPS_FIXTURE` with a followups JSON payload; the generate route then answers with those cards (normalized by the real validators, `model: "fixture"`, `source: "fixture"`) and never calls the LLM:
+
+```bash
+DSH_NEXTSTEPS_FIXTURE='[{"prompt":"Run the tests","label":"Tests"}]'
+```
+
+This switch exists for tests and manual QA only: without the variable the route behaves exactly as before (it also ignores the body overrides for language, count and model while set), and the `validate: true` probe is unaffected.
+
 ## Changelog
 
 [CHANGELOG.md](CHANGELOG.md) lists every released change.

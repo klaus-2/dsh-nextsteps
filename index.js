@@ -1029,6 +1029,12 @@ async function apply(ctx) {
           return json({ ok: true, completed: false });
         }
       }
+      const fixtureText = process.env.DSH_NEXTSTEPS_FIXTURE;
+      if (typeof fixtureText === 'string' && fixtureText.trim() !== '') {
+        const fixture = followupsFromModelText(fixtureText, settings.maxSuggestionChars);
+        if (fixture === undefined) return json({ error: 'the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON' }, 400);
+        return json({ ok: true, rev: PLUGIN_REV, followups: fixture.slice(0, settings.maxFollowups), model: 'fixture', source: 'fixture' });
+      }
       const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
       const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;
       const overrideModel = typeof body?.model === 'string' && body.model.includes('/') ? body.model : undefined;
