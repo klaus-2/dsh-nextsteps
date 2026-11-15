@@ -4820,7 +4820,6 @@ test("enabling private purges the session's captures, discards and audit while o
     capture.component({ sessionId: "s2", callId: "call-1", block: captureBlock() });
     client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the capture is on disk before the toggle");
-    storage.__dbgId = "PURGES";
     assertEqual(auditEntriesOf(client.storage).length, 2, "both seeded captures left audit entries");
     const tail = tailOf(registrations);
     const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
@@ -4949,7 +4948,7 @@ test("a failing storage keeps the purge honest with a visible notice", async () 
     capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
     client.instance.flushWrites();
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the capture is on disk");
-    const broken = new Set(["dsh-nextsteps.captures.index", "dsh-nextsteps.captures.session.s1", "dsh-nextsteps.audit.v1"]);
+    const broken = new Set(["dsh-nextsteps.captures.index", "dsh-nextsteps.captures.session.s1", "dsh-nextsteps.audit.v1", "dsh-nextsteps.private-sessions"]);
     const realSet = storage.setItem.bind(storage);
     const realRemove = storage.removeItem.bind(storage);
     storage.setItem = (key, value) => {
@@ -4969,6 +4968,85 @@ test("a failing storage keeps the purge honest with a visible notice", async () 
     const notice = walk(opened, (node) => String(node.props?.className ?? "").includes("dsh-sf-placeholder") && node.children.includes("privatePurgeFailed"))[0];
     assert(notice !== undefined, "the panel names the purge failure");
     assert(client.storage.getItem("dsh-nextsteps.captures.session.s1") !== null, "the residue stays visible when the storage refuses the purge");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an armed editor sends the edited draft, not the armed one", async () => {
+  const calls = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, confirmBeforeSend: true }, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return { binding: () => ({ send: async (text) => { calls.push(text); } }) };
+      return undefined;
+    };
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    let rendered = renderTail(client, tail, props);
+    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionEdit");
+    edit.props.onClick();
+    rendered = renderTail(client, tail, props);
+    walk(rendered, (node) => node.props?.["aria-label"] === "editPrompt")[0].props.onChange({ target: { value: "primeira versao do texto" } });
+    rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.children.includes("editConfirm")).props.onClick();
+    assertEqual(calls, [], "the first click arms the send");
+    rendered = renderTail(client, tail, props);
+    walk(rendered, (node) => node.props?.["aria-label"] === "editPrompt")[0].props.onChange({ target: { value: "segunda versao do texto" } });
+    rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.children.includes("editConfirm")).props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(calls, ["segunda versao do texto"], "the confirmation sends the current draft");
+    rendered = renderTail(client, tail, props);
+    assertEqual(walk(rendered, (node) => node.props?.["aria-label"] === "editPrompt").length, 0, "the editor closes after the confirmed send");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("cancelling the editor disarms the pending send", async () => {
+  const calls = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, confirmBeforeSend: true }, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return { binding: () => ({ send: async (text) => { calls.push(text); } }) };
+      return undefined;
+    };
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    let rendered = renderTail(client, tail, props);
+    console.warn('CNL-DBG step1 edit:', buttonsOf(rendered).some((node) => node.props?.["aria-label"] === "actionEdit"), 'null:', rendered === null);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionEdit").props.onClick();
+    rendered = renderTail(client, tail, props);
+    console.warn('CNL-DBG step2 confirm:', buttonsOf(rendered).some((node) => node.children.includes("editConfirm")), 'editor:', walk(rendered, (node) => node.props?.className === "dsh-sf-editor").length);
+    buttonsOf(rendered).find((node) => node.children.includes("editConfirm")).props.onClick();
+    rendered = renderTail(client, tail, props);
+    console.warn('CNL-DBG step3 row:', walk(rendered, (node) => node.props?.className === "dsh-sf-confirm").length, 'editor:', walk(rendered, (node) => node.props?.className === "dsh-sf-editor").length);
+    assert(walk(rendered, (node) => node.props?.className === "dsh-sf-confirm")[0] !== undefined, "the send is armed");
+    const editor = walk(rendered, (node) => node.props?.className === "dsh-sf-editor")[0];
+    buttonsOf(editor).find((node) => node.children.includes("editCancel")).props.onClick();
+    rendered = renderTail(client, tail, props);
+    assertEqual(walk(rendered, (node) => node.props?.className === "dsh-sf-confirm").length, 0, "the editor cancel disarms the send");
+    const card = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
+    await card.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(calls, [], "the disarmed card sends nothing without a fresh confirmation");
   } finally {
     client.fetchStub.restore();
   }

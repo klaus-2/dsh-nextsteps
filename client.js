@@ -321,22 +321,23 @@ window.__ModuleLoader__.load({
       return readPrivateSessions().has(sessionId);
     }
 
+    function writeThrough(key, payload) {
+      if (payload === null) {
+        pendingWrites.delete(key);
+        if (removeNow(key)) return true;
+        scheduleRemove(key);
+        return false;
+      }
+      if (writeNow(key, payload)) {
+        pendingWrites.delete(key);
+        return true;
+      }
+      scheduleWrite(key, payload);
+      return false;
+    }
+
     function purgeSessionRecords(sessionId) {
       let residue = false;
-      const writeThrough = (key, payload) => {
-        if (payload === null) {
-          pendingWrites.delete(key);
-          if (removeNow(key)) return true;
-          scheduleRemove(key);
-          return false;
-        }
-        if (writeNow(key, payload)) {
-          pendingWrites.delete(key);
-          return true;
-        }
-        scheduleWrite(key, payload);
-        return false;
-      };
       const index = readIndex();
       if (index.sessions[sessionId] !== undefined) {
         removeSession(index, sessionId);
@@ -380,8 +381,7 @@ window.__ModuleLoader__.load({
       } else next.delete(sessionId);
       const payload = {};
       for (const id of next) payload[id] = true;
-      if (Object.keys(payload).length === 0) scheduleRemove(PRIVATE_KEY);
-      else scheduleWrite(PRIVATE_KEY, JSON.stringify(payload));
+      residue = !writeThrough(PRIVATE_KEY, Object.keys(payload).length === 0 ? null : JSON.stringify(payload)) || residue;
       return residue;
     }
 
@@ -1341,18 +1341,20 @@ window.__ModuleLoader__.load({
           return;
         }
         if (state.armed === true) {
-          clearSendTimers(itemId);
+          clearSendTimers(`${itemId}|send`);
           updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
           send(state.armedText ?? text, itemId, state.armedAnnouncement ?? announcement);
           return;
         }
-        updateItem(itemId, { armed: true, armedText: text, armedAnnouncement: announcement });
+        clearSendTimers(`${itemId}|chat`);
+        updateItem(itemId, { armed: true, armedText: text, armedAnnouncement: announcement, chatArmed: false });
         setNotice(t('srSendConfirm'));
+        const timerKey = `${itemId}|send`;
         const timerId = window.setTimeout(() => {
-          sendTimersRef.current.delete(itemId);
+          sendTimersRef.current.delete(timerKey);
           updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
         }, CONFIRM_RESET_MS);
-        sendTimersRef.current.set(itemId, timerId);
+        sendTimersRef.current.set(timerKey, timerId);
       };
 
       const requestNewChat = (itemId, prompt) => {
@@ -1362,18 +1364,20 @@ window.__ModuleLoader__.load({
           return;
         }
         if (state.chatArmed === true) {
-          clearSendTimers(itemId);
+          clearSendTimers(`${itemId}|chat`);
           updateItem(itemId, { chatArmed: false });
           openNewChat(prompt);
           return;
         }
-        updateItem(itemId, { chatArmed: true });
+        clearSendTimers(`${itemId}|send`);
+        updateItem(itemId, { chatArmed: true, armed: false, armedText: undefined, armedAnnouncement: undefined });
         setNotice(t('srSendConfirm'));
+        const timerKey = `${itemId}|chat`;
         const timerId = window.setTimeout(() => {
-          sendTimersRef.current.delete(itemId);
+          sendTimersRef.current.delete(timerKey);
           updateItem(itemId, { chatArmed: false });
         }, CONFIRM_RESET_MS);
-        sendTimersRef.current.set(itemId, timerId);
+        sendTimersRef.current.set(timerKey, timerId);
       };
 
       const insertDraft = (text) => {
@@ -1653,7 +1657,7 @@ window.__ModuleLoader__.load({
                 className: 'dsh-sf-action',
                 onClick: () => {
                   if (state.chatArmed === true) {
-                    clearSendTimers(itemId);
+                    clearSendTimers(`${itemId}|chat`);
                     updateItem(itemId, { chatArmed: false });
                     openNewChat(prompt);
                     return;
@@ -1665,7 +1669,8 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dsh-sf-action',
                 onClick: () => {
-                  clearSendTimers(itemId);
+                  clearSendTimers(`${itemId}|send`);
+                  clearSendTimers(`${itemId}|chat`);
                   updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined, chatArmed: false });
                 }
               }, t('editCancel'))) : null,
@@ -1689,15 +1694,24 @@ window.__ModuleLoader__.load({
                 onClick: () => {
                   const draft = (state.draft ?? prompt).trim();
                   if (draft === '') return;
-                  const sendsNow = pluginSettings.confirmBeforeSend !== true || state.armed === true;
+                  if (pluginSettings.confirmBeforeSend === true && state.armed === true) {
+                    clearSendTimers(`${itemId}|send`);
+                    updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
+                    send(draft, itemId, t('srEdited'));
+                    updateItem(itemId, { editing: false, draft: '' });
+                    return;
+                  }
                   requestSend(itemId, draft, t('srEdited'));
-                  if (sendsNow) updateItem(itemId, { editing: false, draft: '' });
+                  if (pluginSettings.confirmBeforeSend !== true) updateItem(itemId, { editing: false, draft: '' });
                 }
                 }, t('editConfirm')),
                 h('button', {
                   type: 'button',
                   className: 'dsh-sf-action',
-                  onClick: () => updateItem(itemId, { editing: false, draft: '' })
+                  onClick: () => {
+                    clearSendTimers(`${itemId}|send`);
+                    updateItem(itemId, { editing: false, draft: '', armed: false, armedText: undefined, armedAnnouncement: undefined });
+                  }
                 }, t('editCancel')))) : null,
             h('span', { className: 'dsh-sf-hints' },
               `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionInsertDraft')} I · ${t('actionDiscard')} D`),
@@ -1988,6 +2002,7 @@ window.__ModuleLoader__.load({
         sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
         const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
 
+
         const renders = entries.length > 0 || retry !== null || recentDiscard !== undefined || probeCompleted === true;
 
         React.useEffect(() => {
@@ -2037,6 +2052,7 @@ window.__ModuleLoader__.load({
             setGeneratingLabel('');
           };
         }, [generating, key]);
+
 
         if (entries.length === 0 && generating !== true && retry === null && recentDiscard === undefined && probeCompleted !== true) return null;
 
