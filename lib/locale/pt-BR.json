@@ -135,5 +135,7 @@
   "issues": "Reportar um problema",
   "actionRegenerate": "Regenerar",
   "regenerating": "Regenerando…",
-  "srRegenerated": "A sugestão foi regenerada."
+  "srRegenerated": "A sugestão foi regenerada.",
+  "updatePrecheck": "Não foi possível verificar a versão no registro do npm.",
+  "updateNoManager": "Nenhum instalador de plugins está disponível neste host."
 }

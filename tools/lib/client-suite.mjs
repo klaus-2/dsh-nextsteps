@@ -329,9 +329,7 @@ export async function runClientSuite(harness, { pluginDir }) {
           const target = String(url);
           calls.push({ url: target, method: options?.method ?? "GET", body: options?.body, headers: options?.headers ?? {} });
           if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
-          if (target.includes("/.ns/update/install")) {
-            return new Response(JSON.stringify({ ok: true, installed: "1.0.17" }), { status: 200, headers: { "content-type": "application/json" } });
-          }
+          if (target.includes("registry.npmjs.org/dsh-nextsteps/")) return jsonResponse({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
           if (target.includes("/.ns/update")) {
             return new Response(JSON.stringify({ ok: true, version: "1.0.16", installed: "1.0.16", update: { latest: "v1.0.17", newer: true } }), { status: 200, headers: { "content-type": "application/json" } });
           }
@@ -376,6 +374,8 @@ export async function runClientSuite(harness, { pluginDir }) {
       harness.check("the update request carries the instance secret", updateCalls.length === 1 && updateCalls[0]?.headers["x-dsh-nextsteps-secret"] === "a".repeat(64), JSON.stringify(updateCalls.map((entry) => entry.headers)));
       harness.eq("the secret is fetched once and reused", flowCalls.filter((entry) => entry.url.includes("/api/dsh-nextsteps.secret")).length, 1);
       harness.eq("the applied install remembers the version", withManager.localStorage.getItem("dsh-nextsteps.updated"), "1.0.17");
+      const packumentCall = flowCalls.find((entry) => entry.url.includes("registry.npmjs.org/dsh-nextsteps/"));
+      harness.check("the npm registry packument is consulted before installing", packumentCall !== undefined && String(packumentCall?.headers?.["x-dsh-nextsteps-secret"] ?? "") === "", JSON.stringify(flowCalls.map((entry) => entry.url.slice(0, 60))));
       const settled = renderOnce(withManager.stub, withManager.settings, { t: (key) => key });
       const updateState = updateStateOf(withManager.stub);
       harness.check("the running version moves to what landed", updateState?.version === "1.0.17" && updateState?.update?.newer === false, JSON.stringify(updateState));
@@ -394,11 +394,11 @@ export async function runClientSuite(harness, { pluginDir }) {
     if (fallbackButtons.length === 1) {
       await fallbackButtons[0].props.onClick();
       await flush(4);
-      const installCall = fallbackCalls.find((entry) => entry.url.includes("/.ns/update/install"));
-      harness.check("the own install route is used when there is no plugin manager", installCall !== undefined, JSON.stringify(fallbackCalls.map((entry) => entry.url.slice(0, 60))));
-      harness.check("the own install route carries the version", String(installCall?.body ?? "").includes("1.0.17"), String(installCall?.body ?? ""));
-      harness.check("the install request carries the instance secret", installCall?.headers?.["x-dsh-nextsteps-secret"] === "a".repeat(64), JSON.stringify(installCall?.headers));
-      harness.eq("the fallback install remembers the version the host installed", withoutManager.localStorage.getItem("dsh-nextsteps.updated"), "1.0.17");
+      harness.check("the install without a manager names the missing installer", updateStateOf(withoutManager.stub)?.installError === "no-installer", JSON.stringify(updateStateOf(withoutManager.stub)));
+      const settledFallback = renderOnce(withoutManager.stub, withoutManager.settings, { t: (key) => key });
+      harness.check("the row names the missing installer", findElements(settledFallback.tree, (element) => element.props?.children === "updateNoManager").length === 1, JSON.stringify(settledFallback.tree).slice(0, 140));
+      harness.check("no install request is sent without a plugin manager", fallbackCalls.every((entry) => !entry.url.includes("/.ns/update/install")), JSON.stringify(fallbackCalls.map((entry) => entry.url.slice(0, 60))));
+      harness.eq("nothing is remembered as installed without a plugin manager", withoutManager.localStorage.getItem("dsh-nextsteps.updated"), null);
     }
   }
 
@@ -456,6 +456,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       fetch: async (url) => {
         const target = String(url);
         if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
+        if (target.includes("registry.npmjs.org/dsh-nextsteps/")) return jsonResponse({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
         if (target.includes("/.ns/update")) {
           return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true, url: "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v1.0.24" } });
         }
@@ -576,10 +577,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       fetch: async (url, options) => {
         const target = String(url);
         if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
-        if (target.includes("/.ns/update/install")) {
-          routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
-          return jsonResponse({ ok: true, installed: "1.0.24" });
-        }
+        if (target.includes("registry.npmjs.org/dsh-nextsteps/")) return jsonResponse({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
         if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
         if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
         if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
@@ -601,8 +599,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       await flush(4);
       harness.eq("the manager is asked once", calls.length, 1);
       harness.check("the tarball is never asked for", !calls.some((spec) => String(spec).includes(".tgz")), JSON.stringify(calls));
-      harness.eq("the plugin's own route installs the version", routeCalls.length, 1);
-      harness.eq("the route is asked for the exact version", routeCalls[0]?.version, "1.0.24");
+      harness.eq("the dead route is never asked", routeCalls.length, 0);
       harness.eq("the version that landed on disk is remembered", localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
       const after = renderOnce(stub, settings, {});
       const restart = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("1.0.24") && element.props.children.includes("installed"));
@@ -622,10 +619,7 @@ export async function runClientSuite(harness, { pluginDir }) {
         fetch: async (url, options) => {
           const target = String(url);
           if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
-          if (target.includes("/.ns/update/install")) {
-            routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
-            return jsonResponse({ ok: true, installed: "1.0.24" });
-          }
+          if (target.includes("registry.npmjs.org/dsh-nextsteps/")) return jsonResponse({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
           if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
           if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
           if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
@@ -656,10 +650,9 @@ export async function runClientSuite(harness, { pluginDir }) {
       }
     });
     await click(refused);
-    harness.eq("the plugin's own route installs the version", refused.routeCalls.length, 1);
-    harness.eq("the route is asked for the exact version", refused.routeCalls[0]?.version, "1.0.24");
-    harness.eq("the version that landed is named", updateStateOf(refused.stub).installed, "1.0.24");
-    harness.eq("the version that landed is remembered", refused.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
+    harness.check("a refused install names the rejection", String(updateStateOf(refused.stub)?.installError).includes("rejected"), String(updateStateOf(refused.stub)?.installError));
+    harness.eq("no own route is asked on a refusal", refused.routeCalls.length, 0);
+    harness.eq("a refused install is not remembered", refused.localStorage.getItem("dsh-nextsteps.updated"), null);
 
     const cancelled = await build({
       async updateBundle(name, version) {
@@ -683,10 +676,9 @@ export async function runClientSuite(harness, { pluginDir }) {
     });
     await click(recovered);
     harness.eq("the manager is not asked to install a package it already holds", managerCalls.length, 0);
-    harness.eq("the plugin's own route installs the version", recovered.routeCalls.length, 1);
-    harness.eq("the route is asked for the exact version", recovered.routeCalls[0]?.version, "1.0.24");
-    harness.eq("the copy that landed is remembered", recovered.localStorage.getItem("dsh-nextsteps.updated"), "1.0.24");
-    harness.eq("the refusal does not survive the recovery", updateStateOf(recovered.stub).installError, "");
+    harness.check("the rejection is named", String(updateStateOf(recovered.stub)?.installError).includes("rejected"), String(updateStateOf(recovered.stub)?.installError));
+    harness.eq("no own route is asked on the rejection", recovered.routeCalls.length, 0);
+    harness.eq("the rejected install is not remembered", recovered.localStorage.getItem("dsh-nextsteps.updated"), null);
   }
 
   harness.section("client: a development copy refuses to be installed over");
@@ -699,7 +691,6 @@ export async function runClientSuite(harness, { pluginDir }) {
       fetch: async (url) => {
         const target = String(url);
         if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
-        if (target.includes("/.ns/update/install")) return jsonResponse({ ok: false, error: "local-development" });
         if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
         if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
         if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });
@@ -720,8 +711,8 @@ export async function runClientSuite(harness, { pluginDir }) {
       await buttons[0].props.onClick();
       await flush(4);
       const after = renderOnce(stub, settings, {});
-      const notice = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("Local development copy"));
-      harness.eq("the row explains the development copy instead of an install failure", notice.length, 1);
+      const notice = findElements(after.tree, (element) => typeof element.props?.children === "string" && element.props.children.includes("No plugin installer"));
+      harness.eq("the row names the missing installer instead of an install failure", notice.length, 1);
       harness.eq("nothing was remembered as installed", localStorage.getItem("dsh-nextsteps.updated"), null);
     }
   }
@@ -768,10 +759,7 @@ export async function runClientSuite(harness, { pluginDir }) {
       fetch: async (url, options) => {
         const target = String(url);
         if (target.endsWith("/.ns/health")) return jsonResponse({ ok: true, name: "dsh-nextsteps", port: Number(new URL(target).port) });
-        if (target.includes("/.ns/update/install")) {
-          routeCalls.push(JSON.parse(String(options?.body ?? "{}")));
-          return jsonResponse({ ok: true, installed: "1.0.24" });
-        }
+        if (target.includes("registry.npmjs.org/dsh-nextsteps/")) return jsonResponse({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
         if (target.includes("/.ns/update")) return jsonResponse({ ok: true, version: "1.0.23", update: { latest: "v1.0.24", newer: true } });
         if (target.includes("/api/dsh-nextsteps.secret")) return jsonResponse({ ok: true, secret: "a".repeat(64) });
         if (target.includes("/api/dsh-nextsteps.models")) return jsonResponse({ ok: true, groups: [] });

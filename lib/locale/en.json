@@ -135,5 +135,7 @@
   "issues": "Report an issue",
   "actionRegenerate": "Regenerate",
   "regenerating": "Regenerating…",
-  "srRegenerated": "The suggestion was regenerated."
+  "srRegenerated": "The suggestion was regenerated.",
+  "updatePrecheck": "The version could not be verified on the npm registry.",
+  "updateNoManager": "No plugin installer is available in this host."
 }

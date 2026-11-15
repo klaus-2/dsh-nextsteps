@@ -4140,3 +4140,113 @@ test("the capture unwraps a double-encoded payload under seeded fuzzing", () => 
     assertFollowupsShape(readBack(callId), { promptCap: 200, labelCap: null }, fuzzMessage(index, payload, "the double-encoded payload keeps the followup shape"));
   }
 });
+
+suite("client: the update precheck");
+
+const PACKUMENT_OK = () => ({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
+
+function updateRoutes(packumentAnswer = PACKUMENT_OK()) {
+  return {
+    routes: {
+      "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS }, version: "1.0.16" },
+      "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+    },
+    prefixes: {
+      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+      "/.ns/update": { ok: true, version: "1.0.16", update: { latest: "v1.0.17", newer: true } },
+      "https://registry.npmjs.org/dsh-nextsteps/": packumentAnswer
+    }
+  };
+}
+
+async function updatePage(client, pluginManager) {
+  const base = fakeSlotHost(client.react);
+  const managerCalls = [];
+  const ctx = { ...base.ctx };
+  if (pluginManager !== undefined) {
+    ctx.inject = (deps, setup) => {
+      setup({ remote: { pluginManager }, effect: () => {} });
+      return { dispose: () => {} };
+    };
+  }
+  client.instance.apply(ctx);
+  const settings = base.registrations.find((entry) => entry.spec?.name === "settings.section");
+  assert(settings !== undefined, "the settings section is registered");
+  settings.component({ t: (key) => key });
+  for (const effect of client.react.__effects ?? []) await effect();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const rendered = settings.component({ t: (key) => key });
+  const buttons = walk(rendered, (node) => node.type === "button" && node.children.includes("updateNow"));
+  return { settings, rendered, buttons, managerCalls };
+}
+
+test("the install consults the packument and then asks the manager", async () => {
+  const managerCalls = [];
+  const pluginManager = {
+    async updateBundle(name, version, options) {
+      managerCalls.push({ spec: name + "@" + version, options });
+      return { ok: true, value: { application: "applied", version: "1.0.17" } };
+    }
+  };
+  const client = loadClient(updateRoutes());
+  try {
+    const { settings, buttons } = await updatePage(client, pluginManager);
+    assertEqual(buttons.length, 1, "the update button appears");
+    await buttons[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(managerCalls.length, 1, "the manager is asked once");
+    assertEqual(managerCalls[0]?.spec, "dsh-nextsteps@1.0.17", "the manager receives the exact version");
+    assert(client.fetchStub.calls.some((call) => call.url.includes("registry.npmjs.org/dsh-nextsteps/1.0.17")), "the packument is consulted for the exact version");
+    const packumentCall = client.fetchStub.calls.find((call) => call.url.includes("registry.npmjs.org/dsh-nextsteps/1.0.17"));
+    assert(packumentCall !== undefined && packumentCall.headers?.["x-dsh-nextsteps-secret"] === undefined, "the packument carries no instance secret");
+    assert(!client.fetchStub.calls.some((call) => call.url.includes("/.ns/update/install")), "the dead install route is never called");
+    const settledPage = settings.component({ t: (key) => key });
+    assertEqual(walk(settledPage, (node) => node.type === "button" && node.children.includes("updateNow")).length, 0, "the update button disappears once the release is applied");
+    assert(walk(settledPage, (node) => node.children.includes("upToDate")).length === 1, "the row reports the running copy is up to date");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a packument that does not verify blocks the install before the manager", async () => {
+  const managerCalls = [];
+  const pluginManager = {
+    async updateBundle() {
+      managerCalls.push("asked");
+      return { ok: true, value: { application: "applied", version: "1.0.17" } };
+    }
+  };
+  const client = loadClient(updateRoutes({}));
+  try {
+    const { settings, buttons } = await updatePage(client, pluginManager);
+    assertEqual(buttons.length, 1, "the update button appears");
+    await buttons[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(managerCalls.length, 0, "the manager is never asked without a verified packument");
+    const after = settings.component({ t: (key) => key });
+    const errors = walk(after, (node) => node.children.includes("updatePrecheck"));
+    assertEqual(errors.length, 1, "the precheck failure is named on the page");
+    assert(!client.storage.getItem("dsh-nextsteps.updated"), "nothing is remembered as installed");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a host without a plugin manager names the missing installer", async () => {
+  const client = loadClient(updateRoutes());
+  try {
+    const { settings, buttons } = await updatePage(client, undefined);
+    assertEqual(buttons.length, 1, "the update button appears");
+    await buttons[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const after = settings.component({ t: (key) => key });
+    const errors = walk(after, (node) => node.children.includes("updateNoManager"));
+    assertEqual(errors.length, 1, "the missing installer is named on the page");
+    assert(!client.fetchStub.calls.some((call) => call.url.includes("/.ns/update/install")), "no install request is sent");
+    assert(!client.fetchStub.calls.some((call) => call.url.includes("registry.npmjs.org")), "the packument is not consulted without a manager");
+    assert(!client.storage.getItem("dsh-nextsteps.updated"), "nothing is remembered as installed");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
