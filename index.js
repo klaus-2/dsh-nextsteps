@@ -41,29 +41,6 @@ const pnpmTimeoutMs = () => {
   return Number.isFinite(asked) && asked > 0 && asked <= MAX_TIMER_MS ? asked : PNPM_TIMEOUT_MS;
 };
 
-let installInProgress = false;
-
-function pnpmProfileAdd(spec) {
-  const useRuntime = existsSync(RUNTIME_PNPM_CJS);
-  const command = useRuntime ? process.execPath : 'pnpm';
-  const ageArgs = ['--config.minimumReleaseAge=0', '--config.minimumReleaseAgeStrict=false'];
-  const args = useRuntime ? [RUNTIME_PNPM_CJS, 'add', spec, ...ageArgs] : ['add', spec, ...ageArgs];
-  return new Promise((resolve) => {
-    let output = '';
-    let timedOut = false;
-    const timeoutMs = pnpmTimeoutMs();
-    const child = spawn(command, args, { cwd: PROFILE_DIR, env: process.env, windowsHide: true });
-    const collect = (chunk) => {
-      output += String(chunk);
-      if (output.length > 20000) output = output.slice(-10000);
-    };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
-    const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch {} }, timeoutMs);
-    child.on('exit', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, output: output.slice(-3000), timedOut, timeoutMs }); });
-    child.on('error', (error) => { clearTimeout(timer); resolve({ code: -1, output: String(error).slice(0, 300), timedOut, timeoutMs }); });
-  });
-}
 
 function onDiskVersion() {
   try { return JSON.parse(readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8')).version ?? null; } catch { return null; }
@@ -237,44 +214,6 @@ async function startServer(options = {}) {
       return;
     }
 
-    if (pathname === '/.ns/update/install' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      const version = typeof body?.version === 'string' && VERSION_PATTERN.test(body.version) ? body.version : '';
-      if (version === '') {
-        res.writeHead(400, { 'content-type': 'application/json', ...cors });
-        res.end(JSON.stringify({ ok: false, error: 'bad request' }));
-        return;
-      }
-      if (installInProgress) {
-        res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
-        res.end(JSON.stringify({ ok: false, error: 'install-in-progress' }));
-        return;
-      }
-      if (existsSync(path.join(PLUGIN_DIR, '.git'))) {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
-        res.end(JSON.stringify({ ok: false, error: 'local-development' }));
-        return;
-      }
-      installInProgress = true;
-      let result;
-      try {
-        result = await pnpmProfileAdd(`dsh-nextsteps@${version}`);
-      } finally {
-        installInProgress = false;
-      }
-      const installed = onDiskVersion();
-      if (result.code === 0 && typeof installed === 'string' && VERSION_PATTERN.test(installed)) {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
-        res.end(JSON.stringify({ ok: true, installed }));
-      } else {
-        const diagnostic = result.timedOut === true
-          ? `the install was stopped after ${Math.round(result.timeoutMs / 1000)}s`
-          : result.output.split('\n').filter((line) => line.trim() !== '').pop() ?? `pnpm exit ${result.code}`;
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors });
-        res.end(JSON.stringify({ ok: false, error: String(diagnostic).slice(0, 200) }));
-      }
-      return;
-    }
 
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', ...(pathname.startsWith(RESERVE) ? cors : {}) });
     res.end(JSON.stringify({ error: 'not found' }));
