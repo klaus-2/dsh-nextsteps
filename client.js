@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
     const CAPTURES_INDEX_KEY = 'dsh-nextsteps.captures.index';
     const CAPTURE_SESSION_KEY = 'dsh-nextsteps.captures.session';
     const FAVORITES_KEY = 'dsh-nextsteps.favorites';
+    const FAVORITES_ORDER_KEY = 'dsh-nextsteps.favorites-order';
     const DISCARDED_KEY = 'dsh-nextsteps.discarded';
     const METRICS_KEY = 'dsh-nextsteps.metrics';
     const CAPTURES_KEY = 'dsh-nextsteps.captures.v1';
@@ -593,12 +594,38 @@ window.__ModuleLoader__.load({
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
     }
 
-    function buildFavoritesMarkdown(store) {
+    function readFavoritesOrder() {
+      const parsed = readJson(FAVORITES_ORDER_KEY, null);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((id) => typeof id === 'string' && id !== '');
+    }
+
+    function writeFavoritesOrder(hashes) {
+      scheduleWrite(FAVORITES_ORDER_KEY, JSON.stringify(hashes));
+    }
+
+    function orderedFavoriteEntries(store, order) {
       const entries = Object.entries(store).filter((pair) => {
         const value = pair[1];
         return value !== null && typeof value === 'object' && !Array.isArray(value) && typeof value.prompt === 'string' && value.prompt !== '';
       });
-      entries.sort((a, b) => (a[1].at ?? 0) - (b[1].at ?? 0));
+      const byId = new Map(entries);
+      const ordered = [];
+      if (Array.isArray(order)) {
+        for (const id of order) {
+          if (byId.has(id)) {
+            ordered.push([id, byId.get(id)]);
+            byId.delete(id);
+          }
+        }
+      }
+      const remaining = [...byId.entries()];
+      remaining.sort((a, b) => (a[1].at ?? 0) - (b[1].at ?? 0));
+      return ordered.concat(remaining);
+    }
+
+    function buildFavoritesMarkdown(store, order) {
+      const entries = orderedFavoriteEntries(store, order);
       let markdown = '# Favourite suggestions';
       for (let index = 0; index < entries.length; index += 1) {
         const value = entries[index][1];
@@ -612,8 +639,8 @@ window.__ModuleLoader__.load({
       return markdown + '\n';
     }
 
-    function buildFavoritesJson(store) {
-      return JSON.stringify({ version: 1, favorites: store }, null, 2);
+    function buildFavoritesJson(store, order) {
+      return JSON.stringify({ version: 1, favorites: store, order }, null, 2);
     }
 
     function readDiscarded() {
@@ -1715,9 +1742,9 @@ window.__ModuleLoader__.load({
     const SETTINGS_ROUTE = '/api/dsh-nextsteps.settings';
     const MODEL_TEST_ROUTE = '/api/dsh-nextsteps.model-test';
     const DICTIONARIES = {
-      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here."},
-      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui."},
-      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。"}
+      en: {"header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: {e}","retryGeneration":"Try again","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","srFavoritesReordered":"The favourites were reordered.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here."},
+      'pt-BR': {"header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: {e}","retryGeneration":"Tentar novamente","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","srFavoritesReordered":"Os favoritos foram reordenados.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui."},
+      'zh-CN': {"header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：{e}","retryGeneration":"重试","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。"}
     };
     const DEFAULT_SETTINGS = {
       lang: 'auto',
@@ -1849,6 +1876,14 @@ window.__ModuleLoader__.load({
           delete store[favId];
           store[nextHash] = { prompt: nextPrompt, label: old?.label ?? null, at: old?.at ?? Date.now() };
           scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+          if (favId !== nextHash) {
+            const order = readFavoritesOrder();
+            const at = order.indexOf(favId);
+            if (at !== -1) {
+              order[at] = nextHash;
+              writeFavoritesOrder(order);
+            }
+          }
           refreshLocal();
           setEditingFav(null);
           setLocalNotice(t('srFavoriteEdited'));
@@ -1880,6 +1915,8 @@ window.__ModuleLoader__.load({
           const store = readFavorites();
           for (const favId of ids) delete store[favId];
           scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+          const order = readFavoritesOrder().filter((favId) => store[favId] !== undefined);
+          if (order.length !== readFavoritesOrder().length) writeFavoritesOrder(order);
           refreshLocal();
           setSelectedFavs(new Set());
           setLocalNotice(t('srFavoritesRemoved').replace('{n}', String(ids.length)));
@@ -1894,7 +1931,7 @@ window.__ModuleLoader__.load({
         };
         const exportFavorites = () => {
           try {
-            const markdown = buildFavoritesMarkdown(readFavorites());
+            const markdown = buildFavoritesMarkdown(readFavorites(), readFavoritesOrder());
             const blob = new Blob([markdown], { type: 'text/markdown' });
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
@@ -1917,7 +1954,7 @@ window.__ModuleLoader__.load({
         };
         const exportFavoritesJson = () => {
           try {
-            const json = buildFavoritesJson(readFavorites());
+            const json = buildFavoritesJson(readFavorites(), readFavoritesOrder());
             const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
@@ -1959,6 +1996,7 @@ window.__ModuleLoader__.load({
             let added = 0;
             let updated = 0;
             let skipped = 0;
+            const additions = [];
             for (const entry of Object.values(parsed.favorites)) {
               if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
               if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') continue;
@@ -1968,6 +2006,7 @@ window.__ModuleLoader__.load({
               const current = store[hash];
               if (current === undefined) {
                 store[hash] = { prompt: entry.prompt, label: entry.label, at: entry.at };
+                additions.push(hash);
                 added += 1;
               } else if (entry.at > current.at) {
                 store[hash] = { prompt: entry.prompt, label: entry.label, at: entry.at };
@@ -1977,6 +2016,13 @@ window.__ModuleLoader__.load({
               }
             }
             scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+            if (additions.length > 0) {
+              const savedOrder = readFavoritesOrder().filter((favId) => store[favId] !== undefined);
+              const fileOrder = Array.isArray(parsed.order)
+                ? parsed.order.filter((favId) => typeof favId === 'string' && favId !== '' && store[favId] !== undefined && !savedOrder.includes(favId) && !additions.includes(favId))
+                : [];
+              writeFavoritesOrder([...savedOrder, ...fileOrder, ...additions.filter((favId) => !fileOrder.includes(favId))]);
+            }
             refreshLocal();
             setLocalNotice(t('srFavoritesImported').replace('{added}', String(added)).replace('{updated}', String(updated)).replace('{skipped}', String(skipped)));
           } catch (error) {
@@ -2159,7 +2205,8 @@ window.__ModuleLoader__.load({
         const favoriteEntries = Object.entries(local.favorites);
         const discardedEntries = Object.entries(local.discarded);
         const favQueryLower = favQuery.toLowerCase();
-        const visibleFavoriteEntries = favQueryLower === '' ? favoriteEntries : favoriteEntries.filter(([, value]) => {
+        const orderedFavoriteList = orderedFavoriteEntries(local.favorites, readFavoritesOrder());
+        const visibleFavoriteEntries = favQueryLower === '' ? orderedFavoriteList : orderedFavoriteList.filter(([, value]) => {
           const prompt = String(value?.prompt ?? '').toLowerCase();
           const label = String(value?.label ?? '').toLowerCase();
           return prompt.includes(favQueryLower) || label.includes(favQueryLower);
@@ -2175,9 +2222,88 @@ window.__ModuleLoader__.load({
             return next;
           });
         };
+        const favoriteOrderIds = () => orderedFavoriteEntries(readFavorites(), readFavoritesOrder()).map(([favId]) => favId);
+        const moveFavTo = (draggedId, targetId, before = false) => {
+          if (draggedId === targetId) return;
+          const ids = favoriteOrderIds();
+          const from = ids.indexOf(draggedId);
+          const to = ids.indexOf(targetId);
+          if (from === -1 || to === -1) return;
+          const insertAt = before ? (from < to ? to - 1 : to) : to;
+          ids.splice(insertAt, 0, ids.splice(from, 1)[0]);
+          writeFavoritesOrder(ids);
+          refreshLocal();
+          setLocalNotice(t('srFavoritesReordered'));
+        };
+        const moveFavBy = (favId, delta) => {
+          const ids = favoriteOrderIds();
+          const from = ids.indexOf(favId);
+          const to = from + delta;
+          if (from === -1 || to < 0 || to >= ids.length) return;
+          ids.splice(to, 0, ids.splice(from, 1)[0]);
+          writeFavoritesOrder(ids);
+          refreshLocal();
+          setLocalNotice(t('srFavoritesReordered'));
+        };
+        const favDragRef = React.useRef(null);
+        const startFavDrag = (event, favId) => {
+          if (favDragRef.current !== null) return;
+          const pointerId = event.pointerId;
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const drag = { pointerId, active: false, targetId: undefined, target: null, detach: null };
+          const onMove = (moveEvent) => {
+            if (moveEvent.pointerId !== drag.pointerId || favDragRef.current !== drag) return;
+            if (drag.active === false) {
+              const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+              if (distance < DRAG_THRESHOLD_PX) return;
+              drag.active = true;
+            }
+            const hit = typeof document.elementsFromPoint === 'function' ? document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY) : [];
+            let nextTarget;
+            for (const element of hit) {
+              const id = element?.dataset?.favId;
+              if (typeof id === 'string' && id !== '' && id !== favId) {
+                nextTarget = [id, element];
+                break;
+              }
+            }
+            if (nextTarget !== undefined) {
+              drag.targetId = nextTarget[0];
+              drag.target = nextTarget[1];
+            }
+          };
+          const settle = (endEvent, commit) => {
+            if (endEvent.pointerId !== drag.pointerId) return;
+            drag.detach();
+            if (favDragRef.current === drag) favDragRef.current = null;
+            if (commit === true && drag.active === true && typeof drag.targetId === 'string') {
+              const rect = drag.target?.getBoundingClientRect?.();
+              const before = rect !== undefined ? endEvent.clientY < (rect.top + rect.bottom) / 2 : false;
+              moveFavTo(favId, drag.targetId, before);
+            }
+          };
+          const onUp = (upEvent) => settle(upEvent, true);
+          const onCancel = (cancelEvent) => settle(cancelEvent, false);
+          drag.detach = () => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
+          };
+          favDragRef.current = drag;
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+          document.addEventListener('pointercancel', onCancel);
+        };
         const favoriteList = favoriteEntries.length === 0
           ? h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('favoritesEmpty'))
-          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 420 } }, visibleFavoriteEntries.map(([favId, value]) => h('div', { key: favId, style: { display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' } },
+          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 420 } }, visibleFavoriteEntries.map(([favId, value]) => h('div', { key: favId, 'data-fav-id': favId, style: { display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' } },
+            favQuery === '' ? h('span', {
+              className: 'dsh-sf-grip',
+              title: t('dragToReorder'),
+              'aria-hidden': true,
+              onPointerDown: (event) => startFavDrag(event, favId)
+            }, '⠿') : null,
             h('input', {
               type: 'checkbox',
               checked: selectedFavs.has(favId),
@@ -2220,9 +2346,29 @@ window.__ModuleLoader__.load({
                   const store = readFavorites();
                   delete store[favId];
                   scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+                  const order = readFavoritesOrder();
+                  const at = order.indexOf(favId);
+                  if (at !== -1) {
+                    order.splice(at, 1);
+                    writeFavoritesOrder(order);
+                  }
                   refreshLocal();
                 }
-              }, t('favoriteRemove'))))));
+              }, t('favoriteRemove')),
+              favQuery === '' ? h('button', {
+                type: 'button',
+                className: 'dsh-sf-action',
+                'aria-label': t('actionMoveEarlier'),
+                title: t('actionMoveEarlier'),
+                onClick: () => moveFavBy(favId, -1)
+              }, '↑') : null,
+              favQuery === '' ? h('button', {
+                type: 'button',
+                className: 'dsh-sf-action',
+                'aria-label': t('actionMoveLater'),
+                title: t('actionMoveLater'),
+                onClick: () => moveFavBy(favId, 1)
+              }, '↓') : null))));
         const discardedList = discardedEntries.length === 0
           ? h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('discardedEmpty'))
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 420 } }, discardedEntries.map(([captureKey, value]) => h('div', { key: captureKey, style: { display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' } },

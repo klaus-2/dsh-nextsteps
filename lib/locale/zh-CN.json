@@ -101,6 +101,7 @@
   "actionMoveEarlier": "前移",
   "actionMoveLater": "后移",
   "srReordered": "建议已移动。",
+  "srFavoritesReordered": "收藏已重新排序。",
   "dragToReorder": "拖动以重新排序",
   "actionNewChat": "用此建议新建对话",
   "newChatUnavailable": "此处无法新建对话。",

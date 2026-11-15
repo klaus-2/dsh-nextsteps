@@ -2941,7 +2941,8 @@ test("editing a favourite re-keys it and keeps its date and label", async () => 
   try {
     const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
     const rendered = settings.component({ t: (key) => key });
-    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "favoriteEdit");
+    const targetRow = walk(rendered, (node) => node.props?.["data-fav-id"] === favoriteHash("Run the full suite"))[0];
+    const edit = buttonsOf(targetRow).find((node) => node.props?.["aria-label"] === "favoriteEdit");
     assert(edit !== undefined, "the favourite row offers the edit button");
     await edit.props.onClick();
     const withEditor = settings.component({ t: (key) => key });
@@ -2977,7 +2978,8 @@ test("editing a favourite onto an existing text is refused with a notice", async
   try {
     const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
     const rendered = settings.component({ t: (key) => key });
-    const edit = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "favoriteEdit");
+    const targetRow = walk(rendered, (node) => node.props?.["data-fav-id"] === favoriteHash("Run the full suite"))[0];
+    const edit = buttonsOf(targetRow).find((node) => node.props?.["aria-label"] === "favoriteEdit");
     await edit.props.onClick();
     const withEditor = settings.component({ t: (key) => key });
     const area = walk(withEditor, (node) => node.type === "textarea" && node.props?.["aria-label"] === "editPrompt")[0];
@@ -3100,9 +3102,9 @@ test("bulk copy joins the selected favourites in display order", async () => {
   const clipboard = fakeClipboard();
   const storage = memoryStorage({
     "dsh-nextsteps.favorites": JSON.stringify({
-      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 3000 },
+      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 1000 },
       [favoriteHash("Beta prompt")]: { prompt: "Beta prompt", label: null, at: 2000 },
-      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 1000 }
+      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 3000 }
     })
   });
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { clipboard, storage });
@@ -3130,9 +3132,9 @@ test("bulk copy joins the selected favourites in display order", async () => {
 test("bulk remove needs the confirming second click", async () => {
   const storage = memoryStorage({
     "dsh-nextsteps.favorites": JSON.stringify({
-      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 3000 },
+      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 1000 },
       [favoriteHash("Beta prompt")]: { prompt: "Beta prompt", label: null, at: 2000 },
-      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 1000 }
+      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 3000 }
     })
   });
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
@@ -3161,6 +3163,72 @@ test("bulk remove needs the confirming second click", async () => {
     const afterRender = settings.component({ t: (key) => key });
     const boxes = walk(afterRender, (node) => node.type === "input" && node.props?.type === "checkbox" && ["Alpha prompt", "Beta prompt", "Gamma prompt"].includes(node.props?.["aria-label"]));
     assert(boxes.every((box) => box.props.checked !== true), "the selection is cleared after the removal");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the keyboard reorder persists the favourites order and the exports follow it", async () => {
+  const seed = {
+    [favoriteHash("Fav alpha")]: { prompt: "Fav alpha", label: null, at: 1000 },
+    [favoriteHash("Fav beta")]: { prompt: "Fav beta", label: null, at: 2000 },
+    [favoriteHash("Fav gamma")]: { prompt: "Fav gamma", label: null, at: 3000 }
+  };
+  const setup = favoritesExportClient({ "dsh-nextsteps.favorites": JSON.stringify(seed) });
+  try {
+    const { registrations } = settingsTree(setup.client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rowIds = (tree) => walk(tree, (node) => typeof node.props?.["data-fav-id"] === "string").map((node) => node.props["data-fav-id"]);
+    const natural = [favoriteHash("Fav alpha"), favoriteHash("Fav beta"), favoriteHash("Fav gamma")];
+    let tree = section.component({ t: (key) => key });
+    assertEqual(rowIds(tree), natural, "the fresh list renders in date order");
+    const gammaRow = walk(tree, (node) => node.props?.["data-fav-id"] === favoriteHash("Fav gamma"))[0];
+    const earlier = buttonsOf(gammaRow).find((node) => node.props?.["aria-label"] === "actionMoveEarlier");
+    assert(earlier !== undefined, "the last row offers the move-earlier button");
+    await earlier.props.onClick();
+    setup.client.instance.flushWrites();
+    const moved = [favoriteHash("Fav alpha"), favoriteHash("Fav gamma"), favoriteHash("Fav beta")];
+    assertEqual(JSON.parse(setup.storage._data["dsh-nextsteps.favorites-order"]), moved, "one click moved the last row up exactly one position");
+    tree = section.component({ t: (key) => key });
+    assertEqual(rowIds(tree), moved, "the list renders the saved order");
+    const exportButton = buttonsOf(tree).find((node) => node.children.includes("favoritesExport"));
+    exportButton.props.onClick();
+    await settled(setup.client);
+    setup.client.instance.flushWrites();
+    assertEqual(setup.capturedBlobs.length, 1, "the markdown export created one blob");
+    const markdown = await setup.capturedBlobs[0].text();
+    assert(markdown.indexOf("Fav alpha") < markdown.indexOf("Fav gamma") && markdown.indexOf("Fav gamma") < markdown.indexOf("Fav beta"), `the markdown follows the saved order: ${markdown.slice(0, 240)}`);
+  } finally {
+    await setup.close();
+  }
+});
+
+test("the favourites grip drags one row onto another and persists the order", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Fav alpha")]: { prompt: "Fav alpha", label: null, at: 1000 },
+      [favoriteHash("Fav beta")]: { prompt: "Fav beta", label: null, at: 2000 },
+      [favoriteHash("Fav gamma")]: { prompt: "Fav gamma", label: null, at: 3000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rowIds = (tree) => walk(tree, (node) => typeof node.props?.["data-fav-id"] === "string").map((node) => node.props["data-fav-id"]);
+    let tree = settings.component({ t: (key) => key });
+    const alphaRow = walk(tree, (node) => node.props?.["data-fav-id"] === favoriteHash("Fav alpha"))[0];
+    const grip = walk(alphaRow, (node) => node.props?.className === "dsh-sf-grip")[0];
+    assert(grip !== undefined, "the favourite row offers the grip");
+    grip.props.onPointerDown({ pointerId: 1, clientX: 10, clientY: 10 });
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 12, clientY: 12 });
+    client.document.elementsFromPoint = () => [{ dataset: { favId: favoriteHash("Fav gamma") } }];
+    dispatchDocument(client.document, "pointermove", { pointerId: 1, clientX: 40, clientY: 200 });
+    dispatchDocument(client.document, "pointerup", { pointerId: 1, clientX: 40, clientY: 200 });
+    client.instance.flushWrites();
+    const dragged = [favoriteHash("Fav beta"), favoriteHash("Fav gamma"), favoriteHash("Fav alpha")];
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.favorites-order"]), dragged, "the drag persisted the insert-after order");
+    tree = settings.component({ t: (key) => key });
+    assertEqual(rowIds(tree), dragged, "the list renders the dragged order");
   } finally {
     client.fetchStub.restore();
   }
