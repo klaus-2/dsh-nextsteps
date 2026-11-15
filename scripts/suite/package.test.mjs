@@ -83,6 +83,37 @@ test("the dictionaries carry the same keys", () => {
   }
 });
 
+function inlineDictionaries(source) {
+  const start = source.indexOf("const DICTIONARIES = {");
+  assert(start !== -1, "client.js declares the inline DICTIONARIES");
+  const entries = {};
+  for (const line of source.slice(start).split("\n").slice(1)) {
+    if (/^\s*\};\s*$/.test(line)) break;
+    const match = line.match(/^\s*(?:'([^']+)'|([a-zA-Z-]+)):\s*(\{.*\}),?\s*$/);
+    if (match === null) continue;
+    entries[match[1] ?? match[2]] = JSON.parse(match[3]);
+  }
+  return entries;
+}
+
+test("the inline DICTIONARIES match the locale files", () => {
+  const inline = inlineDictionaries(clientSource);
+  for (const { lang, data } of locales) {
+    assert(inline[lang] !== undefined, `the inline dictionaries declare ${lang}`);
+    const jsonKeys = Object.keys(data).filter((key) => key !== "meta").sort();
+    assertEqual(Object.keys(inline[lang]).sort(), jsonKeys, `${lang} carries the same keys inline and in the locale file`);
+  }
+});
+
+test("the inline dictionaries keep the locale count", () => {
+  const inline = inlineDictionaries(clientSource);
+  assertEqual(Object.keys(inline).sort(), ["en", "pt-BR", "zh-CN"], "the inline dictionaries cover the three languages");
+  for (const { lang, data } of locales) {
+    const expected = Object.keys(data).filter((key) => key !== "meta").length;
+    assertEqual(Object.keys(inline[lang]).length, expected, `${lang} keeps ${expected} keys in the inline copy`);
+  }
+});
+
 test("every key the client asks for exists in every dictionary", () => {
   const used = new Set();
   for (const match of clientSource.matchAll(/\bt\('([a-zA-Z.]+)'\)/g)) used.add(match[1]);
