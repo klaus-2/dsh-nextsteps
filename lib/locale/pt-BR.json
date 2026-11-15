@@ -143,5 +143,8 @@
   "setTranscriptScope": "Escopo do histórico",
   "setTranscriptScopeTip": "Quanto do turno o gerador enxerga. Mínimo envia apenas a última mensagem de usuário e de assistente.",
   "optTranscriptFull": "Histórico completo",
-  "optTranscriptMinimal": "Mínimo (últimas mensagens)"
+  "optTranscriptMinimal": "Mínimo (últimas mensagens)",
+  "warnInjection": "Esta sugestão parece uma tentativa de injeção de prompt",
+  "warnSecrets": "Esta sugestão parece conter uma credencial ou segredo",
+  "srSecretsWarning": "Uma sugestão parece conter uma credencial ou segredo."
 }

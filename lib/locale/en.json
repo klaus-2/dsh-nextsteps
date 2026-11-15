@@ -143,5 +143,8 @@
   "setTranscriptScope": "Transcript scope",
   "setTranscriptScopeTip": "How much of the turn the generator sees. Minimal sends only the last user and assistant messages.",
   "optTranscriptFull": "Full transcript",
-  "optTranscriptMinimal": "Minimal (last messages)"
+  "optTranscriptMinimal": "Minimal (last messages)",
+  "warnInjection": "This suggestion looks like a prompt-injection attempt",
+  "warnSecrets": "This suggestion looks like it contains a credential or secret",
+  "srSecretsWarning": "A suggestion looks like it contains a credential or secret."
 }

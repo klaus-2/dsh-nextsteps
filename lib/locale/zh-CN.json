@@ -143,5 +143,8 @@
   "setTranscriptScope": "历史记录范围",
   "setTranscriptScopeTip": "生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。",
   "optTranscriptFull": "完整历史记录",
-  "optTranscriptMinimal": "最小（最后几条）"
+  "optTranscriptMinimal": "最小（最后几条）",
+  "warnInjection": "这条建议疑似提示词注入",
+  "warnSecrets": "这条建议疑似包含凭据或密钥",
+  "srSecretsWarning": "有建议疑似包含凭据或密钥。"
 }
