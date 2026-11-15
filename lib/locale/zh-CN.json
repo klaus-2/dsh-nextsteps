@@ -104,6 +104,8 @@
   "sessionOptions": "会话选项",
   "sessionLangGlobal": "跟随全局",
   "sessionReset": "重置",
+  "openSettings": "打开 Nextsteps 设置",
+  "settingsUnavailable": "此处无法打开设置。",
   "actionMoveEarlier": "前移",
   "actionMoveLater": "后移",
   "srReordered": "建议已移动。",

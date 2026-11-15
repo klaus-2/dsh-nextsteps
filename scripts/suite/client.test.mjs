@@ -3391,6 +3391,61 @@ test("a capture without a stored origin renders no origin line", async () => {
   }
 });
 
+test("the header gear opens the plugin settings through the navigation service", async () => {
+  const calls = [];
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = (name) => (name === "pluginNavigation" ? { openSettings: (sectionId) => { calls.push(sectionId); } } : undefined);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const gear = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "openSettings");
+    assert(gear !== undefined, "the header row offers the gear button");
+    await gear.props.onClick();
+    assertEqual(calls, ["dsh-nextsteps"], "the gear asks the navigation for the plugin section");
+    const after = renderTail(client, tail, props);
+    assertEqual(walk(after, (node) => node.children[0] === "settingsUnavailable").length, 0, "no failure notice renders on success");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the header gear degrades to a notice when the navigation service is missing", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    await settled(client);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const gear = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "openSettings");
+    assert(gear !== undefined, "the gear renders even without the service");
+    await gear.props.onClick();
+    const after = renderTail(client, tail, props);
+    const notice = walk(after, (node) => node.children[0] === "settingsUnavailable")[0];
+    assert(notice !== undefined, "the missing navigation shows the failure notice");
+    assert(warnings.filter((line) => line.includes("opening the settings failed")).length >= 1, "the degradation warns");
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {

@@ -104,6 +104,8 @@
   "sessionOptions": "Opções da conversa",
   "sessionLangGlobal": "Igual ao global",
   "sessionReset": "Redefinir",
+  "openSettings": "Abrir as configurações do Nextsteps",
+  "settingsUnavailable": "Abrir as configurações não está disponível aqui.",
   "actionMoveEarlier": "Mover para antes",
   "actionMoveLater": "Mover para depois",
   "srReordered": "A sugestão foi movida.",

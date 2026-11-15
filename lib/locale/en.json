@@ -104,6 +104,8 @@
   "sessionOptions": "Conversation options",
   "sessionLangGlobal": "Same as global",
   "sessionReset": "Reset",
+  "openSettings": "Open Nextsteps settings",
+  "settingsUnavailable": "Opening the settings is not available here.",
   "actionMoveEarlier": "Move earlier",
   "actionMoveLater": "Move later",
   "srReordered": "The suggestion was moved.",
