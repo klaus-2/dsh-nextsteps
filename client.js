@@ -593,6 +593,25 @@ window.__ModuleLoader__.load({
       scheduleWrite(CLICKED_KEY, JSON.stringify(clicked));
     }
 
+    function avoidPromptsFor(sessionId) {
+      const clicked = readClickedMap();
+      const seen = new Set();
+      const clickedFirst = [];
+      const rest = [];
+      for (const entry of capturesFor(sessionId).values()) {
+        const isClicked = clicked[entry.clickedId] === true;
+        for (const followup of entry.followups) {
+          if (typeof followup.prompt !== 'string') continue;
+          const prompt = followup.prompt.trim();
+          if (prompt === '' || seen.has(prompt)) continue;
+          seen.add(prompt);
+          if (isClicked) clickedFirst.push(prompt);
+          else rest.push(prompt);
+        }
+      }
+      return [...clickedFirst, ...rest].slice(0, 20).map((item) => item.slice(0, 200));
+    }
+
     function readFavorites() {
       const parsed = readJson(FAVORITES_KEY, null);
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -1447,6 +1466,7 @@ window.__ModuleLoader__.load({
       for (const listener of captureListeners) listener(sessionId);
       const revision = settingsRevision;
       const override = sessionOverrideOf(sessionId);
+      const avoid = avoidPromptsFor(sessionId);
       const budget = Math.min(LATENCY_MAX_MS, Math.max(LATENCY_MIN_MS, Number(pluginSettings.latencyBudgetMs) || LATENCY_DEFAULT_MS));
       const deadline = budget + 5000;
       let failure = new Error('the generator did not answer');
@@ -1469,7 +1489,8 @@ window.__ModuleLoader__.load({
                 afterSeq,
                 ...(override !== undefined && typeof override.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
                 ...(Number.isInteger(override?.maxFollowups) ? { maxFollowups: override.maxFollowups } : {}),
-                ...(override !== undefined && typeof override.model === 'string' && override.model !== '' ? { model: override.model } : {})
+                ...(override !== undefined && typeof override.model === 'string' && override.model !== '' ? { model: override.model } : {}),
+                ...(avoid.length > 0 ? { avoid } : {})
               }),
               signal: controller.signal
             });

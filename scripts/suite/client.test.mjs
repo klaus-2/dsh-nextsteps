@@ -3786,3 +3786,79 @@ test("the session options offer the model select only when the catalog is availa
   const missing = walk(withoutCatalog, (node) => node.type === "select" && node.props?.["aria-label"] === "setModel")[0];
   assert(missing === undefined, "no model select without a catalog");
 });
+
+test("the generate body carries the clicked prompts first under the avoid caps", async () => {
+  const longPrompt = "a".repeat(300);
+  const plainPrompts = Array.from({ length: 22 }, (_, index) => `plain prompt ${index} ${"b".repeat(220)}`);
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({
+      "generated-1": { turn: 1, followups: [{ prompt: "clicked suggestion", label: null }, { prompt: longPrompt, label: null }], clickedId: "sf-clicked" },
+      "manual-1-0": { turn: 1, followups: [{ prompt: "clicked suggestion", label: null }, ...plainPrompts.map((prompt) => ({ prompt, label: null }))], clickedId: "sf-plain" }
+    }),
+    "dsh-nextsteps.clicked": JSON.stringify({ "sf-clicked": true })
+  });
+  const settings = { ...NEW_SETTINGS, generationMode: "on-demand" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado", label: "Host" }] };
+    }
+  }, { storage });
+  const isRealGenerate = (call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true'));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    const rendered = renderTail(client, tail, props);
+    const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
+    assert(generate !== undefined, "the on demand tail offers the generate button");
+    await generate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const calls = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(calls.length, 1, "the button asks the host exactly once");
+    const body = JSON.parse(calls[0].body);
+    assert(Array.isArray(body.avoid), `the body carries the avoid list: ${calls[0].body}`);
+    assert(body.avoid.length <= 20, `the avoid list is capped at 20: ${body.avoid.length}`);
+    assert(body.avoid.every((item) => typeof item === "string" && item.length <= 200), "every avoid item is at most 200 characters");
+    assertEqual(body.avoid[0], "clicked suggestion", "the clicked suggestion comes first");
+    assertEqual(body.avoid[1], "a".repeat(200), `the long prompt is sliced to the cap: ${body.avoid[1].length}`);
+    assertEqual(new Set(body.avoid).size, body.avoid.length, "the avoid list has no duplicates");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a session without captures sends no avoid key", async () => {
+  const settings = { ...NEW_SETTINGS, generationMode: "on-demand" };
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado", label: "Host" }] };
+    }
+  });
+  const isRealGenerate = (call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true'));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(props);
+    await settled(client);
+    const rendered = renderTail(client, tail, props);
+    const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
+    assert(generate !== undefined, "the on demand tail offers the generate button");
+    await generate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const calls = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(calls.length, 1, "the button asks the host exactly once");
+    const body = JSON.parse(calls[0].body);
+    assert(body.avoid === undefined, `no avoid key without captures: ${calls[0].body}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
