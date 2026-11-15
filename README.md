@@ -100,7 +100,7 @@ The same settings page asks the npm registry for the latest `dsh-nextsteps` rele
 ## Development
 
 - `npm test` runs the regression suite and the unit suite.
-- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js`.
+- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js`; the gate enforces the measured floor of 81% of lines and 79% of functions.
 
 For deterministic generation during manual QA, export `DSH_NEXTSTEPS_FIXTURE` with a followups JSON payload; the generate route then answers with those cards (normalized by the real validators, `model: "fixture"`, `source: "fixture"`) and never calls the LLM:
 

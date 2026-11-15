@@ -100,7 +100,7 @@ dsh plugin --profile web add dsh-nextsteps
 ## 开发
 
 - `npm test` 运行回归套件和单元测试套件。
-- `npm run test:coverage` 在覆盖 `index.js` 的 c8 覆盖率门禁下运行单元测试套件。
+- `npm run test:coverage` 在覆盖 `index.js` 的 c8 覆盖率门禁下运行单元测试套件；门禁会强制执行实测下限：81% 的行和 79% 的函数。
 
 如需在手动 QA 时获得确定性的生成结果，请导出 `DSH_NEXTSTEPS_FIXTURE`，其值为 followups 的 JSON 载荷；生成路由随后会用这些卡片应答（由真实验证器归一化，`model: "fixture"`、`source: "fixture"`），并且不会调用 LLM：
 

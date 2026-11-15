@@ -100,7 +100,7 @@ A mesma página de configurações pergunta ao npm registry qual é a versão ma
 ## Desenvolvimento
 
 - `npm test` roda a suíte de regressão e a suíte de testes unitários.
-- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre o `index.js`.
+- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre o `index.js`; o gate aplica o piso medido de 81% das linhas e 79% das funções.
 
 Para geração determinística durante o QA manual, exporte `DSH_NEXTSTEPS_FIXTURE` com um payload JSON de followups; a rota de geração então responde com esses cartões (normalizados pelos validadores reais, `model: "fixture"`, `source: "fixture"`) e nunca chama o LLM:
 
