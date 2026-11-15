@@ -2896,6 +2896,34 @@ test("the insert action degrades to a notice when the composer is unavailable", 
   }
 });
 
+test("the favourites search filters the list without touching the store", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      fav1: { prompt: "Run the full suite", label: "Run suite", at: 3000 },
+      fav2: { prompt: "Build the bundle", label: "Build", at: 2000 },
+      fav3: { prompt: "Wire the retry path", label: "Retry", at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const copies = () => buttonsOf(settings.component({ t: (key) => key })).filter((node) => node.children.includes("favoriteCopy")).length;
+    assertEqual(copies(), 3, "the full list renders without a query");
+    const search = walk(rendered, (node) => node.type === "input" && node.props?.["aria-label"] === "favoritesSearch")[0];
+    assert(search !== undefined, "the favourites row offers the search input");
+    search.props.onChange({ target: { value: "build" } });
+    assertEqual(copies(), 1, "the query narrows the list to the matching favourite");
+    search.props.onChange({ target: { value: "" } });
+    assertEqual(copies(), 3, "clearing the query restores the full list");
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assertEqual(Object.keys(stored).length, 3, "the search never writes the store");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
