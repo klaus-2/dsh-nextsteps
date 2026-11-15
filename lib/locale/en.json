@@ -100,6 +100,7 @@
   "modelTestFail": "Unavailable ({e})",
   "generationFailed": "Generation failed: {e}",
   "retryGeneration": "Try again",
+  "originLabel": "via {model} ({source})",
   "sessionOptions": "Conversation options",
   "sessionLangGlobal": "Same as global",
   "sessionReset": "Reset",

@@ -100,6 +100,7 @@
   "modelTestFail": "不可用（{e}）",
   "generationFailed": "生成失败：{e}",
   "retryGeneration": "重试",
+  "originLabel": "由 {model}（{source}）生成",
   "sessionOptions": "会话选项",
   "sessionLangGlobal": "跟随全局",
   "sessionReset": "重置",

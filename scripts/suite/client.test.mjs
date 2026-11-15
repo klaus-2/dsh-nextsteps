@@ -3342,6 +3342,55 @@ test("without the setting the card sends immediately and an armed send can be ca
   }
 });
 
+test("a generated card carries its model origin", async () => {
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, model: "demo/demo-model" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }], model: "demo-model", source: "transcript" };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => ({ originLabel: "via {model} ({source})" }[key] ?? key) };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    client.instance.flushWrites();
+    const stored = JSON.parse(client.storage._data["dsh-nextsteps.captures.session.s1"] ?? "{}");
+    assertEqual(stored["generated-1"].origin.model, "demo-model", "the capture stores the generating model");
+    assertEqual(stored["generated-1"].origin.source, "transcript", "the capture stores the generation source");
+    const rendered = renderTail(client, tail, props);
+    const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin")[0];
+    assert(origin !== undefined, "the card renders the origin line");
+    assertEqual(textOf(origin), "via demo-model (transcript)", `the origin line names the model and the source: ${textOf(origin)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a capture without a stored origin renders no origin line", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({
+      "call-1": { turn: 1, followups: [{ prompt: "Rodar o build", label: "Rodar build" }], clickedId: "sf-legacy" }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => ({ originLabel: "via {model} ({source})" }[key] ?? key) };
+    const rendered = renderTail(client, tail, props);
+    const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin");
+    assertEqual(origin.length, 0, "no origin line renders without a stored origin");
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
+    assertEqual(cards.length, 1, "the legacy card still renders");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
