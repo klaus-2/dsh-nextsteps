@@ -137,5 +137,7 @@
   "regenerating": "正在重新生成…",
   "srRegenerated": "建议已重新生成。",
   "updatePrecheck": "无法在 npm registry 上验证该版本。",
-  "updateNoManager": "此宿主没有可用的插件安装器。"
+  "updateNoManager": "此宿主没有可用的插件安装器。",
+  "setRetention": "保留期限",
+  "setRetentionTip": "自动删除超过此天数的已存建议。0 表示关闭（0-365）。"
 }

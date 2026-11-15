@@ -137,5 +137,7 @@
   "regenerating": "Regenerando…",
   "srRegenerated": "A sugestão foi regenerada.",
   "updatePrecheck": "Não foi possível verificar a versão no registro do npm.",
-  "updateNoManager": "Nenhum instalador de plugins está disponível neste host."
+  "updateNoManager": "Nenhum instalador de plugins está disponível neste host.",
+  "setRetention": "Retenção",
+  "setRetentionTip": "Apaga automaticamente as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365)."
 }

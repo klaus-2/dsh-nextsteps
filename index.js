@@ -355,6 +355,10 @@ function maxSuggestionCharsOf(stored) {
   return Number.isInteger(stored) && stored >= MIN_MAX_SUGGESTION_CHARS && stored <= MAX_MAX_SUGGESTION_CHARS ? stored : undefined;
 }
 
+function retentionDaysOf(stored) {
+  return Number.isInteger(stored) && stored >= 0 && stored <= 365 ? stored : undefined;
+}
+
 function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
@@ -367,6 +371,7 @@ function settingsLoad() {
       generationMode: generationModeOf(stored.generationMode) ?? DEFAULT_GENERATION_MODE,
       latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
       maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS,
+      retentionDays: retentionDaysOf(stored.retentionDays) ?? 0,
       confirmBeforeSend: stored.confirmBeforeSend === true
     };
   } catch {
@@ -379,6 +384,7 @@ function settingsLoad() {
       generationMode: DEFAULT_GENERATION_MODE,
       latencyBudgetMs: GENERATE_TIMEOUT_MS,
       maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
+      retentionDays: 0,
       confirmBeforeSend: false
     };
   }
@@ -969,6 +975,7 @@ async function apply(ctx) {
         generationMode: generationModeOf(body?.generationMode) ?? current.generationMode,
         latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
         maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars,
+        retentionDays: retentionDaysOf(body?.retentionDays) ?? current.retentionDays,
         confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend
       };
       await settingsSave(next);

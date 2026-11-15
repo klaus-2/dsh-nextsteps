@@ -1880,3 +1880,32 @@ test("the probe reads the turn end through the harness", async () => {
   const abortedBody = await (await aborted.post({ sessionId: "s1", afterSeq: 4, validate: true })).json();
   assertEqual(abortedBody.completed, false, "an aborted turn-end is not completed");
 });
+
+suite("host: the retention days");
+
+test("the settings route coerces the retention days", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  const refused = await (await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ retentionDays: 400 })
+  }))).json();
+  assertEqual(refused.settings.retentionDays, 0, "a retention above 365 keeps the default");
+  const accepted = await (await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ retentionDays: 30 })
+  }))).json();
+  assertEqual(accepted.settings.retentionDays, 30, "a valid retention is stored");
+  const served = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(served.settings.retentionDays, 30, "the retention is served back");
+  const cleared = await (await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ retentionDays: -3 })
+  }))).json();
+  assertEqual(cleared.settings.retentionDays, 30, "an invalid retention keeps the current one");
+});

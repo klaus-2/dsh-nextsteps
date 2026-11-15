@@ -4250,3 +4250,120 @@ test("a host without a plugin manager names the missing installer", async () => 
     client.fetchStub.restore();
   }
 });
+
+suite("client: capture retention");
+
+test("expired captures are pruned by age while untimed ones stay", async () => {
+  const now = Date.now();
+  const old = now - 41 * 86400000;
+  const recent = now - 2 * 86400000;
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({
+      "call-old": { turn: "1", followups: [{ prompt: "old one", label: null }], clickedId: "sf-old", at: old },
+      "call-recent": { turn: "2", followups: [{ prompt: "recent one", label: null }], clickedId: "sf-recent", at: recent },
+      "call-untimed": { turn: "3", followups: [{ prompt: "untimed one", label: null }], clickedId: "sf-untimed" }
+    }),
+    "dsh-nextsteps.captures.index": JSON.stringify({ order: ["s1"], sessions: { s1: { "call-old": "1", "call-recent": "2", "call-untimed": "3" } } })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, retentionDays: 30 }, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    client.instance.flushWrites();
+    const stored = JSON.parse(client.storage.getItem("dsh-nextsteps.captures.session.s1"));
+    assert(!("call-old" in stored), "the expired capture is pruned");
+    assert("call-recent" in stored, "the recent capture stays");
+    assert("call-untimed" in stored, "a capture without a timestamp is never pruned by age");
+    const index = JSON.parse(client.storage.getItem("dsh-nextsteps.captures.index"));
+    assertEqual(index.sessions.s1["call-old"], undefined, "the index drops the pruned call");
+    assertEqual(index.sessions.s1["call-recent"], "2", "the index keeps the recent call");
+    assertEqual(index.sessions.s1["call-untimed"], "3", "the index keeps the untimed call");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a favourite is never pruned by age", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const before = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const favorite = buttonsOf(before).find((node) => node.props?.["aria-label"] === "actionFavorite");
+    await favorite.props.onClick();
+    client.instance.flushWrites();
+    assert(Object.keys(JSON.parse(client.storage.getItem("dsh-nextsteps.favorites"))).length === 1, "the favourite was stored");
+    const stored = JSON.parse(client.storage.getItem("dsh-nextsteps.captures.session.s1"));
+    const callId = Object.keys(stored)[0];
+    stored[callId].at = Date.now() - 41 * 86400000;
+    client.storage.setItem("dsh-nextsteps.captures.session.s1", JSON.stringify(stored));
+    const second = loadClient({
+      storage: client.storage,
+      routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, retentionDays: 30 }, version: "1.0.0" } }
+    });
+    try {
+      const { ctx } = fakeSlotHost(second.react);
+      second.instance.apply(ctx);
+      await settled(second);
+      second.instance.flushWrites();
+      const rewritten = JSON.parse(second.storage.getItem("dsh-nextsteps.captures.session.s1"));
+      assert(callId in rewritten, "the favourite-protected capture survives the retention prune");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("retention is off by default and nothing is pruned by age", async () => {
+  const now = Date.now();
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({
+      "call-old": { turn: "1", followups: [{ prompt: "old one", label: null }], clickedId: "sf-old", at: now - 400 * 86400000 }
+    }),
+    "dsh-nextsteps.captures.index": JSON.stringify({ order: ["s1"], sessions: { s1: { "call-old": "1" } } })
+  });
+  const { client } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    client.instance.flushWrites();
+    const stored = JSON.parse(client.storage.getItem("dsh-nextsteps.captures.session.s1"));
+    assert("call-old" in stored, "the default retention keeps every capture");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the retention input clamps the value before saving", async () => {
+  let posted = null;
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": (init) => {
+      if (init?.method === "POST") posted = JSON.parse(String(init.body));
+      return { ok: true, settings: { ...NEW_SETTINGS, retentionDays: 30 }, version: "1.0.0" };
+    },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await settled(client);
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = settings.component({ t: (key) => key });
+    const input = walk(tree, (node) => node.type === "input" && node.props?.["aria-label"] === "setRetention")[0];
+    assert(input !== undefined, "the retention input is rendered");
+    input.props.onChange({ target: { value: "400" } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(posted?.retentionDays, 365, "a value above the cap is clamped to 365");
+    input.props.onChange({ target: { value: "-5" } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(posted?.retentionDays, 0, "a negative value is clamped to 0");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
