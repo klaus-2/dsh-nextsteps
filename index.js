@@ -1016,8 +1016,14 @@ async function apply(ctx) {
       }
       const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
       const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;
-      const derived = overrideLang !== undefined || overrideCount !== undefined
-        ? { ...settings, ...(overrideLang !== undefined ? { lang: overrideLang } : {}), ...(overrideCount !== undefined ? { maxFollowups: overrideCount } : {}) }
+      const overrideModel = typeof body?.model === 'string' && body.model.includes('/') ? body.model : undefined;
+      const derived = overrideLang !== undefined || overrideCount !== undefined || overrideModel !== undefined
+        ? {
+          ...settings,
+          ...(overrideLang !== undefined ? { lang: overrideLang } : {}),
+          ...(overrideCount !== undefined ? { maxFollowups: overrideCount } : {}),
+          ...(overrideModel !== undefined ? { model: overrideModel } : {})
+        }
         : settings;
       try {
         const result = await generateForTurn(ctx, derived, body.sessionId, body.afterSeq, request.signal);

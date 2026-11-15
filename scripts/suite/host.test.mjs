@@ -1318,3 +1318,88 @@ test("the compacted tool description keeps the four rules and names no language"
   }
   assert(!description.includes("Example input"), "the description carries no example block");
 });
+
+test("the generate route honors a per-conversation model override", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes, llmCalls } = stubContext({
+    services: { sessionQuery },
+    llmModels: [{ id: "deepseek", name: "DeepSeek" }],
+    llmText: '{"followups":[{"prompt":"Check the parser tests","label":"Parser"}]}'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, model: "demo/deepseek" })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assert(body.ok === true, `the route answers ok: ${JSON.stringify(body)}`);
+  assertEqual(llmCalls[0].provider, "demo", "the demo provider is routed");
+  assertEqual(llmCalls[0].model, "deepseek", `the overridden model is routed: ${JSON.stringify(llmCalls[0])}`);
+  assertEqual(body.followups[0].prompt, "Check the parser tests", "the suggestions ride the answer");
+});
+
+test("a malformed body model falls back to the default route", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes, llmCalls } = stubContext({ services: { sessionQuery }, llmModels: [{ id: "demo-model", name: "Demo Model" }] });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "" })
+  }));
+  for (const bad of ["no-slash", 123]) {
+    const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "s1", afterSeq: 9, model: bad })
+    }));
+    const body = await response.json();
+    assertEqual(response.status, 200, `the malformed model (${String(bad)}) is ignored: ${JSON.stringify(body)}`);
+    assert(body.ok === true, `the default route answers: ${JSON.stringify(body)}`);
+    assertEqual(llmCalls.at(-1).model, "demo-model", "the default route answers");
+  }
+});
+
+test("a body model that is no longer listed is refused with 400", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({ services: { sessionQuery }, llmModels: [{ id: "demo-model", name: "Demo Model" }] });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, model: "demo/ghost" })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 400, JSON.stringify(body));
+  assertEqual(body.error, "the selected model is no longer listed", "the refusal names the stale model");
+});

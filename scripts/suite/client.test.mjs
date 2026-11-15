@@ -3640,3 +3640,149 @@ test("a settings change invalidates the probe cache", async () => {
     client.fetchStub.restore();
   }
 });
+
+test("a session model override persists sanitized and clears with the empty value", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { model: "demo/demo-model", lang: "pt-BR" }, s2: { model: "no-slash", maxFollowups: 2 } })
+  });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [{ id: "demo", name: "Demo", models: [{ id: "demo-model", name: "Demo Model" }] }] }
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const open = renderTail(client, tail, props);
+    const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+    assert(optionsButton !== undefined, "the header offers the session options button");
+    await optionsButton.props.onClick();
+    const panel = renderTail(client, tail, props);
+    const select = walk(panel, (node) => node.type === "select" && node.props?.["aria-label"] === "setModel")[0];
+    assert(select !== undefined, "the panel offers the model select");
+    assertEqual(select.props.value, "demo/demo-model", "the stored override feeds the select");
+    select.props.onChange({ target: { value: "" } });
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.session-overrides"] ?? "{}");
+    assertEqual(stored.s1, { lang: "pt-BR" }, `the empty value clears the field: ${JSON.stringify(stored.s1)}`);
+    assertEqual(stored.s2, { maxFollowups: 2 }, `the malformed model is dropped on the next write: ${JSON.stringify(stored.s2)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a model-only override engages the host generation in a globally inline mode", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { model: "demo/demo-model" } }) });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }], model: "demo/demo-model", source: "transcript" }
+  }, { storage });
+  const isRealGenerate = (call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true'));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    tail({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    const generateCalls = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(generateCalls.length, 1, `the model-only override asks the host once: ${generateCalls.length}`);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
+    assertEqual(cards.length, 1, "the generated card renders for the override session");
+    tail({ sessionId: "s2", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    await settled(client);
+    assertEqual(client.fetchStub.calls.filter(isRealGenerate).length, 1, "the session without the override stays inline");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the generate body carries the session model override and omits it without one", async () => {
+  const settings = { ...NEW_SETTINGS, generationMode: "on-demand" };
+  const storage = memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { model: "demo/demo-model" } }) });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado", label: "Host" }] };
+    }
+  }, { storage });
+  const isRealGenerate = (call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true'));
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const withOverride = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(withOverride);
+    await settled(client);
+    let rendered = renderTail(client, tail, withOverride);
+    const generate = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
+    assert(generate !== undefined, "the on demand tail offers the generate button");
+    await generate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    let calls = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(calls.length, 1, "the button asks the host exactly once");
+    let body = JSON.parse(calls[0].body);
+    assertEqual(body.model, "demo/demo-model", `the override model rides the body: ${calls[0].body}`);
+    const without = { sessionId: "s2", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    tail(without);
+    await settled(client);
+    rendered = renderTail(client, tail, without);
+    const generateWithout = buttonsOf(rendered).find((node) => node.children.includes("generateNow"));
+    assert(generateWithout !== undefined, "the session without an override generates on demand too");
+    await generateWithout.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    calls = client.fetchStub.calls.filter(isRealGenerate);
+    assertEqual(calls.length, 2, "the second session asks the host exactly once");
+    body = JSON.parse(calls[1].body);
+    assert(body.model === undefined, `no model key without an override: ${calls[1].body}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the session options offer the model select only when the catalog is available", async () => {
+  const render = async (modelsRoute) => {
+    const client = loadClient({
+      routes: {
+        "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+        "/api/dsh-nextsteps.generate": { ok: true, rev: "sf-2", followups: [{ prompt: "gerado", label: "Host" }] },
+        "/api/dsh-nextsteps.models": modelsRoute
+      },
+      storage: memoryStorage({ "dsh-nextsteps.session-overrides": JSON.stringify({ s1: { lang: "pt-BR" } }) })
+    });
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    try {
+      await settled(client);
+      const tail = tailOf(registrations);
+      const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+      seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+      client.instance.flushWrites();
+      tail(props);
+      for (const effect of client.react.__effects ?? []) await effect();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const open = renderTail(client, tail, props);
+      const optionsButton = buttonsOf(open).find((node) => node.children.includes("sessionOptions"));
+      assert(optionsButton !== undefined, "the header offers the session options button");
+      await optionsButton.props.onClick();
+      return renderTail(client, tail, props);
+    } finally {
+      client.fetchStub.restore();
+    }
+  };
+  const withCatalog = await render({ ok: true, groups: [{ id: "demo", name: "Demo", models: [{ id: "demo-model", name: "Demo Model" }] }] });
+  const select = walk(withCatalog, (node) => node.type === "select" && node.props?.["aria-label"] === "setModel")[0];
+  assert(select !== undefined, "the panel offers the model select when the catalog is listed");
+  const options = walk(select, (node) => node.type === "option").map((node) => node.props.value);
+  assertEqual(options, ["", "demo/demo-model"], `the select offers the global option and the catalog: ${JSON.stringify(options)}`);
+  const withoutCatalog = await render({ ok: true, groups: [] });
+  const missing = walk(withoutCatalog, (node) => node.type === "select" && node.props?.["aria-label"] === "setModel")[0];
+  assert(missing === undefined, "no model select without a catalog");
+});

@@ -306,7 +306,8 @@ window.__ModuleLoader__.load({
         const sanitized = {};
         if (entry.lang === '' || (typeof entry.lang === 'string' && LANGUAGE_OPTIONS.some((option) => option.value === entry.lang))) sanitized.lang = entry.lang;
         if (Number.isInteger(entry.maxFollowups) && entry.maxFollowups >= 1 && entry.maxFollowups <= 6) sanitized.maxFollowups = entry.maxFollowups;
-        if (sanitized.lang !== undefined || sanitized.maxFollowups !== undefined) clean[sessionId] = sanitized;
+        if (typeof entry.model === 'string' && entry.model.includes('/')) sanitized.model = entry.model;
+        if (sanitized.lang !== undefined || sanitized.maxFollowups !== undefined || sanitized.model !== undefined) clean[sessionId] = sanitized;
       }
       return clean;
     }
@@ -322,6 +323,7 @@ window.__ModuleLoader__.load({
         if (value === undefined || value === '' || value === null) delete merged[field];
         else if (field === 'lang' && typeof value === 'string' && LANGUAGE_OPTIONS.some((option) => option.value === value)) merged.lang = value;
         else if (field === 'maxFollowups' && Number.isInteger(value) && value >= 1 && value <= 6) merged.maxFollowups = value;
+        else if (field === 'model' && typeof value === 'string' && value.includes('/')) merged.model = value;
       }
       if (Object.keys(merged).length === 0) {
         clearSessionOverride(sessionId);
@@ -1466,7 +1468,8 @@ window.__ModuleLoader__.load({
                 sessionId,
                 afterSeq,
                 ...(override !== undefined && typeof override.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
-                ...(Number.isInteger(override?.maxFollowups) ? { maxFollowups: override.maxFollowups } : {})
+                ...(Number.isInteger(override?.maxFollowups) ? { maxFollowups: override.maxFollowups } : {}),
+                ...(override !== undefined && typeof override.model === 'string' && override.model !== '' ? { model: override.model } : {})
               }),
               signal: controller.signal
             });
@@ -1540,9 +1543,18 @@ window.__ModuleLoader__.load({
         const [sessionOptionsOpen, setSessionOptionsOpen] = React.useState(false);
         const [generatingLabel, setGeneratingLabel] = React.useState('');
         const [gearNotice, setGearNotice] = React.useState(false);
+        const [sessionModels, setSessionModels] = React.useState(() => modelCatalogCache);
         const rootRef = React.useRef(null);
         const host = hostModeFor(sessionId);
         const [overridesVersion, setOverridesVersion] = React.useState(0);
+
+        React.useEffect(() => {
+          let alive = true;
+          loadModelCatalog(false).then((catalog) => { if (alive) setSessionModels(catalog); });
+          return () => {
+            alive = false;
+          };
+        }, []);
 
         React.useEffect(() => {
           captureListeners.add(refresh);
@@ -1751,6 +1763,14 @@ window.__ModuleLoader__.load({
               onChange: (event) => writeSessionOverride(sessionId, { maxFollowups: event.target.value === '' ? '' : Number(event.target.value) }),
               'aria-label': t('setMax')
             }),
+            sessionModels !== undefined && (sessionModels.groups ?? []).length > 0 ? h('select', {
+              value: sessionOverrideOf(sessionId)?.model ?? '',
+              onChange: (event) => writeSessionOverride(sessionId, { model: event.target.value }),
+              'aria-label': t('setModel')
+            },
+              h('option', { value: '' }, t('sessionLangGlobal')),
+              ...sessionModels.groups.map((group) => h('optgroup', { key: group.id, label: group.name },
+                group.models.map((entry) => h('option', { key: group.id + '/' + entry.id, value: group.id + '/' + entry.id }, entry.name === entry.id ? entry.name : entry.name + ' (' + entry.id + ')'))))) : null,
             h('button', {
               type: 'button',
               className: 'dsh-sf-action',
@@ -1885,7 +1905,7 @@ window.__ModuleLoader__.load({
     const hostMode = (settings) => !(settings.lang === 'auto' && (typeof settings.model !== 'string' || settings.model === ''));
     const hostModeFor = (sessionId) => {
       const override = sessionOverrideOf(sessionId);
-      if (override !== undefined && ((typeof override.lang === 'string' && override.lang !== '') || Number.isInteger(override.maxFollowups))) return true;
+      if (override !== undefined && ((typeof override.lang === 'string' && override.lang !== '') || Number.isInteger(override.maxFollowups) || (typeof override.model === 'string' && override.model !== ''))) return true;
       return hostMode(pluginSettings);
     };
 
