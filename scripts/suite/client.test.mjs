@@ -2995,6 +2995,107 @@ test("editing a favourite onto an existing text is refused with a notice", async
   }
 });
 
+test("the json export downloads the favourites with a version envelope", async () => {
+  const seed = {
+    [favoriteHash("Run the full suite")]: { prompt: "Run the full suite", label: "Run suite", at: 2000 },
+    [favoriteHash("Wire the retry path")]: { prompt: "Wire the retry path", label: "Retry", at: 1000 }
+  };
+  const setup = favoritesExportClient({ "dsh-nextsteps.favorites": JSON.stringify(seed) });
+  try {
+    const { tree } = settingsTree(setup.client);
+    const exportButton = buttonsOf(tree).find((node) => node.children.includes("favoritesExportJson"));
+    assert(exportButton !== undefined, "the json export button renders when favourites exist");
+    exportButton.props.onClick();
+    await settled(setup.client);
+    setup.client.instance.flushWrites();
+    assertEqual(setup.capturedBlobs.length, 1, "one blob was created");
+    const blob = setup.capturedBlobs[0];
+    assert(blob instanceof Blob, `the captured download is a blob: ${typeof blob}`);
+    const parsed = JSON.parse(await blob.text());
+    assertEqual(parsed.version, 1, "the export carries the version envelope");
+    assertEqual(parsed.favorites, seed, "the export carries the store verbatim");
+    assertEqual(setup.createdAnchors.length, 1, "one anchor was created");
+    const anchor = setup.createdAnchors[0];
+    assertMatch(anchor.download, /^dsh-nextsteps-favorites-\d{4}-\d{2}-\d{2}\.json$/, `the download name is dated: ${anchor.download}`);
+    assertEqual(anchor.clicked, true, "the anchor click fired");
+  } finally {
+    await setup.close();
+  }
+});
+
+test("the json import merges by date and reports the counts", async () => {
+  const existing = {
+    [favoriteHash("Run the full suite")]: { prompt: "Run the full suite", label: "Run suite", at: 2000 }
+  };
+  const setup = favoritesExportClient({ "dsh-nextsteps.favorites": JSON.stringify(existing) });
+  try {
+    const { ctx, registrations } = settingsTree(setup.client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const t = ctx.locale.bind("dsh-nextsteps");
+    const tree = section.component({ t });
+    const fileInput = walk(tree, (node) => node.type === "input" && node.props?.type === "file")[0];
+    assert(fileInput !== undefined, "the favourites row offers the import input");
+    const file = {
+      size: 100,
+      text: async () => JSON.stringify({
+        version: 1,
+        favorites: {
+          legacy1: { prompt: "Brand new one", label: "New", at: 5000 },
+          legacy2: { prompt: "Another fresh one", label: null, at: 4000 },
+          legacy3: { prompt: "Run the full suite", label: "Older copy", at: 1000 },
+          legacy4: { prompt: "Run the full suite", label: "Newer copy", at: 3000 }
+        }
+      })
+    };
+    await fileInput.props.onChange({ target: { files: [file], value: "favorites.json" } });
+    setup.client.instance.flushWrites();
+    const stored = JSON.parse(setup.storage._data["dsh-nextsteps.favorites"]);
+    assertEqual(Object.keys(stored).length, 3, "two additions and one replacement");
+    assert(stored[favoriteHash("Brand new one")] !== undefined, "the first fresh favourite landed");
+    assert(stored[favoriteHash("Another fresh one")] !== undefined, "the second fresh favourite landed");
+    const conflict = stored[favoriteHash("Run the full suite")];
+    assertEqual(conflict.label, "Newer copy", "the newer conflict won the merge");
+    assertEqual(conflict.at, 3000, "the winning entry carries its own date");
+    const after = section.component({ t });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(textOf(notice).includes("2 added, 1 updated, 1 skipped"), `the import announces the counts: ${textOf(notice)}`);
+  } finally {
+    await setup.close();
+  }
+});
+
+test("a broken import leaves the store untouched and reports the failure", async () => {
+  const existing = {
+    [favoriteHash("Run the full suite")]: { prompt: "Run the full suite", label: "Run suite", at: 2000 }
+  };
+  const setup = favoritesExportClient({ "dsh-nextsteps.favorites": JSON.stringify(existing) });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  try {
+    const { registrations } = settingsTree(setup.client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const fileInput = walk(tree, (node) => node.type === "input" && node.props?.type === "file")[0];
+    await fileInput.props.onChange({ target: { files: [], value: "" } });
+    const broken = { size: 10, text: async () => "{not json" };
+    await fileInput.props.onChange({ target: { files: [broken], value: "broken.json" } });
+    const shapeless = { size: 10, text: async () => JSON.stringify({ version: 1 }) };
+    await fileInput.props.onChange({ target: { files: [shapeless], value: "shapeless.json" } });
+    const huge = { size: 1048577, text: async () => "{}" };
+    await fileInput.props.onChange({ target: { files: [huge], value: "huge.json" } });
+    setup.client.instance.flushWrites();
+    assertEqual(JSON.parse(setup.storage._data["dsh-nextsteps.favorites"]), existing, "the store survived every broken import");
+    const after = section.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("favoritesImportFailed"), `the failure is announced: ${JSON.stringify(notice.children)}`);
+    assert(warnings.filter((line) => line.includes("the favourites import failed")).length >= 1, "the failure warns");
+  } finally {
+    console.warn = originalWarn;
+    await setup.close();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
