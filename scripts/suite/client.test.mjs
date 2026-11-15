@@ -3096,6 +3096,76 @@ test("a broken import leaves the store untouched and reports the failure", async
   }
 });
 
+test("bulk copy joins the selected favourites in display order", async () => {
+  const clipboard = fakeClipboard();
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 3000 },
+      [favoriteHash("Beta prompt")]: { prompt: "Beta prompt", label: null, at: 2000 },
+      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { clipboard, storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const boxes = walk(rendered, (node) => node.type === "input" && node.props?.type === "checkbox" && ["Alpha prompt", "Beta prompt"].includes(node.props?.["aria-label"]));
+    assertEqual(boxes.length, 2, "the two target rows offer their checkboxes");
+    for (const box of boxes) box.props.onChange();
+    const withSelection = settings.component({ t: (key) => key });
+    const copySelected = buttonsOf(withSelection).find((node) => node.children.includes("favoriteCopySelected"));
+    assert(copySelected !== undefined, "the toolbar offers the bulk copy button");
+    assertEqual(copySelected.props.disabled, false, "the bulk copy button enables with a selection");
+    await copySelected.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(clipboard.writes, ["Alpha prompt\n\nBeta prompt"], "the clipboard carries exactly the two selected prompts in display order");
+    const after = settings.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("srFavoritesCopied"), `the bulk copy is announced: ${JSON.stringify(notice.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("bulk remove needs the confirming second click", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Alpha prompt")]: { prompt: "Alpha prompt", label: null, at: 3000 },
+      [favoriteHash("Beta prompt")]: { prompt: "Beta prompt", label: null, at: 2000 },
+      [favoriteHash("Gamma prompt")]: { prompt: "Gamma prompt", label: null, at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const betaBox = walk(rendered, (node) => node.type === "input" && node.props?.type === "checkbox" && node.props?.["aria-label"] === "Beta prompt")[0];
+    betaBox.props.onChange();
+    const withSelection = settings.component({ t: (key) => key });
+    const removeSelected = buttonsOf(withSelection).find((node) => node.children.includes("favoriteRemoveSelected"));
+    assert(removeSelected !== undefined, "the toolbar offers the bulk remove button");
+    await removeSelected.props.onClick();
+    const armed = settings.component({ t: (key) => key });
+    const armedButton = buttonsOf(armed).find((node) => node.children.includes("favoriteRemoveConfirm"));
+    assert(armedButton !== undefined, "the first click arms the removal");
+    client.instance.flushWrites();
+    assertEqual(Object.keys(JSON.parse(storage._data["dsh-nextsteps.favorites"])).length, 3, "the first click removes nothing");
+    await armedButton.props.onClick();
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assertEqual(Object.keys(stored).length, 2, "the second click removes the selected favourite");
+    assert(stored[favoriteHash("Beta prompt")] === undefined, "the selected favourite left the store");
+    const after = settings.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("srFavoritesRemoved"), `the removal is announced: ${JSON.stringify(notice.children)}`);
+    const afterRender = settings.component({ t: (key) => key });
+    const boxes = walk(afterRender, (node) => node.type === "input" && node.props?.type === "checkbox" && ["Alpha prompt", "Beta prompt", "Gamma prompt"].includes(node.props?.["aria-label"]));
+    assert(boxes.every((box) => box.props.checked !== true), "the selection is cleared after the removal");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
