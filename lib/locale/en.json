@@ -139,5 +139,9 @@
   "updatePrecheck": "The version could not be verified on the npm registry.",
   "updateNoManager": "No plugin installer is available in this host.",
   "setRetention": "Retention",
-  "setRetentionTip": "Automatically delete stored suggestions older than this many days. 0 turns it off (0-365)."
+  "setRetentionTip": "Automatically delete stored suggestions older than this many days. 0 turns it off (0-365).",
+  "setTranscriptScope": "Transcript scope",
+  "setTranscriptScopeTip": "How much of the turn the generator sees. Minimal sends only the last user and assistant messages.",
+  "optTranscriptFull": "Full transcript",
+  "optTranscriptMinimal": "Minimal (last messages)"
 }

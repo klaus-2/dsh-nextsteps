@@ -1909,3 +1909,97 @@ test("the settings route coerces the retention days", async () => {
   }))).json();
   assertEqual(cleared.settings.retentionDays, 30, "an invalid retention keeps the current one");
 });
+
+suite("host: the transcript scope");
+
+const SCOPE_EVENTS = [
+  userMessage(1, "primeira pergunta"),
+  assistantMessage(2, "primeira resposta"),
+  userMessage(3, "segunda pergunta"),
+  toolCall(4, "call-1", "other_tool"),
+  assistantMessage(5, "segunda resposta"),
+  turnEnd(6, 1)
+];
+
+async function transcriptContext({ scope } = {}) {
+  const { ctx, routes } = stubContext({ services: { sessionQuery: sessionOf(SCOPE_EVENTS) } });
+  const messagesSeen = [];
+  const baseGet = ctx.get;
+  ctx.get = (name) => {
+    if (name === "llm") {
+      return {
+        listProviders: () => [{ id: "demo", name: "Demo" }],
+        listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+        prepareCall: async (route) => ({
+          config: { provider: route.provider, model: route.model },
+          stream: async function* (config) {
+            messagesSeen.push(config.messages);
+            yield { type: "text-delta", text: '{"followups":[{"prompt":"p","label":"l"}]}' };
+            yield { type: "finish", reason: { kind: "stop" } };
+          }
+        })
+      };
+    }
+    return baseGet(name);
+  };
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR", model: "", generationMode: "auto", ...(scope !== undefined ? { transcriptScope: scope } : {}) })
+  }));
+  const route = routes.get(`/api/${pluginId}.generate`);
+  const post = (body) => route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }));
+  return { post, messagesSeen };
+}
+
+test("the minimal scope sends only the last user and assistant messages", async () => {
+  const { post, messagesSeen } = await transcriptContext({ scope: "minimal" });
+  const response = await post({ sessionId: "s1", afterSeq: 6 });
+  assertEqual(response.status, 200, "the generation answers");
+  assertEqual(messagesSeen.length, 1, "the model is called once");
+  const text = messagesSeen[0][0].content[0].text;
+  assert(text.includes("User: segunda pergunta"), "the last user message is sent");
+  assert(text.includes("Assistant: segunda resposta"), "the last assistant message is sent");
+  assert(!text.includes("primeira"), "the earlier messages are withheld");
+  assert(!text.includes("Tool call:"), "the tool lines are withheld");
+});
+
+test("the full scope sends every line of the turn", async () => {
+  const { post, messagesSeen } = await transcriptContext({ scope: "full" });
+  const response = await post({ sessionId: "s1", afterSeq: 6 });
+  assertEqual(response.status, 200, "the generation answers");
+  const text = messagesSeen[0][0].content[0].text;
+  assert(text.includes("User: primeira pergunta"), "the first user message is sent");
+  assert(text.includes("Assistant: primeira resposta"), "the first assistant message is sent");
+  assert(text.includes("Tool call: other_tool"), "the tool line is sent");
+  assert(text.includes("User: segunda pergunta"), "the last user message is sent");
+  assert(text.includes("Assistant: segunda resposta"), "the last assistant message is sent");
+});
+
+test("the settings route coerces the transcript scope", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  const before = await (await route.fetch(new Request("http://x"))).json();
+  const bogus = await (await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transcriptScope: "bogus" })
+  }))).json();
+  assertEqual(bogus.settings.transcriptScope, before.settings.transcriptScope, "an unknown scope keeps the current one");
+  const minimal = await (await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transcriptScope: "minimal" })
+  }))).json();
+  assertEqual(minimal.settings.transcriptScope, "minimal", "the minimal scope is stored");
+  const served = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(served.settings.transcriptScope, "minimal", "the scope is served back");
+});

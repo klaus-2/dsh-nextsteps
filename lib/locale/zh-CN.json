@@ -139,5 +139,9 @@
   "updatePrecheck": "无法在 npm registry 上验证该版本。",
   "updateNoManager": "此宿主没有可用的插件安装器。",
   "setRetention": "保留期限",
-  "setRetentionTip": "自动删除超过此天数的已存建议。0 表示关闭（0-365）。"
+  "setRetentionTip": "自动删除超过此天数的已存建议。0 表示关闭（0-365）。",
+  "setTranscriptScope": "历史记录范围",
+  "setTranscriptScopeTip": "生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。",
+  "optTranscriptFull": "完整历史记录",
+  "optTranscriptMinimal": "最小（最后几条）"
 }

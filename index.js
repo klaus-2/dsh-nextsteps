@@ -359,6 +359,10 @@ function retentionDaysOf(stored) {
   return Number.isInteger(stored) && stored >= 0 && stored <= 365 ? stored : undefined;
 }
 
+function transcriptScopeOf(stored) {
+  return stored === 'minimal' ? 'minimal' : stored === 'full' ? 'full' : undefined;
+}
+
 function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
@@ -372,6 +376,7 @@ function settingsLoad() {
       latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
       maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS,
       retentionDays: retentionDaysOf(stored.retentionDays) ?? 0,
+      transcriptScope: transcriptScopeOf(stored.transcriptScope) ?? 'full',
       confirmBeforeSend: stored.confirmBeforeSend === true
     };
   } catch {
@@ -385,6 +390,7 @@ function settingsLoad() {
       latencyBudgetMs: GENERATE_TIMEOUT_MS,
       maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
       retentionDays: 0,
+      transcriptScope: 'full',
       confirmBeforeSend: false
     };
   }
@@ -699,8 +705,8 @@ function textOf(content) {
   return parts.join('\n');
 }
 
-function turnTranscript(events, afterSeq, limit = DEFAULT_TRANSCRIPT_LIMIT) {
-  const lines = [];
+function turnTranscript(events, afterSeq, limit = DEFAULT_TRANSCRIPT_LIMIT, scope = 'full') {
+  let lines = [];
   for (const entry of events) {
     const event = entry?.event ?? entry;
     if (event === null || typeof event !== 'object') continue;
@@ -714,6 +720,17 @@ function turnTranscript(events, afterSeq, limit = DEFAULT_TRANSCRIPT_LIMIT) {
     } else if (event.type === 'tool/call' && typeof event.data?.name === 'string') {
       lines.push(`Tool call: ${event.data.name}`);
     }
+  }
+  if (scope === 'minimal') {
+    let lastUser = -1;
+    let lastAssistant = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('User: ')) lastUser = i;
+      else if (lines[i].startsWith('Assistant: ')) lastAssistant = i;
+    }
+    lines = lastUser !== -1 && lastAssistant !== -1
+      ? (lastUser < lastAssistant ? [lines[lastUser], lines[lastAssistant]] : [lines[lastAssistant], lines[lastUser]])
+      : lastUser !== -1 ? [lines[lastUser]] : lastAssistant !== -1 ? [lines[lastAssistant]] : [];
   }
   const budget = Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_TRANSCRIPT_LIMIT;
   const separator = '\n\n';
@@ -849,7 +866,7 @@ async function generateForTurn(ctx, settings, sessionId, afterSeq, signal, avoid
     if (turnEnd === undefined || newerTurn || turnEnd.data?.reason?.kind !== 'completed') {
       throw Object.assign(new Error('the chat moved on'), { status: 409 });
     }
-    transcript = turnTranscript(events, afterSeq, settings.maxSuggestionChars * TRANSCRIPT_BUDGET_FACTOR);
+    transcript = turnTranscript(events, afterSeq, settings.maxSuggestionChars * TRANSCRIPT_BUDGET_FACTOR, settings.transcriptScope);
   } finally {
     observation[Symbol.dispose]?.();
   }
@@ -976,6 +993,7 @@ async function apply(ctx) {
         latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
         maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars,
         retentionDays: retentionDaysOf(body?.retentionDays) ?? current.retentionDays,
+        transcriptScope: transcriptScopeOf(body?.transcriptScope) ?? current.transcriptScope,
         confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend
       };
       await settingsSave(next);

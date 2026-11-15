@@ -4367,3 +4367,76 @@ test("the retention input clamps the value before saving", async () => {
     client.fetchStub.restore();
   }
 });
+
+suite("client: the transcript scope");
+
+test("the transcript scope select saves the choice", async () => {
+  let posted = null;
+  const client = loadClient({ routes: {
+    "/api/dsh-nextsteps.settings": (init) => {
+      if (init?.method === "POST") posted = JSON.parse(String(init.body));
+      return { ok: true, settings: { ...NEW_SETTINGS }, version: "1.0.0" };
+    },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] }
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await settled(client);
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = settings.component({ t: (key) => key });
+    const select = walk(tree, (node) => node.type === "select" && node.props?.["aria-label"] === "setTranscriptScope")[0];
+    assert(select !== undefined, "the transcript scope select is rendered");
+    const options = walk(select, (node) => node.type === "option").map((option) => option.children[0]);
+    assert(options.includes("optTranscriptFull") && options.includes("optTranscriptMinimal"), "both scope options are offered");
+    select.props.onChange({ target: { value: "minimal" } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(posted?.transcriptScope, "minimal", "the choice is sent to the host");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a changed transcript scope re-probes the turn", async () => {
+  const { client, ctx, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": (init) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        return { ok: true, settings: { ...NEW_SETTINGS, generationMode: "on-demand", transcriptScope: body.transcriptScope }, version: "1.0.0" };
+      }
+      return { ok: true, settings: { ...NEW_SETTINGS, generationMode: "on-demand" }, version: "1.0.0" };
+    },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = String(init?.body ?? "");
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const validateCalls = () => client.fetchStub.calls.filter((call) => typeof call.body === "string" && call.body.includes('"validate":true')).length;
+    assertEqual(validateCalls(), 1, "the turn is probed once");
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = settings.component({ t: (key) => key });
+    const select = walk(tree, (node) => node.type === "select" && node.props?.["aria-label"] === "setTranscriptScope")[0];
+    select.props.onChange({ target: { value: "minimal" } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    client.instance.apply(ctx);
+    const second = registrations.findLast((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    assert(second !== undefined && second !== registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail"), "a fresh tail mount exists after re-applying");
+    second.component(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(validateCalls(), 2, "the stale probe cache is dropped and the turn is probed again");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
