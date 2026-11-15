@@ -62,6 +62,7 @@
   "manualCancel": "Cancelar",
   "generateNow": "Gerar sugestões",
   "generating": "Gerando…",
+  "generatingElapsed": "Gerando… {t}",
   "undoDiscard": "Desfazer descarte",
   "srCopied": "A sugestão foi copiada para a área de transferência.",
   "srDiscarded": "A sugestão foi descartada. Use Desfazer para trazê-la de volta.",

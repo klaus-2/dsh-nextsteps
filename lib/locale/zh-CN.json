@@ -62,6 +62,7 @@
   "manualCancel": "取消",
   "generateNow": "生成建议",
   "generating": "正在生成…",
+  "generatingElapsed": "生成中… {t}",
   "undoDiscard": "撤销丢弃",
   "srCopied": "建议已复制到剪贴板。",
   "srDiscarded": "建议已被丢弃。使用“撤销丢弃”可以恢复。",

@@ -990,12 +990,12 @@ test("an aborted generation keeps no retry offer", async () => {
   const { client, registrations } = clientWithRoutes({
     "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.generate": (init) => new Promise((resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => {
+    "/api/dsh-nextsteps.generate": () => new Promise((resolve, reject) => {
+      setTimeout(() => {
         const error = new Error("The operation was aborted");
         error.name = "AbortError";
         reject(error);
-      });
+      }, 10);
     })
   });
   try {
@@ -2727,6 +2727,61 @@ test("two manual suggestions in the same turn keep their own identity", async ()
     const rendered = renderTail(client, tail, props);
     const items = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
     assertEqual(items.length, 3, "the seeded card and the two manual suggestions render as cards");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the generating indicator shows the elapsed time while the host generates", async () => {
+  const { client, ctx, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, model: "demo/demo-model" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: ctx.locale.bind("dsh-nextsteps") };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    const rendered = renderTail(client, tail, props);
+    const label = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-generating");
+    assert(label.length === 1, `the generating label renders while the generation runs: ${label.length}`);
+    assertMatch(textOf(label[0]), /Generating… \d{2}:\d{2}/, `the label carries the elapsed time: ${textOf(label[0])}`);
+    await client.react.__cleanup();
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the generating indicator clears once the generation settles without orphan timers", async () => {
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, model: "demo/demo-model" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "gerado pelo host", label: "Host" }] };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    const rendered = renderTail(client, tail, props);
+    const label = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-generating");
+    assertEqual(label.length, 0, "the generating label is gone after the generation settled");
+    const cards = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"));
+    assertEqual(cards.length, 1, "the generated card renders after the settle");
+    await client.react.__cleanup();
   } finally {
     client.fetchStub.restore();
   }
