@@ -3862,3 +3862,195 @@ test("a session without captures sends no avoid key", async () => {
     client.fetchStub.restore();
   }
 });
+
+test("every card offers the regenerate action", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao"]);
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    assertEqual(itemsOf(rendered).length, 2, "the seeded turn renders two cards");
+    const regenerate = buttonsOf(rendered).filter((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assertEqual(regenerate.length, 2, "every card offers the regenerate action");
+    assert(regenerate.every((node) => node.children[0] === "↻"), "the regenerate action uses the ↻ glyph");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("regenerating a card discards it and stores the answer as a manual capture", async () => {
+  const storage = memoryStorage();
+  const generateBodies = [];
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      generateBodies.push(JSON.parse(body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "novo cartao", label: null }] };
+    }
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    let rendered = renderTail(client, tail, props);
+    const regenerate = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(regenerate !== undefined, "the card offers the regenerate action");
+    await regenerate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    client.instance.flushWrites();
+    assertEqual(generateBodies.length, 1, "the regeneration asks the host once");
+    assertEqual(generateBodies[0].maxFollowups, 1, "the regeneration asks for a single suggestion");
+    assertEqual(generateBodies[0].afterSeq, 9, "the regeneration rides the turn's seq");
+    assertEqual(generateBodies[0].avoid[0], "primeira sugestao", "the discarded prompt leads the avoid list");
+    const captures = JSON.parse(storage._data["dsh-nextsteps.captures.session.s1"] ?? "{}");
+    const manualKeys = Object.keys(captures).filter((name) => name.startsWith("manual-1-"));
+    assertEqual(manualKeys.length, 1, "the answer lands as a manual capture");
+    assertEqual(captures[manualKeys[0]].followups.length, 1, "the manual capture carries one followup");
+    assertEqual(captures[manualKeys[0]].followups[0].prompt, "novo cartao", "the manual capture carries the answer");
+    const discarded = JSON.parse(storage._data["dsh-nextsteps.discarded"] ?? "{}");
+    assertEqual(Object.keys(discarded).length, 1, "the old card is recorded as discarded");
+    rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    assertEqual(items.length, 1, "only the regenerated card remains");
+    assert(textOf(items[0]).includes("novo cartao"), "the regenerated card shows the new suggestion");
+    assert(!textOf(items[0]).includes("primeira sugestao"), "the old card left the list");
+    const undo = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "undoDiscard");
+    assert(undo !== undefined, "the undo chip is offered");
+    const live = walk(rendered, (node) => node.props?.role === "status");
+    assertEqual(live.length, 1, "the single live region is preserved");
+    assertEqual(live[0].children.join(""), "srRegenerated", "the regeneration is announced");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a failed regeneration shows the banner and frees the guard", async () => {
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return new Response(JSON.stringify({ ok: false, error: "boom" }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    let rendered = renderTail(client, tail, props);
+    const regenerate = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(regenerate !== undefined, "the card offers the regenerate action");
+    await regenerate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    rendered = renderTail(client, tail, props);
+    const banner = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-error"))[0];
+    assert(banner !== undefined, "the failure banner is rendered");
+    assert(textOf(banner).includes("the generator answered with HTTP 500: boom"), "the banner names the failure");
+    const undo = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "undoDiscard");
+    assert(undo !== undefined, "the discarded card can be restored");
+    await undo.props.onClick();
+    client.instance.flushWrites();
+    rendered = renderTail(client, tail, props);
+    const restored = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(restored !== undefined, "the restored card offers the regenerate action again");
+    await restored.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const calls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true')));
+    assertEqual(calls.length, 2, "the freed guard allows a second regeneration");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a regeneration in flight disables the other cards of the same turn", async () => {
+  let release;
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return new Promise((resolve) => {
+        release = () => resolve(new Response(JSON.stringify({ ok: true, rev: "sf-2", followups: [{ prompt: "novo cartao", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } }));
+      });
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao", "segunda sugestao"]);
+    client.instance.flushWrites();
+    let rendered = renderTail(client, tail, props);
+    const first = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(first !== undefined, "the first card offers the regenerate action");
+    await first.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rendered = renderTail(client, tail, props);
+    const pending = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(pending !== undefined, "the remaining card still offers the regenerate action");
+    assertEqual(pending.props.disabled, true, "the regenerating turn disables the other card's action");
+    await pending.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const calls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true')));
+    assertEqual(calls.length, 1, "the second click fires no second fetch");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    rendered = renderTail(client, tail, props);
+    const live = walk(rendered, (node) => node.props?.role === "status");
+    assertEqual(live[0].children.join(""), "srRegenerated", "the regeneration is announced after the guard releases");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("an unmount during a regeneration aborts the fetch and frees the guard", async () => {
+  const signals = [];
+  let release;
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      signals.push(init?.signal);
+      return new Promise((resolve) => {
+        release = () => resolve(new Response(JSON.stringify({ ok: true, rev: "sf-2", followups: [{ prompt: "novo cartao", label: "Host" }] }), { status: 200, headers: { "content-type": "application/json" } }));
+      });
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const regenerate = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(regenerate !== undefined, "the card offers the regenerate action");
+    await regenerate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(signals.length, 1, "the regeneration fetch is in flight");
+    assert(signals[0].aborted === false, "the fetch starts unaborted");
+    await client.react.__cleanup();
+    assert(signals[0].aborted === true, "the unmount aborts the in-flight fetch");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const next = renderTail(client, tail, props);
+    const again = buttonsOf(next).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(again !== undefined, "a fresh tail offers the regenerate action");
+    await again.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const calls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true')));
+    assertEqual(calls.length, 2, "the freed guard allows a new regeneration");
+  } finally {
+    client.fetchStub.restore();
+  }
+});

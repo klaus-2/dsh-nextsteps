@@ -132,5 +132,8 @@
   "installError": "The update failed",
   "unsupportedVersion": "That release is not a version this plugin can install",
   "repo": "GitHub repository",
-  "issues": "Report an issue"
+  "issues": "Report an issue",
+  "actionRegenerate": "Regenerate",
+  "regenerating": "Regenerating…",
+  "srRegenerated": "The suggestion was regenerated."
 }

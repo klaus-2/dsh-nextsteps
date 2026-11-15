@@ -132,5 +132,8 @@
   "installError": "更新失败",
   "unsupportedVersion": "该版本不是此插件可安装的版本",
   "repo": "GitHub 仓库",
-  "issues": "反馈问题"
+  "issues": "反馈问题",
+  "actionRegenerate": "重新生成",
+  "regenerating": "正在重新生成…",
+  "srRegenerated": "建议已重新生成。"
 }
