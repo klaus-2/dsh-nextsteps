@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId, isDevCopy } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
+import { FUZZ_COUNT, FUZZ_SEED, IN_MEMORY_PAYLOADS, assertFollowupsShape, buildPayload, fuzzMessage, mulberry32 } from "./fuzz-kit.mjs";
 
 suite("host: tool, settings and routes");
 
@@ -1546,4 +1547,141 @@ test("the rewrite path serves cached drafts untouched by the avoid rule", async 
   const userText = rewriteRequests[0].messages?.[0]?.content?.[0]?.text ?? "";
   assert(!systemText.includes("Do not repeat") && !userText.includes("Do not repeat"), "the rewrite prompt carries no avoid rule");
   assertEqual(userText, JSON.stringify({ followups: [{ prompt: "Run tests", label: "Tests" }] }), "the rewrite payload is exactly the drafts");
+});
+
+suite("host: seeded payload fuzzing");
+
+// One shared fuzz surface: a finished turn-1 session and a mutable llm whose
+// answer text changes per iteration, so every payload travels through the real
+// route and validators — nothing is reimplemented here.
+const fuzzEvents = [
+  { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please fix the parser" }], source: { kind: "user" } } },
+  { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+];
+
+async function fuzzContext() {
+  let currentText = "";
+  const surface = {
+    setText: (text) => { currentText = text; }
+  };
+  const sessionQuery = { observeSession: async () => ({ events: fuzzEvents, [Symbol.dispose]: () => {} }) };
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* () {
+        yield { type: "text-delta", text: currentText };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery, llm } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  // Pin every knob the served shape depends on: earlier tests poison the shared
+  // settings profile, so the fuzz caps must be set explicitly here.
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "", generationMode: "auto", maxFollowups: 6, maxSuggestionChars: 200 })
+  }));
+  const route = routes.get(`/api/${pluginId}.generate`);
+  const post = () => route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  return { surface, registered, post };
+}
+
+// The fuzz loop answers through a hostile model, so the per-attempt warnings are
+// expected noise: each iteration still asserts the real answer (status and body).
+function silenceFuzzNoise(run) {
+  const realWarn = console.warn;
+  console.warn = () => {};
+  return run().finally(() => { console.warn = realWarn; });
+}
+
+test("the generate route keeps its contract under seeded fuzzing", async () => {
+  const { surface, post } = await fuzzContext();
+  let served = 0;
+  await silenceFuzzNoise(async () => {
+    for (let index = 0; index < FUZZ_COUNT; index += 1) {
+      const payload = buildPayload(index);
+      surface.setText(JSON.stringify(payload));
+      const response = await post();
+      assert([200, 400, 409, 502].includes(response.status), fuzzMessage(index, payload, `the generate route answers with a known status, got ${response.status}`));
+      const body = await response.json();
+      assert(!JSON.stringify(body).includes('"__proto__"'), fuzzMessage(index, payload, "the answer never carries __proto__"));
+      if (body.followups !== undefined) {
+        assertFollowupsShape(body.followups, { promptCap: 200, labelCap: 40 }, fuzzMessage(index, payload, "the served followups keep the shape"));
+        if (Array.isArray(body.followups) && body.followups.length > 0) served += 1;
+      }
+    }
+  });
+  assert(served > 0, "the fuzz run is not vacuous: at least one payload must serve followups");
+});
+
+test("the tool execute keeps the string contract under seeded fuzzing", async () => {
+  const { registered } = await fuzzContext();
+  const exec = { callId: "call-1", agent: { id: "s1" } };
+  for (let index = 0; index < FUZZ_COUNT; index += 1) {
+    const payload = buildPayload(index);
+    const recorded = await registered[0].execute({ followups: payload }, exec);
+    assert(typeof recorded === "string", fuzzMessage(index, payload, `execute returns a string, got ${typeof recorded}`));
+  }
+  for (const hostile of IN_MEMORY_PAYLOADS) {
+    const recorded = await registered[0].execute({ followups: hostile.payload }, exec);
+    assert(typeof recorded === "string", `execute returns a string for ${hostile.note}`);
+  }
+});
+
+test("the salvage path recovers the embedded cards under seeded fuzzing", async () => {
+  const { surface, post } = await fuzzContext();
+  await silenceFuzzNoise(async () => {
+    for (let index = 0; index < 64; index += 1) {
+      const cards = Array.from({ length: 1 + (index % 6) }, (entry, n) => ({ prompt: `salvaged ${index}/${n}`, label: "S" }));
+      const usable = JSON.stringify({ followups: cards });
+      if (index % 2 === 0) {
+        surface.setText(`The agent wrote: ${usable} and closed with a stray note {"note":"noise ${index}"}.`);
+        const response = await post();
+        assertEqual(response.status, 200, fuzzMessage(index, usable, "the salvage path answers 200 for text with usable cards"));
+        const body = await response.json();
+        assert(body.followups.length >= 1 && body.followups.length <= 6, fuzzMessage(index, usable, "the salvage path recovers between one and six cards"));
+        assertFollowupsShape(body.followups, { promptCap: 200, labelCap: 40 }, fuzzMessage(index, usable, "the salvaged cards keep the shape"));
+      } else {
+        surface.setText(`The agent wrote {"mood":"no cards ${index}"} and an unclosed brace {"junk": [1, 2.`);
+        const response = await post();
+        assertEqual(response.status, 502, fuzzMessage(index, "junk objects only", "text without a usable card answers 502"));
+        const body = await response.json();
+        assert(body.followups === undefined, fuzzMessage(index, "junk objects only", "the junk answer serves no followups"));
+      }
+    }
+  });
+});
+
+test("the caps truncate the served cards exactly", async () => {
+  const { surface, post } = await fuzzContext();
+  const card = (text) => ({ prompt: text, label: "L" });
+  surface.setText(JSON.stringify({ followups: Array.from({ length: 6 }, (entry, index) => card("six " + index)) }));
+  assertEqual((await (await post()).json()).followups.length, 6, "six cards pass whole");
+  surface.setText(JSON.stringify({ followups: Array.from({ length: 7 }, (entry, index) => card("seven " + index)) }));
+  assertEqual((await (await post()).json()).followups.length, 6, "seven cards are truncated to six");
+  surface.setText(JSON.stringify({ followups: [{ prompt: "w".repeat(300), label: "wide" }] }));
+  assertEqual((await (await post()).json()).followups[0].prompt.length, 200, "a 300-char prompt is truncated to the 200 cap");
+  surface.setText(JSON.stringify({ followups: [{ prompt: "prompt", label: "L".repeat(50) }] }));
+  assertEqual((await (await post()).json()).followups[0].label.length, 40, "a 50-char label is truncated to 40");
+});
+
+test("the seeded payloads are reproducible", () => {
+  for (let index = 0; index < FUZZ_COUNT; index += 1) {
+    const first = JSON.stringify(buildPayload(index));
+    assertEqual(JSON.stringify(buildPayload(index)), first, `payload ${index} builds identically [seed ${FUZZ_SEED}]`);
+  }
+  const seeded = mulberry32(FUZZ_SEED);
+  const again = mulberry32(FUZZ_SEED);
+  for (let index = 0; index < 64; index += 1) {
+    assertEqual(seeded(), again(), `the PRNG stream at ${index} is reproducible [seed ${FUZZ_SEED}]`);
+  }
 });

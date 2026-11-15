@@ -384,8 +384,12 @@ function coerceFollowups(raw) {
       return undefined;
     }
   }
-  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray(raw.followups)) {
-    raw = raw.followups;
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    try {
+      if (Array.isArray(raw.followups)) raw = raw.followups;
+    } catch {
+      return undefined;
+    }
   }
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw)) raw = [raw];
@@ -403,10 +407,18 @@ function validationProblem(followups) {
     if (followup === null || typeof followup !== 'object') {
       return 'Error: each followup must be an object with a non-empty `prompt` string. Retry with valid followups.';
     }
-    if (typeof followup.prompt !== 'string' || followup.prompt.trim() === '') {
+    let prompt;
+    let label;
+    try {
+      prompt = followup.prompt;
+      label = followup.label;
+    } catch {
+      return 'Error: each followup must be an object with a non-empty `prompt` string. Retry with valid followups.';
+    }
+    if (typeof prompt !== 'string' || prompt.trim() === '') {
       return 'Error: each followup needs a non-empty `prompt` string (the message sent when the user clicks). Retry with valid followups.';
     }
-    if (followup.label !== undefined && (typeof followup.label !== 'string' || followup.label.trim() === '')) {
+    if (label !== undefined && (typeof label !== 'string' || label.trim() === '')) {
       return 'Error: `label` must be a short non-empty string when present. Retry with valid followups.';
     }
   }

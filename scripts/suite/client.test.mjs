@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId } from "../harness.mjs";
 import { loadClient, fakeSlotHost, stubFetch, walk, textOf, memoryStorage, fakeIntersectionObserver, fakeClipboard, dispatchDocument } from "../client-harness.mjs";
+import { FUZZ_COUNT, assertFollowupsShape, buildPayload, fuzzMessage } from "./fuzz-kit.mjs";
 import { root } from "../client-harness.mjs";
 
 suite("client: rendering, dictionaries and persistence");
@@ -4052,5 +4053,90 @@ test("an unmount during a regeneration aborts the fetch and frees the guard", as
     assertEqual(calls.length, 2, "the freed guard allows a new regeneration");
   } finally {
     client.fetchStub.restore();
+  }
+});
+
+suite("client: seeded payload fuzzing");
+
+function fuzzCapture() {
+  const storage = memoryStorage();
+  const client = loadClient({ storage });
+  const { ctx, registrations } = fakeSlotHost(client.react);
+  client.instance.apply(ctx);
+  const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+  assert(capture !== undefined, "the capture is registered");
+  const readBack = (callId) => {
+    const key = Object.keys(storage._data).find((name) => name.includes("captures.session.s1"));
+    if (key === undefined) return undefined;
+    const parsed = JSON.parse(storage._data[key]);
+    return parsed[callId]?.followups;
+  };
+  const reset = () => {
+    for (const key of Object.keys(storage._data)) delete storage._data[key];
+  };
+  return { capture, readBack, reset };
+}
+
+test("the capture keeps the followup shape under seeded fuzzing", () => {
+  const { capture, readBack, reset } = fuzzCapture();
+  for (let index = 0; index < FUZZ_COUNT; index += 1) {
+    const payload = buildPayload(index);
+    const callId = `call-${index}`;
+    reset();
+    capture.component({
+      sessionId: "s1",
+      callId,
+      block: {
+        kind: "tool-result",
+        callId,
+        name: "suggest_followups",
+        content: [{ type: "text", text: JSON.stringify(payload) }]
+      }
+    });
+    const followups = readBack(callId);
+    assertFollowupsShape(followups, { promptCap: 200, labelCap: null }, fuzzMessage(index, payload, "the capture keeps the followup shape"));
+  }
+});
+
+test("the capture reads the argsRaw channels under seeded fuzzing", () => {
+  const { capture, readBack, reset } = fuzzCapture();
+  for (let index = 0; index < 64; index += 1) {
+    const payload = buildPayload(index);
+    const callId = `call-${index}`;
+    const text = JSON.stringify(payload);
+    reset();
+    capture.component({
+      sessionId: "s1",
+      callId,
+      block: { kind: "tool-result", callId, name: "suggest_followups", argsRaw: text }
+    });
+    assertFollowupsShape(readBack(callId), { promptCap: 200, labelCap: null }, fuzzMessage(index, payload, "the argsRaw channel keeps the followup shape"));
+    reset();
+    capture.component({
+      sessionId: "s1",
+      callId,
+      block: { kind: "tool-result", callId, name: "suggest_followups", call: { argsRaw: text } }
+    });
+    assertFollowupsShape(readBack(callId), { promptCap: 200, labelCap: null }, fuzzMessage(index, payload, "the nested argsRaw channel keeps the followup shape"));
+  }
+});
+
+test("the capture unwraps a double-encoded payload under seeded fuzzing", () => {
+  const { capture, readBack, reset } = fuzzCapture();
+  for (let index = 0; index < 64; index += 1) {
+    const payload = buildPayload(index);
+    const callId = `call-${index}`;
+    reset();
+    capture.component({
+      sessionId: "s1",
+      callId,
+      block: {
+        kind: "tool-result",
+        callId,
+        name: "suggest_followups",
+        content: [{ type: "text", text: JSON.stringify(JSON.stringify(payload)) }]
+      }
+    });
+    assertFollowupsShape(readBack(callId), { promptCap: 200, labelCap: null }, fuzzMessage(index, payload, "the double-encoded payload keeps the followup shape"));
   }
 });
