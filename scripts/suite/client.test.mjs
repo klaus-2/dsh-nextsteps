@@ -2824,6 +2824,78 @@ test("the suggestion editor counts the characters against the configured cap", a
   }
 });
 
+test("the insert action places the prompt in the composer draft without sending", async () => {
+  const setDraftCalls = [];
+  let submitCalls = 0;
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = (name) => {
+      if (name === "sessions") return { binding: (id) => ({ id }) };
+      if (name === "conversation") return {
+        input: {
+          shell: () => ({
+            actions: {
+              setDraft: (text) => { setDraftCalls.push(text); },
+              submit: () => { submitCalls += 1; }
+            }
+          })
+        }
+      };
+      return undefined;
+    };
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const insert = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionInsertDraft");
+    assert(insert !== undefined, "the card offers the insert action");
+    assertEqual(insert.props["aria-keyshortcuts"], "i", "the insert action declares the shortcut");
+    await insert.props.onClick();
+    assertEqual(setDraftCalls, ["Rodar o build"], "the full prompt lands in the composer draft");
+    assertEqual(submitCalls, 0, "the insert action never submits");
+    const after = renderTail(client, tail, props);
+    const live = walk(after, (node) => node.props?.role === "status");
+    assertEqual(live[0].children.join(""), "srInserted", "the insert is announced");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the insert action degrades to a notice when the composer is unavailable", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    await settled(client);
+    ctx.get = () => undefined;
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const insert = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionInsertDraft");
+    await insert.props.onClick();
+    const after = renderTail(client, tail, props);
+    const live = walk(after, (node) => node.props?.role === "status");
+    assertEqual(live[0].children.join(""), "insertDraftUnavailable", "the missing composer is announced");
+    assert(warnings.length >= 1, `the degradation warns: ${warnings.length}`);
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
+  }
+});
+
 suite("harness: document event dispatch");
 
 test("the document stub records listeners, dispatches to them and detaches them", () => {
