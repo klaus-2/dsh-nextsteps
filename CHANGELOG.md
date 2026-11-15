@@ -6,6 +6,88 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-15
+
+This release ships the validated dev cycle: fully configurable card actions, a
+rebuilt settings page with tabs, a set of generation and privacy features, and
+several generation fixes observed in daily use.
+
+### Added
+
+- **Configurable card actions.** A new settings section shows a live preview of
+  the card action buttons and lets you reorder them, hide individual ones, or
+  uncheck everything to run the cards with no action row at all. Keyboard
+  shortcuts keep working regardless of what is shown.
+- **Rebuilt settings page with five tabs.** Generation, Cards, Privacy,
+  Favourites and About now live in separate sections with sectioned cards, bold
+  labels and a tip under every setting, replacing the single long list.
+- **Confirm before sending.** An optional setting turns the first click on a
+  card into an armed state — the card highlights, a confirmation row appears,
+  and the second click sends. Cancelling the editor disarms it.
+- **Insert into the composer.** A card action places the prompt in the composer
+  draft without sending, so you can edit it first.
+- **Regenerate a single card.** One suggestion can be replaced by a fresh
+  single-card generation while the rest of the round stays intact.
+- **Per-conversation generation model.** The conversation options panel can pick
+  a model that rides the generate request, alongside the language and followups
+  overrides.
+- **Avoid already-sent suggestions.** The generator receives the prompts already
+  present in the conversation (clicked ones first) and is told not to repeat
+  them.
+- **Card origin labels.** The header of each round names where the suggestions
+  came from — the model behind the clean call, or the turn's own reply when the
+  rewrite path ran — plus the language override when one is set.
+- **Safety badges.** Heuristic checks flag suggestions that look like
+  prompt-injection attempts or carry credential-like strings; the card shows a
+  badge and sending stays possible.
+- **Favourites management.** Search, edit the text, bulk copy or remove, JSON
+  export and import for backup and moving between machines, and drag or keyboard
+  reordering; the Markdown export follows the saved order.
+- **Private conversations.** A switch in the conversation options keeps that
+  conversation's cards memory-only, purges its stored records and drops its
+  audit entries; the panel warns if the storage refuses the purge.
+- **Retention.** An optional age limit (0-365 days) deletes stored suggestions
+  in the background, keeping favourites.
+- **Local audit log.** The settings page lists when suggestions were generated
+  and sent, identified by a short hash and length only — never the text — with
+  one button to clear it.
+- **Minimal transcript scope.** An optional setting sends the generator only the
+  last user and assistant messages of the turn instead of the whole transcript.
+- **Elapsed time and character counter.** An mm:ss counter under the answer
+  while suggestions generate, and a remaining-characters counter in the editor.
+- **Redacted logs.** The plugin's log lines carry error codes, identifiers and
+  metrics, never suggestion text; a suite tripwire guards that.
+
+### Changed
+
+- **The settings page is organised in five tabs** instead of one long list, and
+  every card action runs on the first click — the action row no longer swallows
+  clicks to reveal itself first.
+- **The default latency budget rose from 30 to 60 seconds**, so slower models
+  stop hitting the timeout out of the box; the setting still spans 5-120
+  seconds. Timeout failures now carry a hint pointing at the budget setting.
+- **The armed send is visually obvious**: the card highlights and a framed
+  confirmation row appears, so a double-click that was actually the
+  confirmation can no longer be mistaken for a broken button.
+- **The undo chip follows the discarded turn** instead of repeating under every
+  later round of the same conversation.
+
+### Fixed
+
+- **A rewrite registered by one turn no longer leaks into later turns.** When
+  the answering model had already produced draft cards for turn 1, later turns
+  used to inherit those suggestions as "via rewrite"; each turn now serves only
+  its own rewrite and otherwise falls back to the clean transcript call.
+- **The origin label no longer duplicates its source** ("via rewrite (rewrite)")
+  and moves to the round header instead of sitting under the last card.
+
+### Removed
+
+- **The in-app install route on the plugin's loopback server.** Updates install
+  through the dsh plugin manager only; the loopback pnpm install path had
+  already been superseded and now answers 404.
+
+
 ## [1.8.1] — 2026-11-14
 
 ### Fixed

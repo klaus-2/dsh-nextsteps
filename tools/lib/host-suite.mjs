@@ -718,89 +718,33 @@ export async function runHostSuite(harness, { pluginDir }) {
         const brokenRegistry = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
         harness.check("a registry failure answers with an error", brokenRegistry.update?.error !== undefined, JSON.stringify(brokenRegistry).slice(0, 140));
       });
-      const badVersion = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "abc" }) });
-      harness.check("a malformed version is refused", badVersion.status === 400);
-      const overlong = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "9999999.0.0" }) });
-      harness.check("a version the panel cannot name is not installable", overlong.status === 400, `status=${overlong.status}`);
-      const local = await (await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: pluginVersion }) })).json();
-      harness.check("a development copy refuses the in-app install", local.ok === false && local.error === "local-development", JSON.stringify(local));
+      const removed = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "9.9.9" }) });
+      harness.check("the in-app install route was removed and answers 404", removed.status === 404, `status=${removed.status}`);
+      const removedBody = await removed.json();
+      harness.check("the removed install route explains itself", removedBody.error === "not found", JSON.stringify(removedBody));
       const running = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
       harness.check("the running copy is not reported as a pending install", running.update.installed === undefined, JSON.stringify({ installed: running.installed, updateInstalled: running.update.installed }));
     }
 
-    harness.section("host: the install route answers what landed");
+    harness.section("host: the in-app install route stays removed");
     {
       const staged = await mkdtemp(path.join(tmpdir(), "dsh-regression-install-"));
       try {
-        const stub = path.join(staged, "pnpm.cjs");
-        await writeFile(stub, [
-          "const fs = require('node:fs');",
-          "const path = require('node:path');",
-          "const spec = process.argv[process.argv.indexOf('add') + 1] ?? '';",
-          "const version = spec.slice(spec.lastIndexOf('@') + 1);",
-          "const land = process.env.DSH_TEST_LAND ?? version;",
-          "if (process.env.DSH_TEST_HANG === '1') {",
-          "  console.log('Progress: resolved 1, reused 0, downloaded 0, added 0');",
-          "  setTimeout(() => {}, 600000);",
-          "} else {",
-          "  const pkg = path.join(process.env.DSH_TEST_PKG_DIR, 'package.json');",
-          "  fs.writeFileSync(pkg, JSON.stringify({ name: 'dsh-nextsteps', version: land }));",
-          "  console.log('Done in 1s');",
-          "}"
-        ].join("\n"));
         await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", version: pluginVersion }));
         await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
-        const previousRuntime = process.env.DSH_RUNTIME_PNPM;
-        const previousPkgDir = process.env.DSH_TEST_PKG_DIR;
-        process.env.DSH_RUNTIME_PNPM = stub;
-        process.env.DSH_TEST_PKG_DIR = staged;
+        const installModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
+        const installServer = await installModule.startServer({ port: await freePort() });
+        const installPort = installServer.port ?? installServer.address().port;
+        const installBase = `http://127.0.0.1:${installPort}`;
         try {
-          const installModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
-          const installServer = await installModule.startServer({ port: await freePort() });
-          const installPort = installServer.port ?? installServer.address().port;
-          const installBase = `http://127.0.0.1:${installPort}`;
-          try {
-            const exact = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
-            harness.check("the route names the version that landed", exact.ok === true && exact.installed === "9.9.9", JSON.stringify(exact));
-            process.env.DSH_TEST_LAND = "9.9.8";
-            const held = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
-            harness.check("a version other than the one asked for is a success that names what landed", held.ok === true && held.installed === "9.9.8", JSON.stringify(held));
-            delete process.env.DSH_TEST_LAND;
-            process.env.DSH_TEST_HANG = "1";
-            const previousTimeout = process.env.DSH_PNPM_TIMEOUT_MS;
-            process.env.DSH_PNPM_TIMEOUT_MS = "700";
-            try {
-              const hung = await (await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) })).json();
-              harness.check("a stopped run is not reported as a success", hung.ok === false, JSON.stringify(hung));
-              harness.check("the reason names the stop, not a line of pnpm output", typeof hung.error === "string" && hung.error.includes("stopped") && !hung.error.includes("Progress"), JSON.stringify(hung));
-            } finally {
-              delete process.env.DSH_TEST_HANG;
-              if (previousTimeout === undefined) delete process.env.DSH_PNPM_TIMEOUT_MS;
-              else process.env.DSH_PNPM_TIMEOUT_MS = previousTimeout;
-            }
-            process.env.DSH_TEST_HANG = "1";
-            process.env.DSH_PNPM_TIMEOUT_MS = "3000";
-            try {
-              const first = fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
-              await flush(2);
-              const second = await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
-              harness.check("a second install is refused while the first runs", second.status === 409, `status=${second.status}`);
-              const refused = await second.json();
-              harness.check("the refused install says why", refused.ok === false && refused.error === "install-in-progress", JSON.stringify(refused));
-              await first;
-            } finally {
-              delete process.env.DSH_TEST_HANG;
-              if (previousTimeout === undefined) delete process.env.DSH_PNPM_TIMEOUT_MS;
-              else process.env.DSH_PNPM_TIMEOUT_MS = previousTimeout;
-            }
-          } finally {
-            await installServer.close?.();
-          }
+          const gone = await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
+          harness.check("the install route answers 404 on a staged server too", gone.status === 404, `status=${gone.status}`);
+          const goneBody = await gone.json();
+          harness.check("the removed install route explains itself on a staged server", goneBody.error === "not found", JSON.stringify(goneBody));
+          const update = await (await fetch(`${installBase}/.ns/update`, { headers: { [secretHeader]: secret } })).json();
+          harness.check("the update route keeps answering on a staged server", update.ok === true, JSON.stringify(update).slice(0, 140));
         } finally {
-          if (previousRuntime === undefined) delete process.env.DSH_RUNTIME_PNPM;
-          else process.env.DSH_RUNTIME_PNPM = previousRuntime;
-          if (previousPkgDir === undefined) delete process.env.DSH_TEST_PKG_DIR;
-          else process.env.DSH_TEST_PKG_DIR = previousPkgDir;
+          await installServer.close?.();
         }
       } finally {
         await rm(staged, { recursive: true, force: true });
