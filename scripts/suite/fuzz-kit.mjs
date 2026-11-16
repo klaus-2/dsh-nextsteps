@@ -125,8 +125,9 @@ export function assertFollowupsShape(list, { promptCap, labelCap = 40, max = 6 }
   for (const item of list) {
     if (item === null || typeof item !== "object" || Array.isArray(item)) fail(`a card is ${JSON.stringify(item)?.slice(0, 60)}, not an object`);
     for (const key of Object.keys(item)) {
-      if (key !== "prompt" && key !== "label") fail(`a card carries the unexpected key ${key}`);
+      if (key !== "prompt" && key !== "label" && key !== "style") fail(`a card carries the unexpected key ${key}`);
     }
+    if (item.style !== undefined && typeof item.style !== "string") fail(`the style is ${typeof item.style}, not a string or undefined`);
     if (typeof item.prompt !== "string") fail(`the prompt is ${typeof item.prompt}, not a string`);
     if (item.prompt.trim() === "") fail("the prompt is empty or whitespace");
     if (item.prompt.length > promptCap) fail(`the prompt carries ${item.prompt.length} chars, over the cap of ${promptCap}`);

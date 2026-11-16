@@ -60,6 +60,13 @@ dsh plugin --profile web add dsh-nextsteps
 - **Elapsed time while generating** — an mm:ss counter under the answer, in both generation modes.
 - **Character counter** in the editor, against the configured suggestion length.
 - **Gear icon** in the card header opens the plugin's settings page when the host exposes the navigation service.
+- **Collapse a turn's cards** — the header button folds that turn's card group away and brings it back; the collapsed state persists per conversation and turn.
+- **Duplicate favourites are refused** — favouriting a text that only differs from an existing favourite by whitespace shows the duplicate notice and skips the add; identical text keeps the usual toggle.
+- **Custom instruction** — a free-text field in the settings (and per conversation in the options panel) that the generator receives as data; the per-conversation value replaces the global one.
+- **Clear the discarded list** — an armed button in the settings empties every persisted discard at once.
+- **Not relevant** — a card action that flags a suggestion in place and feeds it to the generator's avoid list (after the already-sent prompts), reversible with a second click.
+- **Style badge** — a card can carry a small badge naming the angle the generator gave it — Next action, Explore or Deep dive.
+- **Pause suggestions** — a conversation options switch that stops all generation for that conversation; cards captured while paused stay stored but hidden until you resume.
 - An incremental capture history: each session keeps its own key and an index tracks the order, so a session you never open is never read.
 - Settings page inside the dsh settings — language, followups per turn, styles, generation mode, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates.
 - An explicit language (or an explicit model) switches to a separate clean model call, so the cards hold that language even in a conversation written in another one; `Auto` with no model follows the conversation inside the turn.

@@ -6,97 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [1.9.1] - 2026-11-15
-
-### Changed
-
-- **Package metadata rebuilt for plugin-directory search.** The npm description now
-  covers the terms people actually search ("follow-up prompts", "suggested next
-  steps", "clickable cards") and states the 15-language support up front; keywords
-  expand from 8 to 20 across the follow-up/followup/next-step spelling variants
-  plugin directories match on.
-
-## [1.9.0] - 2026-11-15
-
-This release ships the validated dev cycle: fully configurable card actions, a
-rebuilt settings page with tabs, a set of generation and privacy features, and
-several generation fixes observed in daily use.
+## [1.10.0] - 2026-11-16
 
 ### Added
 
-- **Configurable card actions.** A new settings section shows a live preview of
-  the card action buttons and lets you reorder them, hide individual ones, or
-  uncheck everything to run the cards with no action row at all. Keyboard
-  shortcuts keep working regardless of what is shown.
-- **Rebuilt settings page with five tabs.** Generation, Cards, Privacy,
-  Favourites and About now live in separate sections with sectioned cards, bold
-  labels and a tip under every setting, replacing the single long list.
-- **Confirm before sending.** An optional setting turns the first click on a
-  card into an armed state — the card highlights, a confirmation row appears,
-  and the second click sends. Cancelling the editor disarms it.
-- **Insert into the composer.** A card action places the prompt in the composer
-  draft without sending, so you can edit it first.
-- **Regenerate a single card.** One suggestion can be replaced by a fresh
-  single-card generation while the rest of the round stays intact.
-- **Per-conversation generation model.** The conversation options panel can pick
-  a model that rides the generate request, alongside the language and followups
-  overrides.
-- **Avoid already-sent suggestions.** The generator receives the prompts already
-  present in the conversation (clicked ones first) and is told not to repeat
-  them.
-- **Card origin labels.** The header of each round names where the suggestions
-  came from — the model behind the clean call, or the turn's own reply when the
-  rewrite path ran — plus the language override when one is set.
-- **Safety badges.** Heuristic checks flag suggestions that look like
-  prompt-injection attempts or carry credential-like strings; the card shows a
-  badge and sending stays possible.
-- **Favourites management.** Search, edit the text, bulk copy or remove, JSON
-  export and import for backup and moving between machines, and drag or keyboard
-  reordering; the Markdown export follows the saved order.
-- **Private conversations.** A switch in the conversation options keeps that
-  conversation's cards memory-only, purges its stored records and drops its
-  audit entries; the panel warns if the storage refuses the purge.
-- **Retention.** An optional age limit (0-365 days) deletes stored suggestions
-  in the background, keeping favourites.
-- **Local audit log.** The settings page lists when suggestions were generated
-  and sent, identified by a short hash and length only — never the text — with
-  one button to clear it.
-- **Minimal transcript scope.** An optional setting sends the generator only the
-  last user and assistant messages of the turn instead of the whole transcript.
-- **Elapsed time and character counter.** An mm:ss counter under the answer
-  while suggestions generate, and a remaining-characters counter in the editor.
-- **Redacted logs.** The plugin's log lines carry error codes, identifiers and
-  metrics, never suggestion text; a suite tripwire guards that.
-
-### Changed
-
-- **The settings page is organised in five tabs** instead of one long list, and
-  every card action runs on the first click — the action row no longer swallows
-  clicks to reveal itself first.
-- **The default latency budget rose from 30 to 60 seconds**, so slower models
-  stop hitting the timeout out of the box; the setting still spans 5-120
-  seconds. Timeout failures now carry a hint pointing at the budget setting.
-- **The armed send is visually obvious**: the card highlights and a framed
-  confirmation row appears, so a double-click that was actually the
-  confirmation can no longer be mistaken for a broken button.
-- **The undo chip follows the discarded turn** instead of repeating under every
-  later round of the same conversation.
-
-### Fixed
-
-- **A rewrite registered by one turn no longer leaks into later turns.** When
-  the answering model had already produced draft cards for turn 1, later turns
-  used to inherit those suggestions as "via rewrite"; each turn now serves only
-  its own rewrite and otherwise falls back to the clean transcript call.
-- **The origin label no longer duplicates its source** ("via rewrite (rewrite)")
-  and moves to the round header instead of sitting under the last card.
-
-### Removed
-
-- **The in-app install route on the plugin's loopback server.** Updates install
-  through the dsh plugin manager only; the loopback pnpm install path had
-  already been superseded and now answers 404.
-
+- **Collapse a turn's cards** — a button in the turn header folds that turn's card group away and brings it back; the collapsed state persists per conversation and turn (memory-only for private conversations), and captures that arrive while collapsed join the hidden group.
+- **Duplicate favourites are refused** — favouriting a text that differs from an existing favourite only by whitespace shows the duplicate notice and skips the add; identical text keeps the usual toggle, and the comparison stays case-sensitive so code-like prompts are not falsely merged.
+- **Custom instruction for the suggestions** — a free-text settings field (capped at 500 characters) and a per-conversation field in the conversation options panel; the generator receives the text as data alongside the transcript, and the per-conversation value replaces the global one for its requests.
+- **Clear the discarded list** — an armed button next to the discarded list in the settings empties every persisted discard at once; in-memory private discards are unaffected.
+- **Mark a suggestion as not relevant** — a card action flags the suggestion in place (muted card, flag glyph, reversible) and feeds the marked prompts to the generator's avoid list, ordered after the already-sent prompts, so similar suggestions stop coming.
+- **Style badge on the card** — suggestions can carry their angle from the generator (`next-action`, `explore`, `deep-dive`); the card shows a small badge naming it, the rewrite re-attaches the original style by index, and unknown or absent styles render no badge (plugin revision `sf-3`).
+- **Pause suggestions in a conversation** — a switch in the conversation options stops every generation path for that conversation (auto, on-demand button and probe); captures that arrive while paused stay stored but hidden, and unpausing reveals them. The conversation reset also clears the pause.
 
 ## [1.8.1] — 2026-11-14
 

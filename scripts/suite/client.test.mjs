@@ -1980,6 +1980,836 @@ test("a favourite is reflected on the card before the storage write lands", asyn
   }
 });
 
+test("adding a favourite that differs only by internal whitespace shows the duplicate notice and skips the add", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Rodar o  build")]: { prompt: "Rodar o  build", label: null, at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const favorite = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionFavorite");
+    assert(favorite !== undefined, "the card offers the favourite action");
+    favorite.props.onClick();
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("favoriteDuplicate"), `the duplicate notice is shown: ${JSON.stringify(notice.children)}`);
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assertEqual(Object.keys(stored).length, 1, "the near duplicate is not added");
+    assert(stored[favoriteHash("Rodar o build")] === undefined, "the card prompt did not enter the store");
+    assert(stored[favoriteHash("Rodar o  build")] !== undefined, "the original favourite survives");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("adding a favourite that differs only by case is allowed because the comparison is case sensitive", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("RODAR O BUILD")]: { prompt: "RODAR O BUILD", label: null, at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const favorite = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionFavorite");
+    favorite.props.onClick();
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assertEqual(Object.keys(stored).length, 2, "the differently cased favourite is added");
+    assert(stored[favoriteHash("Rodar o build")] !== undefined, "the card prompt entered the store");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("toggling an existing favourite off and on keeps the original semantics", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.favorites": JSON.stringify({
+      [favoriteHash("Rodar o build")]: { prompt: "Rodar o build", label: null, at: 1000 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const off = renderTail(client, tail, props);
+    buttonsOf(off).find((node) => node.props?.["aria-label"] === "actionFavorite").props.onClick();
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.favorites"])[favoriteHash("Rodar o build")], undefined, "the first click removes the favourite");
+    const on = renderTail(client, tail, props);
+    buttonsOf(on).find((node) => node.props?.["aria-label"] === "actionFavorite").props.onClick();
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.favorites"]);
+    assert(stored[favoriteHash("Rodar o build")] !== undefined, "the second click adds the favourite back");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("collapsed turn renders its header with an expand affordance and hides its cards", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    assertEqual(itemsOf(rendered).length, 1, "the cards render before collapsing");
+    const collapseButton = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "collapseGroup");
+    assert(collapseButton !== undefined, "the header offers the collapse toggle");
+    collapseButton.props.onClick();
+    const collapsed = renderTail(client, tail, props);
+    assertEqual(cardsOf(collapsed).length, 0, "the collapsed group hides its cards");
+    const expandButton = buttonsOf(collapsed).find((node) => node.props?.["aria-label"] === "expandGroup");
+    assert(expandButton !== undefined, "the collapsed header keeps the expand affordance");
+    assert(walk(collapsed, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-header-row")).length === 1, "the collapsed group still renders the header row");
+    expandButton.props.onClick();
+    const expanded = renderTail(client, tail, props);
+    assertEqual(itemsOf(expanded).length, 1, "expanding brings the cards back");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("captures arriving while a turn is collapsed join the hidden group and appear after expand", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "collapseGroup").props.onClick();
+    capture.component({ sessionId: "s1", callId: "call-2", block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Segunda sugestão", label: "Segunda" }] }) }] } });
+    const hidden = renderTail(client, tail, props);
+    assertEqual(cardsOf(hidden).length, 0, "the late capture joins the hidden group");
+    buttonsOf(hidden).find((node) => node.props?.["aria-label"] === "expandGroup").props.onClick();
+    const expanded = renderTail(client, tail, props);
+    assertEqual(itemsOf(expanded).length, 2, "expanding reveals both captures");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("collapse state persists across tail re renders for non private sessions", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    buttonsOf(renderTail(client, tail, props)).find((node) => node.props?.["aria-label"] === "collapseGroup").props.onClick();
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.collapsed"]), ["s1|1"], "the collapsed key reaches the persisted store");
+    const second = loadClient({ storage, routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+    try {
+      const { ctx: ctx2, registrations: regs2 } = fakeSlotHost(second.react);
+      second.instance.apply(ctx2);
+      const capture2 = regs2.find((entry) => entry.spec?.name === "tool.call.toolview");
+      capture2.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+      const tail2 = tailOf(regs2);
+      const restarted = renderTail(second, tail2, props);
+      assertEqual(cardsOf(restarted).length, 0, "the reloaded tail starts collapsed");
+      assert(buttonsOf(restarted).find((node) => node.props?.["aria-label"] === "expandGroup") !== undefined, "the reloaded tail offers the expand affordance");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("collapse writes stay memory only for private sessions", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "collapseGroup").props.onClick();
+    const collapsed = renderTail(client, tail, props);
+    assertEqual(cardsOf(collapsed).length, 0, "the private collapse still hides the cards in memory");
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.collapsed"), null, "no collapsed store is written");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("collapsed map caps at 40 entries and evicts the oldest", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    for (let turn = 1; turn <= 41; turn += 1) {
+      capture.component({ sessionId: "s1", callId: `call-${turn}`, block: { kind: "tool-result", callId: `call-${turn}`, name: "suggest_followups", turn, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: `Prompt ${turn}`, label: `L ${turn}` }] }) }] } });
+    }
+    const tail = tailOf(registrations);
+    for (let turn = 1; turn <= 41; turn += 1) {
+      const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn }, seq: 9, t: (key) => key });
+      const button = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "collapseGroup");
+      assert(button !== undefined, `the header offers the collapse toggle for turn ${turn}`);
+      button.props.onClick();
+    }
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.collapsed"]);
+    assertEqual(stored.length, 40, "the collapsed map caps at 40 entries");
+    assert(stored.includes("s1|1") === false, "the oldest entry is evicted");
+    assert(stored.includes("s1|41") === true, "the newest entry is kept");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("settings textarea saves the global custom instruction", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const textarea = walk(rendered, (node) => node.type === "textarea" && node.props?.["aria-label"] === "customInstruction")[0];
+    assert(textarea !== undefined, "the settings page offers the custom instruction field");
+    await textarea.props.onChange({ target: { value: "prefira perguntas curtas" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const saveCall = client.fetchStub.calls.find((call) => call.url.endsWith(".settings") && call.method === "POST");
+    assert(saveCall !== undefined, "the settings save reaches the host");
+    assertEqual(JSON.parse(saveCall.body).customInstruction, "prefira perguntas curtas", "the typed instruction is sent to the host");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("conversation options panel stores a per session instruction and sends it as the body override", async () => {
+  const generateBodies = [];
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      generateBodies.push(String(init?.body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "Gerado", label: "Host" }] };
+    }
+  });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    const textarea = walk(open, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    assert(textarea !== undefined, "the conversation options panel offers the instruction field");
+    textarea.props.onChange({ target: { value: "foco em codigo" } });
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(client.storage.getItem("dsh-nextsteps.session-instructions")).s1, "foco em codigo", "the instruction persists per session");
+    const after = renderTail(client, tail, props);
+    const langSelect = walk(after, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    assert(langSelect !== undefined, "the panel offers the language override");
+    langSelect.props.onChange({ target: { value: "en" } });
+    renderTail(client, tail, props);
+    await settled(client);
+    assert(generateBodies.length > 0, "the host mode generation request was sent");
+    assertEqual(JSON.parse(generateBodies[0]).customInstruction, "foco em codigo", "the per session instruction rides the generate body");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("session instruction does not change the settings signature", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    const settingsPostsBefore = client.fetchStub.calls.filter((call) => call.url.endsWith(".settings") && call.method === "POST").length;
+    const textarea = walk(open, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    textarea.props.onChange({ target: { value: "so local" } });
+    const after = renderTail(client, tail, props);
+    walk(after, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    const settingsPosts = client.fetchStub.calls.filter((call) => call.url.endsWith(".settings") && call.method === "POST");
+    assertEqual(settingsPosts.length, settingsPostsBefore, "the per session instruction never POSTs the global settings");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("conversation reset clears the per session instruction", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    walk(open, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0].props.onChange({ target: { value: "para apagar" } });
+    client.instance.flushWrites();
+    assert(client.storage.getItem("dsh-nextsteps.session-instructions") !== null, "the instruction is stored before the reset");
+    const open2 = renderTail(client, tail, props);
+    buttonsOf(open2).find((node) => node.props?.["aria-label"] === "sessionReset").props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.session-instructions"), null, "the reset removes the per session instruction");
+    const open3 = renderTail(client, tail, props);
+    buttonsOf(open3).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open4 = renderTail(client, tail, props);
+    const textarea = walk(open4, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    assertEqual(textarea.props.value, "", "the instruction field comes back empty");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("session instructions map caps at 40 entries", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    for (let index = 1; index <= 41; index += 1) {
+      capture.component({ sessionId: `s${index}`, callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: `Prompt ${index}`, label: "L" }] }) }] } });
+    }
+    const tail = tailOf(registrations);
+    for (let index = 1; index <= 41; index += 1) {
+      const props = { sessionId: `s${index}`, turn: { turn: 1 }, seq: 9, t: (key) => key };
+      let open = renderTail(client, tail, props);
+      assert(open !== null, `the tail renders for session s${index}`);
+      let textarea = walk(open, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+      if (textarea === undefined) {
+        buttonsOf(open).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+        open = renderTail(client, tail, props);
+        textarea = walk(open, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+      }
+      assert(textarea !== undefined, `the panel offers the instruction field for session s${index}`);
+      textarea.props.onChange({ target: { value: `instruction ${index}` } });
+    }
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.session-instructions"]);
+    assertEqual(Object.keys(stored).length, 40, "the session instructions map caps at 40 entries");
+    assert(stored.s1 === undefined, "the oldest instruction is evicted");
+    assert(stored.s41 === "instruction 41", "the newest instruction is kept");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+async function pauseToggleOf(client, tail, props) {
+  let opened = renderTail(client, tail, props);
+  let label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPause"))[0];
+  if (label === undefined) {
+    buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    opened = renderTail(client, tail, props);
+    label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPause"))[0];
+  }
+  assert(label !== undefined, "the pause toggle is rendered");
+  return { opened, checkbox: walk(label, (node) => node.type === "input" && node.props?.type === "checkbox")[0] };
+}
+
+test("pause checkbox stores the session as paused and persists across reload", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    assertEqual(checkbox.props.checked, false, "the pause toggle starts off");
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.paused-sessions"]), { s1: true }, "the paused flag is stored");
+    const second = loadClient({ storage, routes: { "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } } });
+    try {
+      const { ctx: ctx2, registrations: regs2 } = fakeSlotHost(second.react);
+      second.instance.apply(ctx2);
+      const capture2 = regs2.find((entry) => entry.spec?.name === "tool.call.toolview");
+      capture2.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+      const tail2 = tailOf(regs2);
+      const restarted = renderTail(second, tail2, props);
+      assertEqual(cardsOf(restarted).length, 0, "the reloaded tail starts paused and hides the cards");
+      const { checkbox: restartedBox } = await pauseToggleOf(second, tail2, props);
+      assertEqual(restartedBox.props.checked, true, "the reloaded tail reads the stored flag");
+    } finally {
+      second.fetchStub.restore();
+    }
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("captures arriving while paused are stored but hidden from the tail", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    capture.component({ sessionId: "s1", callId: "call-2", block: { kind: "tool-result", callId: "call-2", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Segunda sugestão", label: "Segunda" }] }) }] } });
+    client.instance.flushWrites();
+    const stored = JSON.parse(client.storage.getItem("dsh-nextsteps.captures.session.s1"));
+    assert(stored["call-2"] !== undefined, "the late capture is stored while paused");
+    const hidden = renderTail(client, tail, props);
+    assertEqual(cardsOf(hidden).length, 0, "the paused tail hides the stored captures");
+    const { checkbox: uncheck } = await pauseToggleOf(client, tail, props);
+    uncheck.props.onChange({ target: { checked: false } });
+    const restored = renderTail(client, tail, props);
+    assertEqual(itemsOf(restored).length, 2, "unpausing reveals the stored captures");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("tail still renders the options panel when paused with no visible captures", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    const paused = renderTail(client, tail, props);
+    assertEqual(cardsOf(paused).length, 0, "no capture is visible while paused");
+    assert(buttonsOf(paused).find((node) => node.props?.["aria-label"] === "sessionOptions") !== undefined, "the options panel stays reachable");
+    const { checkbox: pausedBox } = await pauseToggleOf(client, tail, props);
+    assertEqual(pausedBox.props.checked, true, "the pause flag reads back checked");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("paused session skips the auto effect and hides generate now", async () => {
+  const generateBodies = [];
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, generationMode: "on-demand" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      generateBodies.push(body);
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "Gerado", label: "Host" }] };
+    }
+  });
+  try {
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    renderTail(client, tail, props);
+    await settled(client);
+    renderTail(client, tail, props);
+    await settled(client);
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    const paused = renderTail(client, tail, props);
+    assert(paused !== null, "the paused on demand tail still renders");
+    assert(buttonsOf(paused).find((node) => node.children.includes("generateNow")) === undefined, "the generate now button hides while paused");
+    const callsBeforePause = generateBodies.length;
+    renderTail(client, tail, props);
+    await settled(client);
+    assertEqual(generateBodies.length, callsBeforePause, "no new probe or generation fires while paused");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("unpausing restores rendering and restarts the auto effect", async () => {
+  const generateBodies = [];
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      generateBodies.push(String(init?.body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "Gerado", label: "Host" }] };
+    }
+  });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    let state = await pauseToggleOf(client, tail, props);
+    state.checkbox.props.onChange({ target: { checked: true } });
+    let opened = renderTail(client, tail, props);
+    const langSelect = walk(opened, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0];
+    langSelect.props.onChange({ target: { value: "en" } });
+    renderTail(client, tail, props);
+    await settled(client);
+    assertEqual(generateBodies.length, 0, "the paused host session generates nothing");
+    state = await pauseToggleOf(client, tail, props);
+    state.checkbox.props.onChange({ target: { checked: false } });
+    renderTail(client, tail, props);
+    await settled(client);
+    assert(generateBodies.length > 0, "unpausing restarts the auto generation");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("session reset clears the paused flag", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    assert(storage._data["dsh-nextsteps.paused-sessions"] !== undefined, "the paused flag is stored before the reset");
+    let opened = renderTail(client, tail, props);
+    if (buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionReset") === undefined) {
+      buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+      opened = renderTail(client, tail, props);
+    }
+    buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionReset").props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.paused-sessions"), null, "the reset removes the paused flag");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("pause writes stay memory only for private sessions", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const { checkbox } = await pauseToggleOf(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    const paused = renderTail(client, tail, props);
+    assertEqual(cardsOf(paused).length, 0, "the private paused tail still hides the cards in memory");
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.paused-sessions"), null, "no paused store is written");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+function notRelevantButtonOf(item) {
+  return buttonsOf(item).find((node) => node.props?.["aria-label"] === "actionNotRelevant");
+}
+
+test("not relevant toggles the mark and shows a notice both ways", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Primeira sugestão", label: "A" }, { prompt: "Segunda sugestão", label: "B" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const button = notRelevantButtonOf(itemsOf(rendered)[0]);
+    assert(button !== undefined, "the card offers the not relevant action");
+    assertEqual(button.children[0], "⚐", "the card starts unmarked");
+    button.props.onClick();
+    const after = renderTail(client, tail, props);
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("notRelevantMarked"), `the mark is announced: ${JSON.stringify(notice.children)}`);
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.not-relevant"]).s1, [favoriteHash("Primeira sugestão")], "the mark persists keyed by the prompt hash");
+    const markedItem = itemsOf(after)[0];
+    assert(String(markedItem.props.className).includes("dsh-sf-marked"), "the marked item renders muted");
+    assertEqual(notRelevantButtonOf(markedItem).children[0], "⚑", "the marked button shows the filled flag");
+    assert(walk(markedItem, (node) => node.props?.["aria-label"] === "actionNotRelevant" && node.children[0] === "⚐").length === 1, "the flagged content carries the flag glyph");
+    notRelevantButtonOf(markedItem).props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.not-relevant"), null, "unmarking removes the store");
+    const after2 = renderTail(client, tail, props);
+    const notice2 = walk(after2, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice2.children.join("").includes("notRelevantUnmarked"), `the unmark is announced: ${JSON.stringify(notice2.children)}`);
+    assertEqual(String(itemsOf(after2)[0].props.className).includes("dsh-sf-marked"), false, "the unmarked item loses the muted style");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("marked cards render muted with the flag and persist after send", async () => {
+  const { client, ctx, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const sent = [];
+    sendStub(ctx, sent);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Enviar depois de marcar", label: "S" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    notRelevantButtonOf(itemsOf(rendered)[0]).props.onClick();
+    client.instance.flushWrites();
+    await cardsOf(rendered)[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(sent.length, 1, "the marked card still sends");
+    assertEqual(JSON.parse(client.storage.getItem("dsh-nextsteps.not-relevant")).s1, [favoriteHash("Enviar depois de marcar")], "the mark survives the send");
+    const after = renderTail(client, tail, props);
+    assert(String(itemsOf(after)[0].props.className).includes("dsh-sf-marked"), "the sent card still renders muted");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("marked suggestions land in the avoid feed between clicked and rest", async () => {
+  const generateBodies = [];
+  const { client, ctx, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      generateBodies.push(String(init?.body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "Gerado", label: "Host" }] };
+    }
+  });
+  try {
+    const sent = [];
+    sendStub(ctx, sent);
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Sugestao clicada", label: "A" }, { prompt: "Sugestao marcada", label: "B" }, { prompt: "Sugestao comum", label: "C" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    await cardsOf(rendered)[0].props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    notRelevantButtonOf(itemsOf(rendered)[1]).props.onClick();
+    client.instance.flushWrites();
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    walk(open, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0].props.onChange({ target: { value: "en" } });
+    renderTail(client, tail, props);
+    await settled(client);
+    assert(generateBodies.length > 0, "the host generation request was sent");
+    const avoid = JSON.parse(generateBodies.at(-1)).avoid;
+    assertEqual(avoid[0], "Sugestao clicada", "the clicked prompt leads the feed");
+    assertEqual(avoid[1], "Sugestao marcada", "the marked prompt comes between clicked and rest");
+    assertEqual(avoid[2], "Sugestao comum", "the ordinary prompt follows the marked one");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("avoid feed keeps the 20 by 200 cap with marks present", async () => {
+  const generateBodies = [];
+  const longPrompt = "p".repeat(300);
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      generateBodies.push(String(init?.body));
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "Gerado", label: "Host" }] };
+    }
+  });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    for (let group = 0; group < 5; group += 1) {
+      capture.component({
+        sessionId: "s1",
+        callId: `call-${group}`,
+        block: { kind: "tool-result", callId: `call-${group}`, name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: Array.from({ length: 5 }, (_, index) => ({ prompt: group === 0 && index === 4 ? longPrompt : `Prompt ${group * 5 + index}`, label: "L" })) }) }] }
+      });
+    }
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const items = itemsOf(rendered);
+    notRelevantButtonOf(items[0]).props.onClick();
+    client.instance.flushWrites();
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    walk(open, (node) => node.type === "select" && node.props?.["aria-label"] === "setLanguage")[0].props.onChange({ target: { value: "en" } });
+    renderTail(client, tail, props);
+    await settled(client);
+    assert(generateBodies.length > 0, "the host generation request was sent");
+    const avoid = JSON.parse(generateBodies.at(-1)).avoid;
+    assertEqual(avoid.length, 20, "the feed stays capped at twenty");
+    assertEqual(avoid[0], "Prompt 0", "the mark leads the feed");
+    assert(avoid.includes("p".repeat(200)), "the oversized prompt enters sliced to 200 characters");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("conversation reset clears not relevant marks", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Marca para apagar", label: "M" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    notRelevantButtonOf(itemsOf(rendered)[0]).props.onClick();
+    client.instance.flushWrites();
+    assert(storage._data["dsh-nextsteps.not-relevant"] !== undefined, "the mark is stored before the reset");
+    buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    const open = renderTail(client, tail, props);
+    buttonsOf(open).find((node) => node.props?.["aria-label"] === "sessionReset").props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.not-relevant"), null, "the reset removes the marks");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("not relevant marks are purged with session records", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Marca da sessao um", label: "M" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    notRelevantButtonOf(itemsOf(rendered)[0]).props.onClick();
+    client.instance.flushWrites();
+    const before = JSON.parse(storage._data["dsh-nextsteps.not-relevant"]);
+    before.s2 = [favoriteHash("Marca da sessao dois")];
+    storage.setItem("dsh-nextsteps.not-relevant", JSON.stringify(before));
+    const pause = await pauseToggleOf(client, tail, props);
+    pause.checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    assert(storage._data["dsh-nextsteps.paused-sessions"] !== undefined, "the pause flag is stored before enabling private");
+    const { checkbox } = await openPrivateToggle(client, tail, props);
+    checkbox.props.onChange({ target: { checked: true } });
+    client.instance.flushWrites();
+    const after = JSON.parse(storage._data["dsh-nextsteps.not-relevant"]);
+    assert(after.s1 === undefined, "the session's marks are purged with its records");
+    assertEqual(after.s2, [favoriteHash("Marca da sessao dois")], "other sessions keep their marks");
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.paused-sessions"]), { s1: true }, "the pause flag survives the purge");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("not relevant writes stay memory only for private sessions", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Marca privada", label: "P" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    notRelevantButtonOf(itemsOf(rendered)[0]).props.onClick();
+    const after = renderTail(client, tail, props);
+    assert(String(itemsOf(after)[0].props.className).includes("dsh-sf-marked"), "the private mark renders from memory");
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.not-relevant"), null, "no marks store is written");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("card renders the style badge only when the style is valid", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Com estilo", label: "A", style: "explore" }, { prompt: "Estilo estranho", label: "B", style: "wild" }, { prompt: "Sem estilo", label: "C" }] }) }] } });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const badges = walk(rendered, (node) => node.props?.className === "dsh-sf-style");
+    assertEqual(badges.length, 1, "only the valid style renders a badge");
+    assertEqual(badges[0].children[0], "styleExplore", "the badge names the style");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("validateFollowups keeps a valid style and strips an unknown one", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Com estilo", label: "A", style: "deep-dive" }, { prompt: "Estilo estranho", label: "B", style: "wild" }] }) }] } });
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data["dsh-nextsteps.captures.session.s1"]);
+    assertEqual(stored["call-1"].followups[0].style, "deep-dive", "the valid style reaches the store");
+    assertEqual(stored["call-1"].followups[1].style, undefined, "the unknown style never reaches the store");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("typing an instruction keeps spaces in the field while the store trims them", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    let opened = renderTail(client, tail, props);
+    let textarea = walk(opened, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    if (textarea === undefined) {
+      buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+      opened = renderTail(client, tail, props);
+      textarea = walk(opened, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    }
+    textarea.props.onChange({ target: { value: "alpha " } });
+    const after = renderTail(client, tail, props);
+    const afterTextarea = walk(after, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    assertEqual(afterTextarea.props.value, "alpha ", "the field keeps the trailing space while typing");
+    client.instance.flushWrites();
+    assertEqual(JSON.parse(storage._data["dsh-nextsteps.session-instructions"]).s1, "alpha", "the store carries the trimmed value");
+    afterTextarea.props.onChange({ target: { value: "alpha beta gamma" } });
+    const typed = renderTail(client, tail, props);
+    assertEqual(walk(typed, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0].props.value, "alpha beta gamma", "multi word typing survives the re-render");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("session instruction writes stay memory only for private sessions", async () => {
+  const storage = privateStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", turn: 1, content: [{ type: "text", text: JSON.stringify({ rev: "sf-2", followups: [{ prompt: "Rodar o build", label: "Rodar build" }] }) }] } });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    let opened = renderTail(client, tail, props);
+    let textarea = walk(opened, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    if (textarea === undefined) {
+      buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+      opened = renderTail(client, tail, props);
+      textarea = walk(opened, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    }
+    textarea.props.onChange({ target: { value: "instrucao privada" } });
+    const after = renderTail(client, tail, props);
+    const afterTextarea = walk(after, (node) => node.type === "textarea" && node.props?.["aria-label"] === "sessionInstruction")[0];
+    assertEqual(afterTextarea.props.value, "instrucao privada", "the private instruction reads back from memory");
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.session-instructions"), null, "no session instructions store is written");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("two identical manual suggestions keep their own identity", async () => {
   const storage = memoryStorage();
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
@@ -3185,6 +4015,100 @@ test("bulk remove needs the confirming second click", async () => {
   }
 });
 
+test("clear discarded button arms on first click and clears the persisted store on confirm", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.discarded": JSON.stringify({
+      "call-1:0": { prompt: "Alpha prompt", label: null, at: 1000, sessionId: "s1", turn: 1 },
+      "call-2:0": { prompt: "Beta prompt", label: null, at: 2000, sessionId: "s1", turn: 2 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const clearButton = buttonsOf(rendered).find((node) => node.children.includes("discardedClear"));
+    assert(clearButton !== undefined, "the discarded list offers the clear button");
+    await clearButton.props.onClick();
+    const armed = settings.component({ t: (key) => key });
+    const armedButton = buttonsOf(armed).find((node) => node.children.includes("discardedClearConfirm"));
+    assert(armedButton !== undefined, "the first click arms the clear");
+    client.instance.flushWrites();
+    assertEqual(Object.keys(JSON.parse(storage._data["dsh-nextsteps.discarded"])).length, 2, "the first click clears nothing");
+    await armedButton.props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.discarded"), null, "the confirm removes the discarded store");
+    const after = settings.component({ t: (key) => key });
+    const notice = walk(after, (node) => node.props?.className === "dsh-sf-notice")[0];
+    assert(notice.children.join("").includes("discardedCleared"), `the clear is announced: ${JSON.stringify(notice.children)}`);
+    assert(buttonsOf(after).find((node) => node.children.includes("discardedClear")) === undefined, "the button hides when the list is empty");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("clear discarded button re-arms after the confirm window without clearing", async () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.discarded": JSON.stringify({
+      "call-1:0": { prompt: "Alpha prompt", label: null, at: 1000, sessionId: "s1", turn: 1 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const rendered = settings.component({ t: (key) => key });
+    const clearButton = buttonsOf(rendered).find((node) => node.children.includes("discardedClear"));
+    await clearButton.props.onClick();
+    const armed = settings.component({ t: (key) => key });
+    assert(buttonsOf(armed).find((node) => node.children.includes("discardedClearConfirm")) !== undefined, "the first click arms the clear");
+    await new Promise((resolve) => setTimeout(resolve, 4300));
+    const disarmed = settings.component({ t: (key) => key });
+    const reButton = buttonsOf(disarmed).find((node) => node.children.includes("discardedClear"));
+    assert(reButton !== undefined, "the confirm window disarms the clear");
+    client.instance.flushWrites();
+    assertEqual(Object.keys(JSON.parse(storage._data["dsh-nextsteps.discarded"])).length, 1, "the armed window cleared nothing");
+    await reButton.props.onClick();
+    const reArmed = settings.component({ t: (key) => key });
+    assert(buttonsOf(reArmed).find((node) => node.children.includes("discardedClearConfirm")) !== undefined, "a fresh click re-arms after the window");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("clear discarded leaves in-memory private session discards untouched", async () => {
+  const storage = privateStorage({
+    "dsh-nextsteps.discarded": JSON.stringify({
+      "call-2:0": { prompt: "Persisted discard", label: null, at: 500, sessionId: "s2", turn: 1 }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({ sessionId: "s1", callId: "call-1", block: captureBlock() });
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    const rendered = renderTail(client, tail, props);
+    const discard = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionDiscard");
+    assert(discard !== undefined, "the private card offers the discard action");
+    discard.props.onClick();
+    const hidden = renderTail(client, tail, props);
+    assertEqual(cardsOf(hidden).length, 0, "the private discard hides the card in memory");
+    client.instance.flushWrites();
+    assertEqual(Object.keys(JSON.parse(storage._data["dsh-nextsteps.discarded"])).length, 1, "the private discard never reached the persisted store");
+    const settings = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const clearButton = buttonsOf(settings.component({ t: (key) => key })).find((node) => node.children.includes("discardedClear"));
+    assert(clearButton !== undefined, "the settings page still sees the persisted discards");
+    await clearButton.props.onClick();
+    const armedButton = buttonsOf(settings.component({ t: (key) => key })).find((node) => node.children.includes("discardedClearConfirm"));
+    await armedButton.props.onClick();
+    client.instance.flushWrites();
+    assertEqual(client.storage.getItem("dsh-nextsteps.discarded"), null, "the confirm clears the persisted store");
+    const stillHidden = renderTail(client, tail, props);
+    assertEqual(cardsOf(stillHidden).length, 0, "the private in-memory discard survives the settings clear");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("the keyboard reorder persists the favourites order and the exports follow it", async () => {
   const seed = {
     [favoriteHash("Fav alpha")]: { prompt: "Fav alpha", label: null, at: 1000 },
@@ -3825,7 +4749,7 @@ test("the generate body carries the clicked prompts first under the avoid caps",
       "generated-1": { turn: 1, followups: [{ prompt: "clicked suggestion", label: null }, { prompt: longPrompt, label: null }], clickedId: "sf-clicked" },
       "manual-1-0": { turn: 1, followups: [{ prompt: "clicked suggestion", label: null }, ...plainPrompts.map((prompt) => ({ prompt, label: null }))], clickedId: "sf-plain" }
     }),
-    "dsh-nextsteps.clicked": JSON.stringify({ "sf-clicked": true })
+    "dsh-nextsteps.clicked": JSON.stringify({ "sf-clicked:0": true, "sf-plain:0": true })
   });
   const settings = { ...NEW_SETTINGS, generationMode: "on-demand" };
   const { client, registrations } = clientWithRoutes({
@@ -4688,12 +5612,13 @@ function cardsOf(tree) {
 }
 
 async function openPrivateToggle(client, tail, props) {
-  const rendered = renderTail(client, tail, props);
-  const options = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "sessionOptions");
-  assert(options !== undefined, "the conversation options open");
-  options.props.onClick();
-  const opened = renderTail(client, tail, props);
-  const label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0];
+  let opened = renderTail(client, tail, props);
+  let label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0];
+  if (label === undefined) {
+    buttonsOf(opened).find((node) => node.props?.["aria-label"] === "sessionOptions").props.onClick();
+    opened = renderTail(client, tail, props);
+    label = walk(opened, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0];
+  }
   assert(label !== undefined, "the private toggle is rendered");
   const checkbox = walk(label, (node) => node.type === "input" && node.props?.type === "checkbox")[0];
   return { opened, checkbox, labelOf: (tree) => walk(tree, (node) => node.type === "label" && node.children.includes("sessionPrivate"))[0] };

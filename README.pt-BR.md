@@ -60,6 +60,13 @@ dsh plugin --profile web add dsh-nextsteps
 - **Tempo decorrido na geração** — um contador mm:ss sob a resposta, nos dois modos de geração.
 - **Contador de caracteres** no editor, contra o tamanho de sugestão configurado.
 - **Engrenagem** no cabeçalho do cartão abre a página de configurações do plugin quando o host expõe o serviço de navegação.
+- **Recolher os cartões de um turno** — o botão no cabeçalho do turno guarda o grupo de cartões daquele turno e o traz de volta; o estado recolhido persiste por conversa e turno.
+- **Favorito duplicado é recusado** — favoritar um texto que só difere de um favorito existente por espaços mostra o aviso de duplicado e não adiciona; texto idêntico mantém o toggle de sempre.
+- **Instrução personalizada** — um campo livre nas configurações (e por conversa no painel de opções) que o gerador recebe como dado; o valor por conversa substitui o global.
+- **Limpar descartadas** — um botão armável nas configurações esvazia todas as descartadas persistidas de uma vez.
+- **Não é relevante** — ação do cartão que marca a sugestão no lugar e a envia para a lista de avoid do gerador (depois dos prompts já enviados), reversível com um segundo clique.
+- **Selo de estilo** — o cartão pode carregar um selo pequeno com o ângulo dado pelo gerador — Próxima ação, Explorar ou Aprofundar.
+- **Pausar sugestões** — uma opção no painel da conversa que interrompe toda a geração daquela conversa; cartões capturados durante a pausa ficam guardados, porém ocultos, até você retomar.
 - Um histórico de capturas incremental: cada sessão guarda sua própria chave e um índice registra a ordem, então uma sessão que você nunca abre nunca é lida.
 - Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações.
 - Um idioma explícito (ou um modelo explícito) passa a usar uma chamada limpa separada, então os cards mantêm esse idioma mesmo numa conversa escrita em outro; `Automático` sem modelo segue a conversa dentro do turno.

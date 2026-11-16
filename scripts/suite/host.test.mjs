@@ -1,5 +1,5 @@
 import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId, isDevCopy } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
@@ -9,6 +9,11 @@ import { assistantMessage, sessionOf, toolCall, turnEnd, userMessage } from "../
 suite("host: tool, settings and routes");
 
 const moduleUrl = new URL(`../../index.js?test=${Date.now()}`, import.meta.url);
+
+const settingsFileWrite = async (text) => {
+  mkdirSync(path.join(homedir(), ".dsh", pluginId), { recursive: true });
+  writeFileSync(path.join(homedir(), ".dsh", pluginId, "settings.json"), text);
+};
 
 delete process.env.DSH_NEXTSTEPS_FIXTURE;
 
@@ -1226,6 +1231,391 @@ test("the style rule reaches the inline section and the generator, and not the r
   assert(!rewrite.includes("Each prompt is at most"), "the rewrite prompt carries no length rule");
 });
 
+test("global custom instruction is appended to the generation system prompt", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const systems = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        systems.push(request.system ?? request.messages?.[0]?.content?.[0]?.text ?? "");
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Check the parser tests","label":"Parser"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery, llm } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "prefira perguntas curtas" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  const generator = systems.at(-1) ?? "";
+  assertIncludes(generator, "The user added this instruction for the suggestions", "the generator carries the instruction rule");
+  assertIncludes(generator, "prefira perguntas curtas", "the generator carries the instruction text");
+});
+
+test("global custom instruction is appended to the nextsteps section text", async () => {
+  const { ctx, routes, sections } = stubContext({});
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "prefira perguntas curtas" })
+  }));
+  const inline = sections[0].text();
+  assertIncludes(inline, "The user added this instruction for the suggestions", "the inline section carries the instruction rule");
+  assertIncludes(inline, "prefira perguntas curtas", "the inline section carries the instruction text");
+});
+
+test("per request custom instruction replaces the global one when set", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const systems = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        systems.push(request.system ?? request.messages?.[0]?.content?.[0]?.text ?? "");
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Check the parser tests","label":"Parser"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery, llm } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "global instruction alpha" })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9, customInstruction: "per conversation beta" })
+  }));
+  assertEqual(response.status, 200);
+  const generator = systems.at(-1) ?? "";
+  assertIncludes(generator, "per conversation beta", "the override instruction reaches the prompt");
+  assert(!generator.includes("global instruction alpha"), "the global instruction is replaced for this request");
+});
+
+test("custom instruction is capped at 500 characters", async () => {
+  const { ctx, routes } = stubContext({});
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "x".repeat(600) })
+  }));
+  const getResponse = await route.fetch(new Request("http://x"));
+  const getBody = await getResponse.json();
+  assertEqual(getBody.settings.customInstruction.length, 500, "the stored instruction is capped at 500 characters");
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: 42 })
+  }));
+  const junkResponse = await route.fetch(new Request("http://x"));
+  const junkBody = await junkResponse.json();
+  assertEqual(junkBody.settings.customInstruction.length, 500, "a non string instruction keeps the current one");
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "" })
+  }));
+  const clearedResponse = await route.fetch(new Request("http://x"));
+  const clearedBody = await clearedResponse.json();
+  assertEqual(clearedBody.settings.customInstruction, "", "an empty instruction clears the field");
+});
+
+test("custom instruction never reaches the rewrite system prompt", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-instr", name: "suggest_followups", arguments: "{}" } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const systems = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* (request) {
+        systems.push(request.system ?? request.messages?.[0]?.content?.[0]?.text ?? "");
+        yield { type: "text-delta", text: '{"followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => {
+    if (name === "llm") return llm;
+    if (name === "sessionQuery") return sessionQuery;
+    if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "demo", model: "demo-model" }) };
+    if (name === "systemPrompt") return { section: (spec) => sectionsBuffer.push(spec) };
+    return undefined;
+  };
+  const sectionsBuffer = [];
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "rewrite must not see this" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-instr", agent: { id: "s1" } });
+  await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const rewrite = systems.at(-1) ?? "";
+  assert(!rewrite.includes("rewrite must not see this"), "the rewrite prompt carries no custom instruction");
+  assert(!rewrite.includes("The user added this instruction"), "the rewrite prompt carries no instruction rule");
+});
+
+test("settings load sanitizes custom instruction in both branches", async () => {
+  const { ctx, routes } = stubContext({});
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customInstruction: "  keep me  " })
+  }));
+  const stored = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(stored.settings.customInstruction, "keep me", "the stored branch trims the instruction");
+  await settingsFileWrite("{ corrupted");
+  const corrupted = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(corrupted.settings.customInstruction, "", "the catch branch falls back to empty");
+  await settingsFileWrite(JSON.stringify({ customInstruction: "x".repeat(600) }));
+  const capped = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(capped.settings.customInstruction.length, 500, "the catch-free read also caps the instruction");
+});
+
+test("card actions validation accepts notRelevant", async () => {
+  const { ctx, routes } = stubContext({});
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cardActions: ["notRelevant", "copy", "bogus"] })
+  }));
+  const body = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(body.settings.cardActions, ["notRelevant", "copy"], "the validator keeps the new action and drops unknown ids");
+});
+
+test("followups from model text keep a valid style and drop unknown styles", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "please check the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes } = stubContext({
+    services: { sessionQuery },
+    llmText: JSON.stringify({ followups: [{ prompt: "Valid style", label: "A", style: "explore" }, { prompt: "Unknown style", label: "B", style: "wild" }, { prompt: "No style", label: "C" }] })
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups[0].style, "explore", "the valid style survives");
+  assertEqual(body.followups[1].style, undefined, "the unknown style is dropped");
+  assertEqual(body.followups[2].style, undefined, "the absent style stays absent");
+});
+
+test("parameter schema accepts an optional enum style and still rejects unknown item keys", async () => {
+  const { ctx, registered } = stubContext({});
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const items = registered[0].parameters.properties.followups.items;
+  assert(items.additionalProperties === false, "unknown item keys stay rejected");
+  assertEqual(items.required, ["prompt"], "the prompt stays the only required field");
+  assertEqual(items.properties.style.enum, ["next-action", "explore", "deep-dive"], "the style is an enum of the known ids");
+});
+
+test("fixture mode emits followups with styles", async () => {
+  await withFixtureEnv('[{"prompt":"Fixo","label":"Fixo","style":"explore"},{"prompt":"Sem estilo"}]', async () => {
+    const { post } = await fixtureContext();
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(body.followups[0].style, "explore", "the fixture style survives");
+    assertEqual(body.followups[1].style, undefined, "the fixture item without style stays bare");
+  });
+});
+
+test("rewrite re-attaches style by index and ignores the model echo", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-style-1", name: "suggest_followups", arguments: "{}" } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* () {
+        yield { type: "text-delta", text: JSON.stringify({ followups: [{ prompt: "Rodar testes", label: "Testes", style: "deep-dive" }] }) };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => {
+    if (name === "llm") return llm;
+    if (name === "sessionQuery") return sessionQuery;
+    if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "demo", model: "demo-model" }) };
+    if (name === "systemPrompt") return { section: () => {} };
+    return undefined;
+  };
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests", style: "next-action" }] }, { callId: "call-style-1", agent: { id: "s1" } });
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups[0].prompt, "Rodar testes", "the rewritten prompt arrives");
+  assertEqual(body.followups[0].style, "next-action", "the original style is re-attached by index");
+});
+
+test("rewrite with a different item count drops styles", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-style-2", name: "suggest_followups", arguments: "{}" } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* () {
+        yield { type: "text-delta", text: JSON.stringify({ followups: [{ prompt: "Rodar testes", label: "Testes" }, { prompt: "Extra item", label: "Extra" }] }) };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => {
+    if (name === "llm") return llm;
+    if (name === "sessionQuery") return sessionQuery;
+    if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "demo", model: "demo-model" }) };
+    if (name === "systemPrompt") return { section: () => {} };
+    return undefined;
+  };
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests", style: "next-action" }] }, { callId: "call-style-2", agent: { id: "s1" } });
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups.length, 2, "both rewritten items arrive");
+  assert(body.followups.every((entry) => entry.style === undefined), "the count mismatch drops every style");
+});
+
+test("rewrite does not adopt a style the model echoes for a styleless original", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-style-3", name: "suggest_followups", arguments: "{}" } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => ({
+      config: { provider: route.provider, model: route.model },
+      stream: async function* () {
+        yield { type: "text-delta", text: JSON.stringify({ followups: [{ prompt: "Rodar testes", label: "Testes", style: "deep-dive" }] }) };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    })
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery } });
+  ctx.get = (name) => {
+    if (name === "llm") return llm;
+    if (name === "sessionQuery") return sessionQuery;
+    if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "demo", model: "demo-model" }) };
+    if (name === "systemPrompt") return { section: () => {} };
+    return undefined;
+  };
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "pt-BR" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-style-3", agent: { id: "s1" } });
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups[0].style, undefined, "the echoed style is dropped for a styleless original");
+});
+
 test("the generator truncates the prompt to the configured length", async () => {
   const events = [
     { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "me ajuda com o build" }], source: { kind: "user" } } },
@@ -1730,7 +2120,7 @@ test("a valid fixture answers the fixed cards without calling the llm", async ()
     assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
     assertEqual(body.source, "fixture", "the answer names the fixture source");
     assertEqual(body.model, "fixture", "the answer names the fixture model");
-    assertEqual(body.rev, "sf-2", "the answer carries the plugin revision");
+    assertEqual(body.rev, "sf-3", "the answer carries the plugin revision");
     assertEqual(body.followups, [
       { prompt: "Fixo", label: "Fixo" },
       { prompt: "Segundo", label: null }
