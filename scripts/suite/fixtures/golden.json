@@ -1,0 +1,138 @@
+{
+  "probe": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "completed": true
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "regen": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "rev": "sf-3",
+      "followups": [
+        {
+          "prompt": "Run the parser tests",
+          "label": "Tests"
+        }
+      ],
+      "model": "demo-model",
+      "source": "transcript"
+    },
+    "source": "transcript",
+    "model": "demo-model",
+    "rev": "sf-3"
+  },
+  "normal": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "rev": "sf-3",
+      "followups": [
+        {
+          "prompt": "Run the parser tests",
+          "label": "Tests"
+        },
+        {
+          "prompt": "Review the diff",
+          "label": "Review"
+        }
+      ],
+      "model": "demo-model",
+      "source": "transcript"
+    },
+    "source": "transcript",
+    "model": "demo-model",
+    "rev": "sf-3"
+  },
+  "fixture-valid": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "rev": "sf-3",
+      "followups": [
+        {
+          "prompt": "Fixo",
+          "label": "Fixo"
+        },
+        {
+          "prompt": "Segundo",
+          "label": null
+        }
+      ],
+      "model": "fixture",
+      "source": "fixture"
+    },
+    "source": "fixture",
+    "model": "fixture",
+    "rev": "sf-3"
+  },
+  "400-bad-request": {
+    "status": 400,
+    "body": {
+      "error": "bad request"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "400-fixture-invalid": {
+    "status": 400,
+    "body": {
+      "error": "the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "409-moved-on": {
+    "status": 409,
+    "body": {
+      "error": "the chat moved on"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "cancelled": {
+    "status": 502,
+    "body": {
+      "error": "the generation was cancelled"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "timedOut": {
+    "status": 502,
+    "body": {
+      "error": "the generation timed out",
+      "timedOut": true
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "502-provider": {
+    "status": 502,
+    "body": {
+      "error": "upstream exploded"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  },
+  "400-empty-transcript": {
+    "status": 400,
+    "body": {
+      "error": "this turn has no conversation content to suggest from"
+    },
+    "source": null,
+    "model": null,
+    "rev": null
+  }
+}
