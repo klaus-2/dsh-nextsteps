@@ -5,6 +5,213 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
+    const PROBE_TIMEOUT_MS = 5000;
+
+    function generationKey(sessionId, turn) {
+      return `${sessionId}|${turn}`;
+    }
+
+    function isAbortError(error) {
+      return error !== null && typeof error === 'object' && (error.name === 'AbortError' || error.code === 'ABORT_ERR');
+    }
+
+    function buildBody(spec) {
+      if (spec.variant === 'probe') {
+        return { sessionId: spec.sessionId, afterSeq: spec.afterSeq, validate: true };
+      }
+      if (spec.variant === 'generate') {
+        return {
+          sessionId: spec.sessionId,
+          afterSeq: spec.afterSeq,
+          ...(spec.lang !== undefined ? { lang: spec.lang } : {}),
+          ...(spec.maxFollowups !== undefined ? { maxFollowups: spec.maxFollowups } : {}),
+          ...(spec.model !== undefined ? { model: spec.model } : {}),
+          ...(spec.customInstruction !== undefined ? { customInstruction: spec.customInstruction } : {}),
+          ...(spec.avoid !== undefined && spec.avoid.length > 0 ? { avoid: spec.avoid } : {})
+        };
+      }
+      throw new Error(`unknown generation body variant: ${spec.variant}`);
+    }
+
+    function createGenerationRound(deps) {
+      const { time, fetchImpl, responseJson, routeOf, validateFollowups, describeError, constants, hooks } = deps;
+      const {
+        attempts: ATTEMPTS,
+        retryDelayMs: RETRY_DELAY_MS,
+        latencyMinMs: LATENCY_MIN_MS,
+        latencyMaxMs: LATENCY_MAX_MS,
+        latencyDefaultMs: LATENCY_DEFAULT_MS,
+        deadlineSlackMs: DEADLINE_SLACK_MS
+      } = constants;
+      const inflight = new Map();
+      const tracked = new Map();
+      const warnedGenerations = new Set();
+      const WARN_LIMIT = 200;
+
+      function track(key, controller) {
+        const list = tracked.get(key) ?? [];
+        list.push(controller);
+        tracked.set(key, list);
+      }
+
+      function untrack(key, controller) {
+        const list = tracked.get(key);
+        if (list === undefined) return;
+        const next = list.filter((entry) => entry !== controller);
+        if (next.length === 0) tracked.delete(key);
+        else tracked.set(key, next);
+      }
+
+      function cancel(key) {
+        const state = inflight.get(key);
+        if (state !== undefined) {
+          state.cancelled = true;
+          if (state.controller !== null && typeof state.controller.abort === 'function') state.controller.abort();
+          inflight.delete(key);
+        }
+        for (const controller of tracked.get(key) ?? []) {
+          if (typeof controller.abort === 'function') controller.abort();
+        }
+        tracked.delete(key);
+      }
+
+      function keysOf(sessionId) {
+        const owned = [sessionId + '|', 'regen|' + sessionId + '|'];
+        return new Set([...inflight.keys(), ...tracked.keys()].filter((key) => owned.some((prefix) => key.startsWith(prefix))));
+      }
+
+      function cancelAll(sessionId) {
+        for (const key of keysOf(sessionId)) cancel(key);
+      }
+
+      function has(key) {
+        return inflight.has(key);
+      }
+
+      function liveCount(sessionId) {
+        let count = 0;
+        for (const key of inflight.keys()) {
+          if (key.startsWith(sessionId + '|')) count += 1;
+        }
+        for (const [key, list] of tracked) {
+          if (key.startsWith(sessionId + '|') || key.startsWith('regen|' + sessionId + '|')) count += list.length;
+        }
+        return count;
+      }
+
+      function startedAtOf(key) {
+        return inflight.get(key)?.startedAt;
+      }
+
+      async function probe(sessionId, afterSeq) {
+        const body = buildBody({ variant: 'probe', sessionId, afterSeq });
+        let completed = false;
+        try {
+          const response = await fetchImpl(routeOf(), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: time.timeoutSignal(PROBE_TIMEOUT_MS)
+          });
+          const data = await responseJson(response);
+          completed = data?.completed === true;
+        } catch {
+          completed = false;
+        }
+        return completed;
+      }
+
+      async function start(sessionId, turn, afterSeq, budgetMs) {
+        const key = generationKey(sessionId, turn);
+        if (inflight.has(key)) return;
+        const state = { controller: null, attempts: 0, cancelled: false, startedAt: time.now(), timedOut: false };
+        inflight.set(key, state);
+        hooks.onStart(sessionId);
+        const revision = hooks.getRevision();
+        const context = hooks.contextOf(sessionId);
+        const budget = Math.min(LATENCY_MAX_MS, Math.max(LATENCY_MIN_MS, Number(budgetMs) || LATENCY_DEFAULT_MS));
+        const deadline = budget + DEADLINE_SLACK_MS;
+        let failure = new Error('the generator did not answer');
+        try {
+          while (state.attempts < ATTEMPTS) {
+            if (state.cancelled) return;
+            state.attempts += 1;
+            const controller = time.controller();
+            state.controller = controller;
+            let expired = false;
+            const expiry = time.setTimeout(() => { expired = true; controller.abort(); }, deadline);
+            let retryable = false;
+            try {
+              const started = time.now();
+              const response = await fetchImpl(routeOf(), {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(buildBody({ variant: 'generate', sessionId, afterSeq, ...context })),
+                signal: controller.signal
+              });
+              hooks.onMetric(time.now() - started);
+              if (state.cancelled) return;
+              if (response.status === 409) {
+                state.cancelled = true;
+                return;
+              }
+              const data = await responseJson(response);
+              if (state.cancelled) return;
+              if (!response.ok) {
+                state.timedOut = data?.timedOut === true;
+                const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
+                failure = new Error(`the generator answered with HTTP ${response.status}${detail}`);
+                retryable = response.status >= 500;
+              } else {
+                const followups = validateFollowups(Array.isArray(data?.followups) ? data.followups : null);
+                if (followups === null) {
+                  failure = new Error('the generator answered without suggestions');
+                  retryable = true;
+                } else {
+                  if (revision !== hooks.getRevision()) return;
+                  const hasOrigin = (typeof data?.model === 'string' && data.model !== '') || (typeof data?.source === 'string' && data.source !== '');
+                  const origin = hasOrigin
+                    ? {
+                      model: typeof data?.model === 'string' && data.model !== '' ? data.model : undefined,
+                      source: typeof data?.source === 'string' && data.source !== '' ? data.source : undefined,
+                      lang: typeof context.lang === 'string' && context.lang !== '' ? context.lang : undefined,
+                      at: time.now()
+                    }
+                    : undefined;
+                  hooks.onSuccess(sessionId, turn, followups, origin);
+                  return;
+                }
+              }
+            } catch (error) {
+              if (state.cancelled) return;
+              if (isAbortError(error) && !expired) return;
+              failure = expired ? new Error('the generator did not answer in time') : error;
+              retryable = true;
+            } finally {
+              time.clearTimeout(expiry);
+            }
+            if (state.cancelled) return;
+            if (!retryable || state.attempts >= ATTEMPTS) break;
+            await time.wait(RETRY_DELAY_MS);
+          }
+          if (state.cancelled) return;
+          hooks.onFailure(key, String(failure?.message ?? failure), state.timedOut);
+          if (!warnedGenerations.has(key)) {
+            warnedGenerations.add(key);
+            if (warnedGenerations.size > WARN_LIMIT) warnedGenerations.delete(warnedGenerations.values().next().value);
+            console.warn('dsh-nextsteps: generation failed:', describeError(failure));
+          }
+        } finally {
+          if (inflight.get(key) === state) inflight.delete(key);
+          hooks.onFinish(sessionId);
+        }
+      }
+
+      return { probe, start, cancel, cancelAll, has, startedAtOf, track, untrack, liveCount };
+    }
+
+    const generationRound = { PROBE_TIMEOUT_MS, buildBody, createGenerationRound, generationKey, isAbortError };
+
     const NS = 'dsh-nextsteps';
     const TOOL_NAME = 'suggest_followups';
     const MAX_FOLLOWUPS = 6;
@@ -1279,11 +1486,9 @@ window.__ModuleLoader__.load({
       React.useEffect(() => () => {
         for (const timerId of sendTimersRef.current.values()) window.clearTimeout(timerId);
         sendTimersRef.current.clear();
-        for (const [regenKey, inFlight] of regenState) {
-          if (regenKey.startsWith(sessionId + '|')) {
-            inFlight.controller.abort();
-            regenState.delete(regenKey);
-          }
+        round.cancelAll(sessionId);
+        for (const regenKey of regenState.keys()) {
+          if (regenKey.startsWith(sessionId + '|')) regenState.delete(regenKey);
         }
       }, []);
 
@@ -1480,6 +1685,7 @@ window.__ModuleLoader__.load({
         if (regenState.has(regenKey)) return;
         const controller = new AbortController();
         regenState.set(regenKey, { controller });
+        round.track('regen|' + regenKey, controller);
         updateItem(itemId, { regenerating: true });
         setNotice(t('regenerating'));
         discard(itemId, prompt, label, turn);
@@ -1515,6 +1721,7 @@ window.__ModuleLoader__.load({
           } catch (error) {
             if (!isAbortError(error)) setFailure(t('generationFailed') + errorMessage(error));
           } finally {
+            round.untrack('regen|' + regenKey, controller);
             if (regenState.get(regenKey)?.controller === controller) regenState.delete(regenKey);
             updateItem(itemId, { regenerating: false });
           }
@@ -1986,139 +2193,74 @@ window.__ModuleLoader__.load({
         retry ?? null);
     }
 
-    const generationState = new Map();
     const generationAfterSeq = new Map();
     const failedGenerations = new Map();
     const timedOutGenerations = new Set();
     const regenState = new Map();
     const validatedTurns = new Map();
-    const warnedTurns = new Set();
     let settingsRevision = 0;
     const VALIDATED_TURNS_LIMIT = 200;
-    const PROBE_TIMEOUT_MS = 5000;
 
-    function generationKey(sessionId, turn) {
-      return `${sessionId}|${turn}`;
-    }
-
-    function isAbortError(error) {
-      return error !== null && typeof error === 'object' && (error.name === 'AbortError' || error.code === 'ABORT_ERR');
-    }
-
-    function warnGeneration(key, error) {
-      if (warnedTurns.has(key)) return;
-      warnedTurns.add(key);
-      if (warnedTurns.size > 200) warnedTurns.delete(warnedTurns.values().next().value);
-      console.warn('dsh-nextsteps: generation failed:', describeError(error));
-    }
+    const round = generationRound.createGenerationRound({
+      time: {
+        now: () => Date.now(),
+        setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+        clearTimeout: (id) => window.clearTimeout(id),
+        timeoutSignal: (ms) => AbortSignal.timeout(ms),
+        controller: () => new AbortController(),
+        wait: (ms) => new Promise((resolve) => { window.setTimeout(resolve, ms); })
+      },
+      fetchImpl: (...args) => fetch(...args),
+      responseJson,
+      routeOf: () => GENERATE_ROUTE,
+      validateFollowups,
+      describeError,
+      constants: {
+        attempts: GENERATION_ATTEMPTS,
+        retryDelayMs: RETRY_DELAY_MS,
+        latencyMinMs: LATENCY_MIN_MS,
+        latencyMaxMs: LATENCY_MAX_MS,
+        latencyDefaultMs: LATENCY_DEFAULT_MS,
+        deadlineSlackMs: 5000
+      },
+      hooks: {
+        onStart: (sessionId) => { for (const listener of captureListeners) listener(sessionId); },
+        onFinish: (sessionId) => { for (const listener of captureListeners) listener(sessionId); },
+        onSuccess: (sessionId, turn, followups, origin) => {
+          const key = generationKey(sessionId, turn);
+          failedGenerations.delete(key);
+          timedOutGenerations.delete(key);
+          rememberCapture(sessionId, 'generated-' + turn, turn, followups, origin);
+        },
+        onFailure: (key, message, timedOut) => {
+          failedGenerations.set(key, message);
+          if (failedGenerations.size > 200) failedGenerations.delete(failedGenerations.keys().next().value);
+          if (timedOut) timedOutGenerations.add(key);
+          else timedOutGenerations.delete(key);
+        },
+        onMetric: (elapsed) => recordMetric('generation', elapsed),
+        getRevision: () => settingsRevision,
+        contextOf: (sessionId) => {
+          const override = sessionOverrideOf(sessionId);
+          const instruction = sessionInstructionOf(sessionId);
+          return {
+            ...(override !== undefined && typeof override.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
+            ...(Number.isInteger(override?.maxFollowups) ? { maxFollowups: override.maxFollowups } : {}),
+            ...(override !== undefined && typeof override.model === 'string' && override.model !== '' ? { model: override.model } : {}),
+            ...(instruction !== '' ? { customInstruction: instruction } : {}),
+            avoid: avoidPromptsFor(sessionId)
+          };
+        }
+      }
+    });
 
     function cancelGeneration(sessionId, turn) {
-      const key = generationKey(sessionId, turn);
-      const state = generationState.get(key);
-      if (state === undefined) return;
-      state.cancelled = true;
-      if (state.controller !== null && typeof state.controller.abort === 'function') state.controller.abort();
-      generationState.delete(key);
-    }
-
-    function waitFor(ms) {
-      return new Promise((resolve) => { window.setTimeout(resolve, ms); });
+      round.cancel(generationKey(sessionId, turn));
     }
 
     async function startGeneration(sessionId, turn, afterSeq) {
-      const key = generationKey(sessionId, turn);
-      if (generationState.has(key)) return;
-      const state = { controller: null, attempts: 0, cancelled: false, startedAt: Date.now() };
-      generationState.set(key, state);
-      for (const listener of captureListeners) listener(sessionId);
-      const revision = settingsRevision;
-      const override = sessionOverrideOf(sessionId);
-      const avoid = avoidPromptsFor(sessionId);
       const budget = Math.min(LATENCY_MAX_MS, Math.max(LATENCY_MIN_MS, Number(pluginSettings.latencyBudgetMs) || LATENCY_DEFAULT_MS));
-      const deadline = budget + 5000;
-      let failure = new Error('the generator did not answer');
-      try {
-        while (state.attempts < GENERATION_ATTEMPTS) {
-          if (state.cancelled) return;
-          state.attempts += 1;
-          const controller = new AbortController();
-          state.controller = controller;
-          let expired = false;
-          const expiry = window.setTimeout(() => { expired = true; controller.abort(); }, deadline);
-          let retryable = false;
-          try {
-            const started = Date.now();
-            const response = await fetch(GENERATE_ROUTE, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                sessionId,
-                afterSeq,
-                ...(override !== undefined && typeof override.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
-                ...(Number.isInteger(override?.maxFollowups) ? { maxFollowups: override.maxFollowups } : {}),
-                ...(override !== undefined && typeof override.model === 'string' && override.model !== '' ? { model: override.model } : {}),
-                ...(sessionInstructionOf(sessionId) !== '' ? { customInstruction: sessionInstructionOf(sessionId) } : {}),
-                ...(avoid.length > 0 ? { avoid } : {})
-              }),
-              signal: controller.signal
-            });
-            recordMetric('generation', Date.now() - started);
-            if (state.cancelled) return;
-            if (response.status === 409) {
-              state.cancelled = true;
-              return;
-            }
-            const data = await responseJson(response);
-            if (state.cancelled) return;
-            if (!response.ok) {
-              state.timedOut = data?.timedOut === true;
-              const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
-              failure = new Error(`the generator answered with HTTP ${response.status}${detail}`);
-              retryable = response.status >= 500;
-            } else {
-              const followups = validateFollowups(Array.isArray(data?.followups) ? data.followups : null);
-              if (followups === null) {
-                failure = new Error('the generator answered without suggestions');
-                retryable = true;
-              } else {
-                if (revision !== settingsRevision) return;
-                failedGenerations.delete(key);
-                timedOutGenerations.delete(key);
-                const hasOrigin = (typeof data?.model === 'string' && data.model !== '') || (typeof data?.source === 'string' && data.source !== '');
-                const origin = hasOrigin
-                  ? {
-                    model: typeof data?.model === 'string' && data.model !== '' ? data.model : undefined,
-                    source: typeof data?.source === 'string' && data.source !== '' ? data.source : undefined,
-                    lang: typeof override?.lang === 'string' && override.lang !== '' ? override.lang : undefined,
-                    at: Date.now()
-                  }
-                  : undefined;
-                rememberCapture(sessionId, 'generated-' + turn, turn, followups, origin);
-                return;
-              }
-            }
-          } catch (error) {
-            if (state.cancelled) return;
-            if (isAbortError(error) && !expired) return;
-            failure = expired ? new Error('the generator did not answer in time') : error;
-            retryable = true;
-          } finally {
-            window.clearTimeout(expiry);
-          }
-          if (state.cancelled) return;
-          if (!retryable || state.attempts >= GENERATION_ATTEMPTS) break;
-          await waitFor(RETRY_DELAY_MS);
-        }
-        if (state.cancelled) return;
-        failedGenerations.set(key, String(failure?.message ?? failure));
-        if (failedGenerations.size > 200) failedGenerations.delete(failedGenerations.keys().next().value);
-        if (state.timedOut === true) timedOutGenerations.add(key);
-        else timedOutGenerations.delete(key);
-        warnGeneration(key, failure);
-      } finally {
-        if (generationState.get(key) === state) generationState.delete(key);
-        for (const listener of captureListeners) listener(sessionId);
-      }
+      await round.start(sessionId, turn, afterSeq, budget);
     }
 
     function createTail(ctx) {
@@ -2208,7 +2350,7 @@ window.__ModuleLoader__.load({
 
         const key = turn === undefined ? '' : generationKey(sessionId, turn);
         const orderKey = turn === undefined ? undefined : sessionId + '|' + turn;
-        const generating = key !== '' && generationState.has(key);
+        const generating = key !== '' && round.has(key);
         const onDemand = pluginSettings.generationMode === 'on-demand';
         const failureMessage = key !== '' && turn !== undefined ? failedGenerations.get(key) : undefined;
         const [probeResults, setProbeResults] = React.useState(() => ({}));
@@ -2243,16 +2385,8 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           if (probeNeeded !== true) return undefined;
           let cancelled = false;
-          const body = JSON.stringify({ sessionId, afterSeq, validate: true });
           const run = async () => {
-            let completed = false;
-            try {
-              const response = await fetch(GENERATE_ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-              const data = await responseJson(response);
-              completed = data?.completed === true;
-            } catch {
-              completed = false;
-            }
+            const completed = await round.probe(sessionId, afterSeq);
             if (cancelled) return;
             validatedTurns.set(key, { revision: settingsRevision, probed: true, completed });
             if (validatedTurns.size > VALIDATED_TURNS_LIMIT) validatedTurns.delete(validatedTurns.keys().next().value);
@@ -2323,7 +2457,7 @@ window.__ModuleLoader__.load({
           let alive = true;
           const tick = () => {
             if (alive === false) return;
-            const startedAt = generationState.get(key)?.startedAt;
+            const startedAt = round.startedAtOf(key);
             if (typeof startedAt !== 'number') return;
             setGeneratingLabel(formatElapsed(Date.now() - startedAt));
             window.setTimeout(tick, 1000);
@@ -3469,7 +3603,8 @@ window.__ModuleLoader__.load({
           locale: NS
         }, createSettings(ctx)));
       },
-      flushWrites
+      flushWrites,
+      generationRound
     };
   }
 });

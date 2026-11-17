@@ -52,6 +52,9 @@ export async function runClientSuite(harness, { pluginDir }) {
     const json = requires.filter((name) => name.endsWith(".json"));
     harness.check("the client never requires a JSON file", json.length === 0, json.join(" | "));
     harness.check("the client requires react", requires.includes("react"));
+    const allowed = ["react", "react-dom"];
+    const unexpected = requires.filter((name) => !allowed.includes(name));
+    harness.check("every client require is a runtime-resolvable seed word", unexpected.length === 0, unexpected.join(" | "));
     const portsMatch = source.match(/const API_PORTS = \[([0-9, ]+)\]/);
     const ports = portsMatch === null ? [] : portsMatch[1].split(",").map((value) => Number(value.trim()));
     harness.check("the client probes the frozen loopback block", ports.length === 20 && ports.every((value, index) => value === 47497 + index), `first=${ports[0]}, last=${ports.at(-1)}, count=${ports.length}`);
