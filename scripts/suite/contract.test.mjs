@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { suite, test, assert, assertEqual, assertIncludes, pluginId } from "../harness.mjs";
+import { suite, test, assert, assertEqual, assertIncludes, assertThrows, pluginId } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
 
 suite("contract: host and client agree");
@@ -13,17 +13,26 @@ const routePattern = new RegExp(`'/api/${escaped}\\.([a-z-]+)'`, "g");
 const CLIENT_ROUTES = [...clientSource.matchAll(routePattern)].map((match) => match[1]);
 const HOST_ROUTES = [...hostSource.matchAll(routePattern)].map((match) => match[1]);
 
-test("every route the client calls is registered by the host", () => {
-  assert(CLIENT_ROUTES.length > 0, "the client calls host routes");
-  for (const route of CLIENT_ROUTES) {
-    assert(HOST_ROUTES.includes(route), `the host registers the ${route} route`);
+function assertClientCallsAreRegistered(clientRoutes, hostRoutes) {
+  assert(clientRoutes.length > 0, "the client calls host routes");
+  for (const route of clientRoutes) {
+    assert(hostRoutes.includes(route), `the host registers the ${route} route`);
   }
+}
+
+function assertNoUncalledHostRoutes(hostRoutes, clientRoutes) {
+  assert(hostRoutes.length > 0, "the host registers routes");
+  for (const route of hostRoutes) {
+    assert(clientRoutes.includes(route), `the client calls the ${route} route`);
+  }
+}
+
+test("every route the client calls is registered by the host", () => {
+  assertClientCallsAreRegistered(CLIENT_ROUTES, HOST_ROUTES);
 });
 
 test("the host registers no route the client never calls", () => {
-  for (const route of HOST_ROUTES) {
-    assert(CLIENT_ROUTES.includes(route), `the client calls the ${route} route`);
-  }
+  assertNoUncalledHostRoutes(HOST_ROUTES, CLIENT_ROUTES);
 });
 
 test("the settings the client sends are the ones the host reads", () => {
@@ -83,4 +92,20 @@ test("the client tolerates any payload revision", () => {
   assert(hostRevision !== undefined, "the host declares a payload revision");
   assert(clientSource.includes("rev"), "the client reads the payload revision");
   assert(!clientSource.includes(`rev: '${hostRevision}'`), "the client does not pin one revision");
+});
+
+test("empty extraction fails both parity directions", () => {
+  const emptySource = "const unrelated = 42;";
+  const EMPTY_ROUTES = [...emptySource.matchAll(routePattern)].map((match) => match[1]);
+  assertEqual(EMPTY_ROUTES.length, 0, "the controlled source has no route literals");
+  assert(CLIENT_ROUTES.length > 0 && HOST_ROUTES.length > 0, "the real sources still extract routes");
+
+  assertThrows(
+    () => assertClientCallsAreRegistered(EMPTY_ROUTES, HOST_ROUTES),
+    "empty client extraction fails the client-to-host direction",
+  );
+  assertThrows(
+    () => assertNoUncalledHostRoutes(EMPTY_ROUTES, CLIENT_ROUTES),
+    "empty host extraction fails the host-to-client direction",
+  );
 });

@@ -130,7 +130,9 @@ The same settings page asks the npm registry for the latest `dsh-nextsteps` rele
 ## Development
 
 - `npm test` runs the regression suite and the unit suite.
-- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js`; the gate enforces the measured floor of 81% of lines and 79% of functions.
+- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js` and `lib/host/generation-round.mjs`; the gate enforces the measured floor of 81% of lines and 79% of functions.
+
+The generation round is deepened in the host module `lib/host/generation-round.mjs` (gate, model retry, rewrite handoff and error mapping); the client's deadline-bound in-flight controller, probe and request-body builder stay inside `client.js`, because the browser module loader resolves only seed words and bare package names, never a plugin subpath. The host module directory ships in the package `files`; the wire contract — routes, statuses, `source`/`model`/`rev` values, settings and i18n strings — is unchanged.
 
 For deterministic generation during manual QA, export `DSH_NEXTSTEPS_FIXTURE` with a followups JSON payload; the generate route then answers with those cards (normalized by the real validators, `model: "fixture"`, `source: "fixture"`) and never calls the LLM:
 
@@ -138,7 +140,7 @@ For deterministic generation during manual QA, export `DSH_NEXTSTEPS_FIXTURE` wi
 DSH_NEXTSTEPS_FIXTURE='[{"prompt":"Run the tests","label":"Tests"}]'
 ```
 
-This switch exists for tests and manual QA only: without the variable the route behaves exactly as before (it also ignores the body overrides for language, count and model while set), and the `validate: true` probe is unaffected.
+This switch exists for tests and manual QA only: without the variable the route behaves exactly as before (it ignores all per-request overrides — language, count, model, custom instruction and avoid — while set), and the `validate: true` probe is unaffected. The same variable is the fixture hook of the deterministic replay adapter in `scripts/suite/replay.test.mjs`, which restores the previous value after each case and pins the response contract; there is no fixture route or user-facing option.
 
 ## Changelog
 

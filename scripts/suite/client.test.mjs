@@ -3606,6 +3606,32 @@ test("the generating indicator shows the elapsed time while the host generates",
   }
 });
 
+test("unmount aborts the in-flight generation controller", async () => {
+  let generationSignal;
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, model: "demo/demo-model" }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = JSON.parse(init.body);
+      if (body.validate === true) return { ok: true, completed: true };
+      generationSignal = init.signal;
+      return new Promise(() => {});
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert(generationSignal !== undefined && generationSignal.aborted === false, "the generation request is live before unmount");
+    await client.react.__cleanup();
+    assert(generationSignal.aborted === true, "unmount aborts the generation controller, not only regenerate");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("the generating indicator clears once the generation settles without orphan timers", async () => {
   const { client, registrations } = clientWithRoutes({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, model: "demo/demo-model" }, version: "1.0.0" },
@@ -5084,6 +5110,65 @@ test("an unmount during a regeneration aborts the fetch and frees the guard", as
     const calls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate" && !(typeof call.body === "string" && call.body.includes('"validate":true')));
     assertEqual(calls.length, 2, "the freed guard allows a new regeneration");
   } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("unmount aborts the caller's regenerate controller through the round registry", async () => {
+  const OriginalAbortController = globalThis.AbortController;
+  const created = [];
+  class RecordingAbortController extends OriginalAbortController {
+    constructor(...args) {
+      super(...args);
+      created.push(this);
+    }
+  }
+  globalThis.AbortController = RecordingAbortController;
+  const signals = [];
+  let release;
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": (init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"validate":true')) return { ok: true, completed: true };
+      if (body.includes('"maxFollowups":1')) {
+        signals.push(init?.signal);
+        return new Promise((resolve) => {
+          release = () => resolve(new Response(JSON.stringify({ ok: true, rev: "sf-2", followups: [{ prompt: "novo cartao", label: null }] }), { status: 200, headers: { "content-type": "application/json" } }));
+        });
+      }
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "generation should not fire", label: null }] };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const regenerate = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(regenerate !== undefined, "the card offers the regenerate action");
+    await regenerate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(signals.length, 1, "the regenerate request is in flight");
+    assertEqual(created.length, 1, "the caller owns exactly one regenerate controller");
+    assertEqual(signals[0].aborted, false, "the controller is live before unmount");
+    await client.react.__cleanup();
+    assertEqual(created[0].signal.aborted, true, "unmount aborts the registered controller itself");
+    assertEqual(signals[0].aborted, true, "unmount aborts the in-flight regenerate request");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const next = renderTail(client, tail, props);
+    const again = buttonsOf(next).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(again !== undefined, "the freed guard offers regeneration again");
+    await again.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(created.length, 2, "a fresh controller is registered after the unmount");
+    created.at(-1).abort();
+  } finally {
+    if (typeof release === "function") release();
+    globalThis.AbortController = OriginalAbortController;
     client.fetchStub.restore();
   }
 });

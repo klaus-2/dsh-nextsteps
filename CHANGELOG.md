@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- **The generation round is deepened in a host module, with the wire contract unchanged.** The host gate, model retry, rewrite handoff and error mapping moved to `lib/host/generation-round.mjs`; the client's deadline-bound in-flight controller, probe and request-body builder stay inline in `client.js` so the browser module loader can resolve the bundle. The host module directory ships in the package `files`. Routes, statuses, `source`/`model`/`rev` values, settings and i18n strings are unchanged; the golden replay adapter in `scripts/suite/replay.test.mjs` still pins the response contract.
+
 ## [1.10.0] - 2026-11-16
 
 ### Added

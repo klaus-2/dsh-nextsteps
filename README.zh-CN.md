@@ -130,7 +130,9 @@ dsh plugin --profile web add dsh-nextsteps
 ## 开发
 
 - `npm test` 运行回归套件和单元测试套件。
-- `npm run test:coverage` 在覆盖 `index.js` 的 c8 覆盖率门禁下运行单元测试套件；门禁会强制执行实测下限：81% 的行和 79% 的函数。
+- `npm run test:coverage` 在覆盖 `index.js` 和 `lib/host/generation-round.mjs` 的 c8 覆盖率门禁下运行单元测试套件；门禁会强制执行实测下限：81% 的行和 79% 的函数。
+
+生成回合在宿主模块 `lib/host/generation-round.mjs` 中深化（关卡判定、模型重试、改写交接和错误映射）；客户端带期限的在途控制器、探测和请求体构造器保留在 `client.js` 内，因为浏览器模块加载器只解析种子词和包名，不解析插件子路径。宿主模块目录随包发布；线上契约——路由、状态、`source`/`model`/`rev` 取值、设置项和 i18n 字符串——保持不变。
 
 如需在手动 QA 时获得确定性的生成结果，请导出 `DSH_NEXTSTEPS_FIXTURE`，其值为 followups 的 JSON 载荷；生成路由随后会用这些卡片应答（由真实验证器归一化，`model: "fixture"`、`source: "fixture"`），并且不会调用 LLM：
 
@@ -138,7 +140,7 @@ dsh plugin --profile web add dsh-nextsteps
 DSH_NEXTSTEPS_FIXTURE='[{"prompt":"Run the tests","label":"Tests"}]'
 ```
 
-该开关仅供测试和手动 QA 使用：不设置该变量时，路由行为与之前完全一致（设置该变量时，它还会忽略请求体中的语言、数量和模型覆盖），且 `validate: true` 探测不受影响。
+该开关仅供测试和手动 QA 使用：不设置该变量时，路由行为与之前完全一致（设置该变量时，它会忽略所有按请求传入的覆盖项——语言、数量、模型、自定义指令和 avoid），且 `validate: true` 探测不受影响。该变量也是 `scripts/suite/replay.test.mjs` 中确定性回放适配器的 fixture 钩子：每个用例后恢复原值并锁定响应契约；不存在专用的 fixture 路由或面向用户的选项。
 
 ## 更新日志
 
