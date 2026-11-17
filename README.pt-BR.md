@@ -130,7 +130,9 @@ A mesma página de configurações pergunta ao npm registry qual é a versão ma
 ## Desenvolvimento
 
 - `npm test` roda a suíte de regressão e a suíte de testes unitários.
-- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre o `index.js`; o gate aplica o piso medido de 81% das linhas e 79% das funções.
+- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre `index.js` e `lib/host/generation-round.mjs`; o gate aplica o piso medido de 81% das linhas e 79% das funções.
+
+A rodada de geração foi aprofundada no módulo do host `lib/host/generation-round.mjs` (gate, nova tentativa ao modelo, entrega da reescrita e mapeamento de erros); o controlador em voo com prazo, a sonda e o construtor do corpo da requisição do cliente permanecem em `client.js`, porque o carregador de módulos do navegador resolve apenas palavras-semente e nomes de pacote, nunca um subpath de plugin. O diretório do módulo do host é publicado no pacote; o contrato de fio — rotas, status, valores de `source`/`model`/`rev`, configurações e strings i18n — não muda.
 
 Para geração determinística durante o QA manual, exporte `DSH_NEXTSTEPS_FIXTURE` com um payload JSON de followups; a rota de geração então responde com esses cartões (normalizados pelos validadores reais, `model: "fixture"`, `source: "fixture"`) e nunca chama o LLM:
 
@@ -138,7 +140,7 @@ Para geração determinística durante o QA manual, exporte `DSH_NEXTSTEPS_FIXTU
 DSH_NEXTSTEPS_FIXTURE='[{"prompt":"Run the tests","label":"Tests"}]'
 ```
 
-Esse interruptor existe só para testes e QA manual: sem a variável a rota se comporta exatamente como antes (e, enquanto ela está definida, ignora os overrides de idioma, contagem e modelo do corpo), e o probe `validate: true` não é afetado.
+Esse interruptor existe só para testes e QA manual: sem a variável a rota se comporta exatamente como antes (enquanto ela está definida, ignora todos os overrides por requisição — idioma, quantidade, modelo, instrução personalizada e avoid —), e o probe `validate: true` não é afetado. A mesma variável é o hook de fixture do adaptador determinístico de replay em `scripts/suite/replay.test.mjs`, que restaura o valor anterior após cada caso e fixa o contrato da resposta; não há rota de fixture nem opção visível ao usuário.
 
 ## Registro de mudanças
 
