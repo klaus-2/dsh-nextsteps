@@ -2,7 +2,8 @@ import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "nod
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId, isDevCopy } from "../harness.mjs";
-import { root } from "../client-harness.mjs";
+import { root, loadClient, fakeSlotHost } from "../client-harness.mjs";
+import { GENERATE_ATTEMPTS } from "../../lib/host/generation-round.mjs";
 import { FUZZ_COUNT, FUZZ_SEED, IN_MEMORY_PAYLOADS, assertFollowupsShape, buildPayload, fuzzMessage, mulberry32 } from "./fuzz-kit.mjs";
 import { assistantMessage, sessionOf, toolCall, turnEnd, userMessage } from "../../tools/lib/turn-fixtures.mjs";
 
@@ -2173,6 +2174,31 @@ test("the fixture respects the maxFollowups setting", async () => {
   });
 });
 
+test("the fixture ignores per-request overrides exactly as today", async () => {
+  await withFixtureEnv('[{"prompt":"Um","label":"Primeiro"},{"prompt":"Dois"},{"prompt":"Tres","label":"Terceiro"}]', async () => {
+    const { post, llmCalls } = await fixtureContext();
+    const response = await post({
+      sessionId: "s1",
+      afterSeq: 9,
+      lang: "en",
+      maxFollowups: 1,
+      model: "acme/gpt-9",
+      customInstruction: "ONLY RED"
+    });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.source, "fixture", "the override cannot change the fixture source");
+    assertEqual(body.model, "fixture", "the model override is ignored on the fixture path");
+    assertEqual(body.rev, "sf-3", "the answer carries the plugin revision");
+    assertEqual(body.followups, [
+      { prompt: "Um", label: "Primeiro" },
+      { prompt: "Dois", label: null },
+      { prompt: "Tres", label: "Terceiro" }
+    ], "the maxFollowups=1 override cannot trim the three fixture cards; labels normalize to null");
+    assertEqual(llmCalls.length, 0, "the fixture path never calls the llm even with overrides");
+  });
+});
+
 suite("host: card-to-turn attribution");
 
 async function attributionContext({ events, lang = "pt-BR", llmText = '{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}' } = {}) {
@@ -2397,4 +2423,89 @@ test("the settings route coerces the transcript scope", async () => {
   assertEqual(minimal.settings.transcriptScope, "minimal", "the minimal scope is stored");
   const served = await (await route.fetch(new Request("http://x"))).json();
   assertEqual(served.settings.transcriptScope, "minimal", "the scope is served back");
+});
+
+test("T4 MEDIDO: host 3 model attempts x client 2 pre-existing HTTP attempts = 6 llm.prepareCall calls, no third retry layer", async () => {
+  const derivedUpperBound = GENERATE_ATTEMPTS * 2;
+
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+
+  const llmCalls = [];
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      return {
+        config: { provider: route.provider, model: route.model },
+        stream: async function* () {
+          yield { type: "finish", reason: { kind: "error", failure: { message: "upstream exploded" } } };
+        }
+      };
+    }
+  };
+
+  const { ctx, routes } = stubContext();
+  ctx.get = (name) => (
+    name === "llm" ? llm
+      : name === "sessionQuery" ? sessionQuery
+        : name === "agentDefaultModel" ? { currentSelection: () => ({ provider: "demo", model: "demo-model" }) }
+          : undefined
+  );
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "" })
+  }));
+  const generateRoute = routes.get(`/api/${pluginId}.generate`);
+
+  const client = loadClient({
+    language: "en",
+    routes: {
+      "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "zh-CN", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
+      "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+      "/api/dsh-nextsteps.generate": async (init, url) => generateRoute.fetch(new Request("http://host" + url, {
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+        signal: init.signal
+      }))
+    }
+  });
+  const { ctx: slotCtx, registrations } = fakeSlotHost(client.react);
+  client.instance.apply(slotCtx);
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    assert(tail !== undefined, "the conversation tail is registered");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (const effect of client.react.__effects ?? []) await effect();
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+
+    const deadline = Date.now() + 8000;
+    while (llmCalls.length < derivedUpperBound && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const generateCalls = client.fetchStub.calls.filter((call) => call.url === "/api/dsh-nextsteps.generate");
+    assertEqual(generateCalls.length, 2, `the client makes exactly its 2 pre-existing HTTP attempts, no third retry layer: ${generateCalls.length}`);
+    assertEqual(GENERATE_ATTEMPTS, 3, "the host owns exactly 3 model attempts");
+    assertEqual(derivedUpperBound, 6, "DERIVADO: host 3 x client 2 = 6");
+    assertEqual(llmCalls.length, 6, `MEDIDO: llm.prepareCall was invoked ${llmCalls.length} times, equal to the DERIVADO upper bound 6`);
+
+    console.log(`[dsh-nextsteps:T4] host = owner of the retry to the model (GENERATE_ATTEMPTS=3); client = 2 pre-existing HTTP attempts (GENERATION_ATTEMPTS=2), no new loop | DERIVADO 3x2=6 | MEDIDO ${llmCalls.length} llm.prepareCall calls | client HTTP attempts ${generateCalls.length}`);
+  } finally {
+    console.warn = originalWarn;
+    client.fetchStub.restore();
+  }
 });
