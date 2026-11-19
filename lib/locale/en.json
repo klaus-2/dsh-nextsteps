@@ -186,5 +186,10 @@
   "secPrivacy": "Your data on this machine",
   "secAudit": "Audit log",
   "secAbout": "Version and updates",
-  "secPerformance": "Performance"
+  "secPerformance": "Performance",
+  "setFallbackModel": "Fallback model",
+  "setFallbackModelTip": "When a round fails or times out, it is repeated once with the chat's default model.",
+  "originFallback": "via {model} (fallback)",
+  "diagCopy": "Copy diagnostics",
+  "diagCopyTip": "Copies a technical report with the plugin version, environment, settings, metrics and the last error, for reporting issues."
 }

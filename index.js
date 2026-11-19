@@ -386,6 +386,7 @@ function settingsLoad() {
       maxFollowups: Number.isInteger(stored.maxFollowups) && stored.maxFollowups >= 1 && stored.maxFollowups <= 6 ? stored.maxFollowups : 3,
       showHeader: stored.showHeader !== false,
       model: typeof stored.model === 'string' ? (stored.model.includes('/') ? stored.model : '') : modelKeyOf(stored),
+      fallbackModel: stored.fallbackModel === true,
       styles: stylesOf(stored.styles) ?? [...DEFAULT_STYLES],
       generationMode: generationModeOf(stored.generationMode) ?? DEFAULT_GENERATION_MODE,
       latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
@@ -402,6 +403,7 @@ function settingsLoad() {
       maxFollowups: 3,
       showHeader: true,
       model: '',
+      fallbackModel: false,
       styles: [...DEFAULT_STYLES],
       generationMode: DEFAULT_GENERATION_MODE,
       latencyBudgetMs: GENERATE_TIMEOUT_MS,
@@ -682,6 +684,7 @@ async function apply(ctx) {
         maxFollowups: Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : current.maxFollowups,
         showHeader: typeof body?.showHeader === 'boolean' ? body.showHeader : current.showHeader,
         model: typeof body?.model === 'string' && body.model.includes('/') ? body.model : body?.model === '' || body?.model === undefined || body?.model === null ? '' : current.model,
+        fallbackModel: typeof body?.fallbackModel === 'boolean' ? body.fallbackModel : current.fallbackModel,
         styles: stylesOf(body?.styles) ?? current.styles,
         generationMode: generationModeOf(body?.generationMode) ?? current.generationMode,
         latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
@@ -789,6 +792,19 @@ async function apply(ctx) {
         const generated = await generation.gate({ variant: 'generate', settings: derived, sessionId: body.sessionId, afterSeq: body.afterSeq, requestSignal: request.signal, avoid, rewriteSlot });
         return json({ ok: true, rev: PLUGIN_REV, ...generated.result });
       } catch (error) {
+        if (error?.cancelled !== true && error?.status !== 409 && derived.fallbackModel === true && derived.model !== '') {
+          const catalog = await generation.modelCatalog();
+          const defaultModel = catalog.default === undefined ? '' : `${catalog.default.provider}/${catalog.default.model}`;
+          if (defaultModel !== '' && derived.model !== defaultModel) {
+            try {
+              const reserve = await generation.gate({ variant: 'generate', settings: { ...derived, model: '' }, sessionId: body.sessionId, afterSeq: body.afterSeq, requestSignal: request.signal, avoid, rewriteSlot });
+              const result = reserve.result.source === 'transcript' ? { ...reserve.result, source: 'fallback' } : reserve.result;
+              return json({ ok: true, rev: PLUGIN_REV, ...result });
+            } catch (fallbackError) {
+              console.warn('dsh-nextsteps: the fallback model round failed:', describeError(fallbackError));
+            }
+          }
+        }
         const mapped = generation.mapError(error, body.sessionId, body.afterSeq);
         return json(mapped.body, mapped.status);
       }

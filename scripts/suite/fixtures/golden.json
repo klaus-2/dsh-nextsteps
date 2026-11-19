@@ -134,5 +134,27 @@
     "source": null,
     "model": null,
     "rev": null
+  },
+  "fallback-model": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "rev": "sf-3",
+      "followups": [
+        {
+          "prompt": "Run the parser tests",
+          "label": "Tests"
+        },
+        {
+          "prompt": "Review the diff",
+          "label": "Review"
+        }
+      ],
+      "model": "demo-model",
+      "source": "fallback"
+    },
+    "source": "fallback",
+    "model": "demo-model",
+    "rev": "sf-3"
   }
 }

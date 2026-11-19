@@ -186,5 +186,10 @@
   "secPrivacy": "Seus dados neste computador",
   "secAudit": "Registro de auditoria",
   "secAbout": "Versão e atualizações",
-  "secPerformance": "Desempenho"
+  "secPerformance": "Desempenho",
+  "setFallbackModel": "Modelo reserva",
+  "setFallbackModelTip": "Quando uma rodada falha ou estoura o tempo, ela é repetida uma vez com o modelo padrão da conversa.",
+  "originFallback": "via {model} (reserva)",
+  "diagCopy": "Copiar diagnóstico",
+  "diagCopyTip": "Copia um relatório técnico com a versão do plugin, o ambiente, as configurações, as métricas e o último erro, para reportar problemas."
 }

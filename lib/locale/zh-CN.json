@@ -186,5 +186,10 @@
   "secPrivacy": "本机上的数据",
   "secAudit": "审计日志",
   "secAbout": "版本与更新",
-  "secPerformance": "性能"
+  "secPerformance": "性能",
+  "setFallbackModel": "备用模型",
+  "setFallbackModelTip": "回合失败或超时时，会使用对话的默认模型重试一次。",
+  "originFallback": "via {model}（备用）",
+  "diagCopy": "复制诊断信息",
+  "diagCopyTip": "复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。"
 }

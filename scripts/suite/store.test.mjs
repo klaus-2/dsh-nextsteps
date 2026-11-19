@@ -1,5 +1,5 @@
 import { suite, test, assert, assertEqual, pluginId } from "../harness.mjs";
-import { loadClient, fakeSlotHost, walk, failingStorage } from "../client-harness.mjs";
+import { loadClient, fakeSlotHost, walk, failingStorage, memoryStorage } from "../client-harness.mjs";
 
 const SETTINGS_FIXTURE = {
   lang: "auto",
@@ -730,6 +730,52 @@ test("skip policy handles write nothing for private sessions while discarded sti
     assertEqual(storage._data[cardOrderKey], undefined, "cardOrder storage stays empty");
     assertEqual(storage._data[collapsedKey], undefined, "collapsed storage stays empty");
     assertEqual(storage._data[auditKey], undefined, "audit storage stays empty");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a failed generation persists the last error record under the plugin key", async () => {
+  const storage = memoryStorage();
+  const lastErrorKey = `${pluginId}.last-error`;
+  const client = loadClient({ storage, routes: {
+    [`/api/${pluginId}.settings`]: { ok: true, settings: { ...SETTINGS_FIXTURE, lang: "en" }, version: "1.0.0" },
+    [`/api/${pluginId}.generate`]: new Response(JSON.stringify({ error: "no model is selected" }), { status: 400, headers: { "content-type": "application/json" } })
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    client.instance.flushWrites();
+    const stored = JSON.parse(storage._data[lastErrorKey]);
+    assert(typeof stored.message === "string" && stored.message.includes("HTTP 400"), `the failure message is stored: ${stored.message}`);
+    assertEqual(stored.timedOut, false, "a plain failure keeps the timeout flag false");
+    assert(typeof stored.at === "number", "the record carries its timestamp");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a failed generation in a private session persists nothing under the last-error key", async () => {
+  const storage = memoryStorage({ [`${pluginId}.private-sessions`]: JSON.stringify({ "s-priv": true }) });
+  const client = loadClient({ storage, routes: {
+    [`/api/${pluginId}.settings`]: { ok: true, settings: { ...SETTINGS_FIXTURE, lang: "en" }, version: "1.0.0" },
+    [`/api/${pluginId}.generate`]: new Response(JSON.stringify({ error: "no model is selected" }), { status: 400, headers: { "content-type": "application/json" } })
+  } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s-priv", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    client.instance.flushWrites();
+    assertEqual(storage._data[`${pluginId}.last-error`], undefined, "the skip policy keeps the private failure out of storage");
   } finally {
     client.fetchStub.restore();
   }

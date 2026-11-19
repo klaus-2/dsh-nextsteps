@@ -191,6 +191,22 @@ test("a successful round warns nothing, reports the origin and frees its slot", 
   }
 });
 
+test("the deadline clamp accepts a doubled fallback budget without clipping", async () => {
+  const { round, time } = makeRound();
+  await round.start("s1", 9, 9, 240000);
+  assertEqual(time.timers.map((timer) => timer.ms), [245000], "2x LATENCY_MAX_MS survives the clamp plus slack");
+  await round.start("s2", 9, 9, 120000);
+  assertEqual(time.timers.map((timer) => timer.ms), [245000, 125000], "the plain maximum budget is unchanged");
+});
+
+test("the deadline clamp keeps the floor and the default", async () => {
+  const { round, time } = makeRound();
+  await round.start("s1", 9, 9, 1);
+  assertEqual(time.timers.map((timer) => timer.ms), [10000], "the floor clamp is unchanged");
+  await round.start("s2", 9, 9, Number.NaN);
+  assertEqual(time.timers.map((timer) => timer.ms), [10000, 65000], "the default deadline is unchanged");
+});
+
 test("a retryable failure keeps exactly two HTTP attempts and one warning", async () => {
   const failures = [];
   const originalWarn = console.warn;

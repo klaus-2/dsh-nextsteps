@@ -454,6 +454,25 @@ function buttonWithText(tree, text) {
   return buttonsOf(tree).find((node) => node.children.includes(text));
 }
 
+async function armDeadline(settings) {
+  const client = loadClient({ routes: { "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } } });
+  try {
+    const { ctx, registrations } = fakeSlotHost(client.react);
+    client.instance.apply(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const timeouts = [];
+    const originalSetTimeout = client.window.setTimeout;
+    client.window.setTimeout = (fn, ms) => { timeouts.push(ms); return originalSetTimeout(fn, ms); };
+    const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
+    tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return timeouts;
+  } finally {
+    client.fetchStub.restore();
+  }
+}
+
 function itemsOf(tree) {
   return walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-item"));
 }
@@ -2204,6 +2223,43 @@ test("settings textarea saves the global custom instruction", async () => {
   }
 });
 
+test("the fallback toggle posts the patch and drops stale in-flight rounds", async () => {
+  let releaseGenerate;
+  const generateGate = new Promise((resolve) => { releaseGenerate = resolve; });
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": (init) => init?.method === "POST"
+      ? { ok: true, settings: { ...NEW_SETTINGS, lang: "en", ...JSON.parse(String(init?.body ?? "{}")) }, version: "1.0.0" }
+      : { ok: true, settings: { ...NEW_SETTINGS, lang: "en", fallbackModel: false }, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": async () => {
+      await generateGate;
+      return { ok: true, rev: "sf-2", followups: [{ prompt: "late answer", label: "Late" }], model: "demo-model", source: "transcript" };
+    }
+  });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1, end: { seq: 9 } }, seq: 9, t: (key) => key };
+    tail(props);
+    for (const effect of client.react.__effects ?? []) await effect();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const toggle = walk(tree, (node) => node.type === "input" && node.props?.type === "checkbox" && node.props?.["aria-label"] === "setFallbackModel")[0];
+    assert(toggle !== undefined, "the generation tab offers the fallback model checkbox");
+    toggle.props.onChange({ target: { checked: true } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const post = client.fetchStub.calls.find((call) => call.method === "POST" && call.url.endsWith(".settings"));
+    assert(post !== undefined, "the toggle reaches the host");
+    assertEqual(JSON.parse(post.body).fallbackModel, true, "the fallback patch is posted");
+    releaseGenerate();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    client.instance.flushWrites();
+    assertEqual(client.storage._data["dsh-nextsteps.captures.session.s1"], undefined, "the stale answer never lands after the signature change");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("conversation options panel stores a per session instruction and sends it as the body override", async () => {
   const generateBodies = [];
   const { client, registrations } = clientWithRoutes({
@@ -3309,24 +3365,6 @@ test("the metrics record the persistence, the rendering and the generation", asy
 });
 
 test("the client clamps the latency budget when the settings do not carry one", async () => {
-  const armDeadline = async (settings) => {
-    const client = loadClient({ routes: { "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } } });
-    try {
-      const { ctx, registrations } = fakeSlotHost(client.react);
-      client.instance.apply(ctx);
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      const timeouts = [];
-      const originalSetTimeout = client.window.setTimeout;
-      client.window.setTimeout = (fn, ms) => { timeouts.push(ms); return originalSetTimeout(fn, ms); };
-      const tail = registrations.find((entry) => entry.spec?.name === "conversation.chat.turnTail");
-      tail.component({ sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
-      for (const effect of client.react.__effects ?? []) await effect();
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      return timeouts;
-    } finally {
-      client.fetchStub.restore();
-    }
-  };
   const missing = await armDeadline({ lang: "en", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", maxSuggestionChars: 200 });
   assert(missing.includes(65000), `the missing budget arms the default deadline: ${JSON.stringify(missing)}`);
   const seven = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 7000 });
@@ -3336,6 +3374,61 @@ test("the client clamps the latency budget when the settings do not carry one", 
   assert(junk.every((ms) => Number.isFinite(ms)), `every armed deadline is finite: ${JSON.stringify(junk)}`);
   const tiny = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 1 });
   assert(tiny.includes(10000), `a budget below the floor is clamped: ${JSON.stringify(tiny)}`);
+});
+
+test("the fallback setting doubles the armed generation deadline", async () => {
+  const off = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 7000 });
+  assert(off.includes(12000), `the fallback-off budget arms the budget plus slack: ${JSON.stringify(off)}`);
+  const on = await armDeadline({ ...NEW_SETTINGS, lang: "en", latencyBudgetMs: 7000, fallbackModel: true });
+  assert(on.includes(19000), `the fallback-on budget arms twice the budget plus slack: ${JSON.stringify(on)}`);
+});
+
+test("the diagnostics button copies the support blob and announces the copy", async () => {
+  const clipboard = fakeClipboard();
+  const storage = memoryStorage({
+    "dsh-nextsteps.metrics": JSON.stringify({ generation: [100, 300], persistence: [50], rendering: [] }),
+    "dsh-nextsteps.last-error": JSON.stringify({ message: "the generator answered with HTTP 502: upstream exploded", at: 1700000000000, timedOut: true })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS, lang: "en" }, version: "1.0.0" } }, { storage, clipboard });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const button = walk(tree, (node) => node.type === "button" && node.children.includes("diagCopy"))[0];
+    assert(button !== undefined, "the about pane offers the diagnostics button");
+    await button.props.onClick();
+    assertEqual(clipboard.writes.length, 1, "the diagnostics text reaches the clipboard");
+    const text = clipboard.writes[0];
+    assertIncludes(text, "plugin: dsh-nextsteps 1.0.0", "the blob names the plugin and its version");
+    assertIncludes(text, "environment: unknown", "the harness navigator carries no userAgent, so the blob pins the fallback");
+    assertIncludes(text, "mode: host", "the mode uses the same host predicate as the settings");
+    assertIncludes(text, '"latencyBudgetMs":30000', "the active settings ride as JSON");
+    assertIncludes(text, "metrics: generation n=2 avg=200ms max=300ms; persistence n=1 avg=50ms max=50ms; rendering n=0", "the metrics line carries count, average and maximum");
+    assertIncludes(text, "last error: the generator answered with HTTP 502: upstream exploded at 2023-11-14T22:13:20.000Z (timedOut: true)", "the last error carries message, timestamp and timeout flag");
+    assertIncludes(text, "harness version: not available from the client", "the blob documents that the harness version is unreachable");
+    const after = section.component({ t: (key) => key });
+    const notice = walk(after, (node) => String(node.props?.className ?? "") === "dsh-sf-notice");
+    assert(notice.length === 1 && notice[0].children.join("").includes("srCopied"), `the copy is announced: ${JSON.stringify(notice[0]?.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a refused diagnostics copy announces the failure", async () => {
+  const clipboard = fakeClipboard({ fail: true });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { clipboard, execCommandResult: false });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const button = walk(tree, (node) => node.type === "button" && node.children.includes("diagCopy"))[0];
+    await button.props.onClick();
+    const after = section.component({ t: (key) => key });
+    const notice = walk(after, (node) => String(node.props?.className ?? "") === "dsh-sf-notice");
+    assert(notice.length === 1 && notice[0].children.join("").includes("copyFailed"), `the refused copy is announced: ${JSON.stringify(notice[0]?.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
 });
 
 function favoritesExportClient(storageSeed) {
@@ -4345,6 +4438,25 @@ test("a generated card carries its model origin", async () => {
     const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin")[0];
     assert(origin !== undefined, "the tail header renders the origin line");
     assertEqual(textOf(origin), "via demo-model", `the origin line names the generating model: ${textOf(origin)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a fallback capture renders the fallback origin chip", () => {
+  const storage = memoryStorage({
+    "dsh-nextsteps.captures.session.s1": JSON.stringify({
+      "generated-1": { turn: 1, followups: [{ prompt: "reserva", label: "Reserva" }], clickedId: "sf-1", origin: { model: "demo-model", source: "fallback", at: 1000 } }
+    })
+  });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { storage });
+  try {
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => ({ originLabel: "via {model}", originFallback: "via {model} (fallback)" }[key] ?? key) };
+    const rendered = renderTail(client, tail, props);
+    const origin = walk(rendered, (node) => String(node.props?.className ?? "") === "dsh-sf-origin")[0];
+    assert(origin !== undefined, "the tail renders the origin line");
+    assertEqual(textOf(origin), "via demo-model (fallback)", `the fallback origin names the model: ${textOf(origin)}`);
   } finally {
     client.fetchStub.restore();
   }

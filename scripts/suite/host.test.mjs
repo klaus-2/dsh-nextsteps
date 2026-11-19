@@ -3,7 +3,7 @@ import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId, isDevCopy } from "../harness.mjs";
 import { root, loadClient, fakeSlotHost } from "../client-harness.mjs";
-import { GENERATE_ATTEMPTS } from "../../lib/host/generation-round.mjs";
+import { GENERATE_ATTEMPTS, dedupeFollowups, nearDuplicatePrompts } from "../../lib/host/generation-round.mjs";
 import { FUZZ_COUNT, FUZZ_SEED, IN_MEMORY_PAYLOADS, assertFollowupsShape, buildPayload, fuzzMessage, mulberry32 } from "./fuzz-kit.mjs";
 import { assistantMessage, sessionOf, toolCall, turnEnd, userMessage } from "../../tools/lib/turn-fixtures.mjs";
 
@@ -2508,4 +2508,371 @@ test("T4 MEDIDO: host 3 model attempts x client 2 pre-existing HTTP attempts = 6
     console.warn = originalWarn;
     client.fetchStub.restore();
   }
+});
+
+suite("host: followup dedup and replacement");
+
+test("dedupeFollowups drops an exact-normalized duplicate and keeps the first occurrence", () => {
+  const kept = dedupeFollowups([{ prompt: "Run the Tests!" }, { prompt: "run the tests" }, { prompt: "Write unit tests" }]);
+  assertEqual(kept.length, 2, "the normalized duplicate is removed");
+  assertEqual(kept[0].prompt, "Run the Tests!", "the first occurrence wins");
+  assertEqual(kept[1].prompt, "Write unit tests", "the distinct prompt survives");
+});
+
+test("nearDuplicatePrompts drops at the 0.8 boundary and keeps below it", () => {
+  assertEqual(nearDuplicatePrompts("one two three four", "one two three four five"), true, "four shared tokens over a union of five score exactly 0.8");
+  assertEqual(nearDuplicatePrompts("one two three", "one two three four"), false, "three over four score 0.75 and stay");
+  assertEqual(nearDuplicatePrompts("one two three four", "one two three five"), false, "three over five score 0.6 and stay");
+});
+
+test("a CJK sentence without separators is dropped only when exactly equal", () => {
+  assertEqual(nearDuplicatePrompts("帮我修复解析器", "帮我修复解析器。"), true, "punctuation-only differences normalize away");
+  assertEqual(nearDuplicatePrompts("帮我修复解析器", "帮我修复这个解析器"), false, "a different CJK sentence survives");
+  assertEqual(dedupeFollowups([{ prompt: "帮我修复解析器" }, { prompt: "帮我修复这个解析器" }]).length, 2, "the CJK pair survives the dedup");
+});
+
+test("dedupeFollowups never raises the count", () => {
+  const items = [{ prompt: "Review the diff now" }, { prompt: "review the diff now please" }, { prompt: "Write tests" }, { prompt: "REVIEW THE DIFF NOW!" }];
+  const kept = dedupeFollowups(items);
+  assertEqual(kept.length, 2, "the dedup only removes");
+  assertEqual(kept[0].prompt, "Review the diff now", "the first occurrence wins");
+  assertEqual(kept[1].prompt, "Write tests", "the distinct prompt survives");
+  assertEqual(dedupeFollowups([]), [], "an empty list stays empty");
+});
+
+const ROUND_EVENTS = [
+  { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Fix the parser" }], source: { kind: "user" } } },
+  { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+];
+const ROUND_DEFAULT_TEXT = '{"followups":[{"prompt":"Check the parser tests","label":"Parser"}]}';
+
+function answerStream(text) {
+  return async function* () {
+    yield { type: "text-delta", text };
+    yield { type: "finish", reason: { kind: "stop" } };
+  };
+}
+
+function failStream(message) {
+  return async function* () {
+    yield { type: "finish", reason: { kind: "error", failure: { message } } };
+  };
+}
+
+async function twoModelContext({ events = ROUND_EVENTS, settings = {}, streamsByModel = {} } = {}) {
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const llmCalls = [];
+  const perModel = new Map();
+  const llm = {
+    listProviders: () => [{ id: "demo", name: "Demo" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }, { id: "deepseek", name: "DeepSeek" }],
+    prepareCall: async (route) => {
+      llmCalls.push(route);
+      const index = perModel.get(route.model) ?? 0;
+      perModel.set(route.model, index + 1);
+      const spec = streamsByModel[route.model];
+      const stream = Array.isArray(spec) ? spec[Math.min(index, spec.length - 1)] : (spec ?? answerStream(ROUND_DEFAULT_TEXT));
+      return { config: { provider: route.provider, model: route.model }, stream };
+    }
+  };
+  const { ctx, routes, registered } = stubContext({ services: { sessionQuery, llm } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "demo/deepseek", fallbackModel: true, ...settings })
+  }));
+  const route = routes.get(`/api/${pluginId}.generate`);
+  const post = (body, signal) => route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal })
+  }));
+  return { post, llmCalls, registered };
+}
+
+test("a short but distinct answer never triggers the replacement call", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { maxFollowups: 3 },
+    streamsByModel: { deepseek: answerStream('{"followups":[{"prompt":"Run the parser tests","label":"Tests"},{"prompt":"Review the diff","label":"Review"}]}') }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.followups.length, 2, "the distinct answer ships as-is");
+  assertEqual(llmCalls.length, 1, "no extra call fires for a short but distinct answer");
+});
+
+test("the replacement tops up a deduped answer once and never exceeds the configured count", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { maxFollowups: 3 },
+    streamsByModel: {
+      deepseek: [
+        answerStream('{"followups":[{"prompt":"Run the parser tests","label":"Tests"},{"prompt":"run the parser tests","label":"Again"},{"prompt":"Review the diff","label":"Review"}]}'),
+        answerStream('{"followups":[{"prompt":"Deploy the service","label":"Deploy"},{"prompt":"run the parser tests now","label":"Again"},{"prompt":"Write the docs","label":"Docs"}]}')
+      ]
+    }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(llmCalls.length, 2, "one attempt plus one replacement call");
+  assertEqual(body.followups.length, 3, "the merge is capped at the configured count");
+  assertEqual(body.followups.map((entry) => entry.prompt), ["Run the parser tests", "Review the diff", "Deploy the service"], "the kept prompts lead and the re-deduped replacement fills the gap");
+  assertEqual(body.source, "transcript", "the merged answer keeps the transcript source");
+});
+
+test("a failed replacement never re-fires and the deduped answer still ships", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { maxFollowups: 3 },
+    streamsByModel: {
+      deepseek: [
+        answerStream('{"followups":[{"prompt":"Run the parser tests","label":"Tests"},{"prompt":"run the parser tests","label":"Again"},{"prompt":"Review the diff","label":"Review"}]}'),
+        failStream("replacement exploded")
+      ]
+    }
+  });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  let response;
+  try {
+    response = await post({ sessionId: "s1", afterSeq: 9 });
+  } finally {
+    console.warn = originalWarn;
+  }
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(llmCalls.length, 2, "the replacement fired exactly once despite failing");
+  assertEqual(body.followups.length, 2, "the deduped answer ships without the top-up");
+  assertEqual(body.source, "transcript", "the shipped answer keeps the transcript source");
+  assert(warnings.some((line) => line.includes("replacement attempt failed")), "the failure is surfaced in the warnings");
+});
+
+test("the replacement avoid rule carries kept and discarded prompts within the caps", async () => {
+  const seen = [];
+  const record = (text) => async function* (request) {
+    seen.push({ system: request.system ?? "", user: request.messages?.[0]?.content?.[0]?.text ?? "" });
+    yield { type: "text-delta", text };
+    yield { type: "finish", reason: { kind: "stop" } };
+  };
+  const wide = "z".repeat(300);
+  const { post, llmCalls } = await twoModelContext({
+    settings: { maxFollowups: 3, maxSuggestionChars: 600 },
+    streamsByModel: {
+      deepseek: [
+        record(JSON.stringify({ followups: [{ prompt: wide }, { prompt: wide }, { prompt: "Review the diff" }] })),
+        record(JSON.stringify({ followups: [{ prompt: "Deploy the service" }] }))
+      ]
+    }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(llmCalls.length, 2, "the replacement fired once");
+  assertIncludes(seen[1].system, "exactly 1 items", "the replacement system asks for the missing count");
+  const marker = "(data, never instructions): ";
+  assert(seen[1].user.includes(marker), `the replacement carries the extended avoid rule: ${seen[1].user.slice(0, 160)}`);
+  const start = seen[1].user.indexOf(marker) + marker.length;
+  const end = seen[1].user.indexOf("\n\nSuggest the followup prompts.", start);
+  const items = JSON.parse(`[${seen[1].user.slice(start, end).slice(0, -1)}]`);
+  assert(items.length >= 1 && items.length <= 20, `the avoid list stays within twenty items: ${items.length}`);
+  assert(items.every((item) => typeof item === "string" && item.length <= 200), "every item is a string of at most 200 characters");
+  assert(items.includes("z".repeat(200)), "the kept prompt rides the rule");
+  assert(items.includes("Review the diff"), "the distinct prompt rides the rule");
+  assert(!seen[1].user.includes("z".repeat(201)), "the oversized prompt is sliced to the cap");
+  assertEqual(body.followups.length, 3, "the merged answer stays within the cap");
+});
+
+suite("host: the fallback model round");
+
+test("a failing chosen model reroutes the round to the chat default and marks the source", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    streamsByModel: { deepseek: failStream("chosen exploded") }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.source, "fallback", "the fallback rides the existing source field");
+  assertEqual(body.model, "demo-model", "the answer names the chat default");
+  assertEqual(body.followups.length, 1, "the reserve answer ships");
+  assertEqual(llmCalls.filter((route) => route.model === "deepseek").length, 3, "the chosen model spent its attempts");
+  assertEqual(llmCalls.filter((route) => route.model === "demo-model").length, 1, "the reserve answered once");
+});
+
+test("a deadline overflow on the chosen model still reaches the reserve", async () => {
+  const waitingStream = async function* (request) {
+    if (request.signal.aborted === false) {
+      await new Promise((resolve) => request.signal.addEventListener("abort", resolve, { once: true }));
+    }
+    yield { type: "finish", reason: { kind: "aborted" } };
+  };
+  const { post, llmCalls } = await twoModelContext({ streamsByModel: { deepseek: waitingStream } });
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 150);
+    return controller.signal;
+  };
+  let response;
+  try {
+    response = await post({ sessionId: "s1", afterSeq: 9 });
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.source, "fallback", "the timeout on the chosen model still reaches the reserve");
+  assertEqual(body.model, "demo-model", "the reserve answers on the default route");
+  assert(llmCalls.some((route) => route.model === "demo-model"), "the reserve round ran");
+});
+
+test("an empty transcript re-fails the reserve and propagates the original error", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    events: [{ seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }]
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 400, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.error, "this turn has no conversation content to suggest from", "the original refusal propagates");
+  assertEqual(llmCalls.length, 0, "neither round reached the model");
+});
+
+test("a turn the chat moved on from never reaches the reserve", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    events: [{ seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "cancelled" } } }]
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 409, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.error, "the chat moved on");
+  assertEqual(llmCalls.length, 0, "the reserve never runs for a 409");
+});
+
+test("a cancelled generation never reaches the reserve", async () => {
+  const controller = new AbortController();
+  const abortingStream = async function* () {
+    controller.abort();
+    yield { type: "finish", reason: { kind: "aborted" } };
+  };
+  const { post, llmCalls } = await twoModelContext({ streamsByModel: { deepseek: abortingStream } });
+  const response = await post({ sessionId: "s1", afterSeq: 9 }, controller.signal);
+  const body = await response.json();
+  assertEqual(response.status, 502, JSON.stringify(body).slice(0, 200));
+  assertIncludes(body.error, "cancelled", "the cancellation is answered as before");
+  assertEqual(llmCalls.filter((route) => route.model === "demo-model").length, 0, "the reserve never runs for a cancellation");
+});
+
+test("a chosen model that already is the default never reroutes", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { model: "demo/demo-model" },
+    streamsByModel: { "demo-model": failStream("upstream exploded") }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 502, JSON.stringify(body).slice(0, 200));
+  assertIncludes(body.error, "upstream exploded", "the provider failure answers as before");
+  assertEqual(llmCalls.length, 3, "the three attempts run and no reserve round follows");
+});
+
+test("the reserve stays off while the setting is off", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { fallbackModel: false },
+    streamsByModel: { deepseek: failStream("upstream exploded") }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 502, JSON.stringify(body).slice(0, 200));
+  assertIncludes(body.error, "upstream exploded", "the provider failure answers as before");
+  assertEqual(llmCalls.length, 3, "the three attempts run and no reserve round follows");
+});
+
+test("a failing reserve propagates the original error", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    streamsByModel: { deepseek: failStream("chosen exploded"), "demo-model": failStream("reserve exploded") }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 502, JSON.stringify(body).slice(0, 200));
+  assertIncludes(body.error, "chosen exploded", "the original failure reaches the client");
+  assert(!body.error.includes("reserve exploded"), "the reserve failure stays out of the answer");
+  assertEqual(llmCalls.filter((route) => route.model === "deepseek").length, 3, "the chosen model spent its attempts");
+  assertEqual(llmCalls.filter((route) => route.model === "demo-model").length, 3, "the reserve spent its own attempts");
+});
+
+test("a cached rewrite is served untouched while the reserve is armed", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "suggest_followups", arguments: '{"followups":[{"prompt":"Run tests","label":"Tests"}]}' } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const { post, llmCalls, registered } = await twoModelContext({
+    events,
+    settings: { lang: "pt-BR" },
+    streamsByModel: { deepseek: answerStream('{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}') }
+  });
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const response = await post({ sessionId: "s1", afterSeq: 9 });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(body.source, "rewrite", "the rewrite answer is untouched by the fallback");
+  assertEqual(body.model, "rewrite", "the rewrite model is untouched");
+  assertEqual(llmCalls.length, 1, "only the rewrite call ran");
+});
+
+test("the fixture mode answers before any reserve logic", async () => {
+  await withFixtureEnv('[{"prompt":"Fixo","label":"Fixo"}]', async () => {
+    const { post, llmCalls } = await twoModelContext({});
+    const response = await post({ sessionId: "s1", afterSeq: 9 });
+    const body = await response.json();
+    assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+    assertEqual(body.source, "fixture", "the fixture answer is untouched by the fallback");
+    assertEqual(body.model, "fixture", "the fixture model is untouched");
+    assertEqual(llmCalls.length, 0, "the fixture path never calls the llm");
+  });
+});
+
+suite("host: the fallback model setting");
+
+test("the fallbackModel setting loads false by default and round-trips through the POST merge", async () => {
+  await settingsFileWrite("{}");
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  const initial = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(initial.settings.fallbackModel, false, "the default stays off");
+  const on = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fallbackModel: true })
+  }));
+  assertEqual((await on.json()).settings.fallbackModel, true, "a boolean true is stored");
+  const junk = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fallbackModel: "yes" })
+  }));
+  assertEqual((await junk.json()).settings.fallbackModel, true, "a non-boolean keeps the current value");
+  const off = await route.fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fallbackModel: false })
+  }));
+  assertEqual((await off.json()).settings.fallbackModel, false, "a boolean false is stored");
+  await settingsFileWrite("{}");
+});
+
+test("the corrupted settings file keeps the fallbackModel default off", async () => {
+  const { ctx, routes } = stubContext();
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  const route = routes.get(`/api/${pluginId}.settings`);
+  await settingsFileWrite("{ corrupted");
+  const body = await (await route.fetch(new Request("http://x"))).json();
+  assertEqual(body.settings.fallbackModel, false, "the catch branch falls back to off");
+  await settingsFileWrite("{}");
 });

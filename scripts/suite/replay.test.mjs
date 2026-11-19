@@ -20,7 +20,8 @@ const KEYS = [
   "cancelled",
   "timedOut",
   "502-provider",
-  "400-empty-transcript"
+  "400-empty-transcript",
+  "fallback-model"
 ];
 const CASE_FIELDS = ["status", "body", "source", "model", "rev"];
 const NULLABLE_FIELDS = ["source", "model", "rev"];
@@ -60,7 +61,7 @@ function loadGolden() {
     throw new Error(`golden.json is not valid JSON at ${goldenPath} (${error.message})`);
   }
   assert(golden !== null && typeof golden === "object" && !Array.isArray(golden), "golden is an object");
-  assertEqual(Object.keys(golden).sort(), [...KEYS].sort(), "golden has exactly the 11 canonical keys");
+  assertEqual(Object.keys(golden).sort(), [...KEYS].sort(), "golden has exactly the 12 canonical keys");
   for (const key of KEYS) assertCaseSchema(golden[key], `golden.${key}`);
   return golden;
 }
@@ -112,14 +113,14 @@ function errorStream(message) {
   };
 }
 
-function makeLlm(stream) {
+function makeLlm(stream, { streamsByModel = {}, models = [] } = {}) {
   const calls = [];
   const llm = {
     listProviders: () => [{ id: "demo", name: "Demo" }],
-    listModels: async () => [{ id: "demo-model", name: "Demo Model" }],
+    listModels: async () => [{ id: "demo-model", name: "Demo Model" }, ...models],
     prepareCall: async (route) => {
       calls.push(route);
-      return { config: { provider: route.provider, model: route.model }, stream };
+      return { config: { provider: route.provider, model: route.model }, stream: streamsByModel[route.model] ?? stream };
     }
   };
   return { llm, calls };
@@ -425,6 +426,25 @@ test("400-empty-transcript captures a completed turn without content", async () 
   finish("400-empty-transcript", result, (value) => {
     assertEqual(value.status, 400, "empty transcript status");
     assertEqual(value.body, { error: "this turn has no conversation content to suggest from" }, "empty transcript body");
+  });
+});
+
+test("fallback-model captures a reserve round on the chat default model", async () => {
+  const { llm, calls } = makeLlm(textStream(MODEL_TEXT), {
+    models: [{ id: "deepseek", name: "DeepSeek" }],
+    streamsByModel: { deepseek: errorStream("reserve exploded") }
+  });
+  const { generate } = await mount({ llm, settings: { fallbackModel: true, model: "demo/deepseek" } });
+  const result = await fromResponse(await generate(requestBody("generate")));
+  assertEqual(calls.filter((route) => route.model === "deepseek").length, 3, "the chosen model spends its three attempts");
+  assertEqual(calls.filter((route) => route.model === "demo-model").length, 1, "the reserve answers once on the default route");
+  finish("fallback-model", result, (value) => {
+    assertEqual(value.status, 200, "fallback status");
+    assertEqual(value.body.ok, true, "fallback ok");
+    assertEqual(value.rev, "sf-3", "fallback rev");
+    assertEqual(value.source, "fallback", "the fallback overrides the transcript source");
+    assertEqual(value.model, "demo-model", "the answer names the chat default model");
+    assertEqual(value.body.followups.length, 2, "the reserve carries both cards");
   });
 });
 

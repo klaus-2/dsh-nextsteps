@@ -44,8 +44,8 @@ test("the settings the client sends are the ones the host reads", () => {
 });
 
 test("the settings the host stores are the ones the client renders", () => {
-  const hostStores = [...hostSource.matchAll(/^\s+(lang|maxFollowups|showHeader|model|styles|generationMode|latencyBudgetMs|maxSuggestionChars|retentionDays|transcriptScope|customInstruction|cardActions):/gm)].map((match) => match[1]);
-  assertEqual(new Set(hostStores).size, 12, "the host stores the four old and the new settings, including the action layout");
+  const hostStores = [...hostSource.matchAll(/^\s+(lang|maxFollowups|showHeader|model|fallbackModel|styles|generationMode|latencyBudgetMs|maxSuggestionChars|retentionDays|transcriptScope|customInstruction|cardActions):/gm)].map((match) => match[1]);
+  assertEqual(new Set(hostStores).size, 13, "the host stores the four old and the new settings, including the action layout");
   for (const key of new Set(hostStores)) {
     assert(clientSource.includes(key), `the client renders the ${key} setting`);
   }
