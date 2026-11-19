@@ -47,3 +47,27 @@
 - `node tools/regression.mjs` → **419/419, exit 0**.
 - `npm run test:coverage` → **exit 0**, agregado 85.21% lines / 86.04% funcs (thresholds do package.json: lines 81 / functions 79).
 - Anti-flake: **5/5 corridas consecutivas** de `node scripts/test.mjs` → 393 passed, 0 failed, exit 0 em todas.
+
+## Corps de verificação (sobre o commit a5d47ee)
+- **diff-reviewer**: **Score 9/10**, merge **READY** — zero BLOCKING, zero IMPORTANT; 1 MINOR (script-guard no merge da substituição) + 5 INFO. Todas as alegações de evidência reproduzidas na árvore (393/0 ×3, 419/419, cobertura, golden byte-idêntico, paridade de dicionários 15/15, pin shim removido).
+- **error-auditor**: **NEEDS FIXES** — 1 CONFIRMED DEFECT (a chamada de substituição descartava a constraint `avoid` do usuário — sugestões marcadas como irrelevantes podiam ressuscitar), 3 REQUIRES JUSTIFICATION (modelCatalog sem guard no catch do fallback; blob de diagnóstico podia reportar defaults como ajustes reais; falhas de regeneração nunca chegavam ao last-error), 8 JUSTIFIED EXCEPTION (incl. regen path sem deadline client — a reserva não é cortada; registro do onFailure é o falha FINAL, não intermediária).
+
+## Ciclo de fixes (delta-scoped, Lead) → commit 99c7662
+1. **F1 (defeito confirmado)**: `avoidTexts` da substituição semeado com o `avoid` do pedido primeiro (constraint do usuário sobrevive à pressão do cap de 20).
+2. **Script-guard eficaz**: o teste de script usa a string CONCATENADA, então testar `merged` era no-op (merged ⊇ kept, já aprovado). Fix correto: guard sobre os **extras** da substituição isoladamente — wrong-script → warn + envia `kept`. (Dois loops de teste: primeira tentativa testava merged → no-op flagrado pelo teste novo; segunda retornava `[]` → esvaziava o conjunto final; terceira retornou `kept` ✓.)
+3. **F2**: `modelCatalog()` no catch do fallback com try/catch próprio → catálogo quebrado preserva o erro original (teste novo: erro 502 "the provider list exploded" chega ao body).
+4. **F4**: falhas de regeneração registram `recordLastError(regenKey, ...)` (não-abort apenas).
+5. **F3**: marcador `settings source: host | defaults (host settings not loaded)` no blob (flag `hostSettingsLoaded` em `applySettings`).
+6. Mensagem do last-error limitada a 300 caracteres.
+
+- Testes delta: +2 host (avoid do pedido na regra de substituição; wrong-script degrada a kept com warn) +1 host (catálogo quebrado preserva erro original) +2 client (blob marca defaults quando settings não carregam; falha de regen persiste last-error) +1 asserção (settings source: host).
+- Re-verificação final pós-fixes: `node scripts/test.mjs` → **398 passed, 0 failed, exit 0** (×3 consecutivas); `node tools/regression.mjs` → **419/419**; `npm run test:coverage` → **exit 0** (85.32% lines / 86.04% funcs; generation-round.mjs 95.34% lines / 100% funcs).
+
+## Docs (commit b4d7674)
+- README.md / README.pt-BR.md / README.zh-CN.md: linha `Fallback model / Modelo reserva / 备用模型` nas tabelas de configurações; bullets de features + prosa de geração para o filtro de quase-idênticas, modelo reserva e cópia de diagnóstico; linha-resumo da página de configurações atualizada (en).
+- CHANGELOG.md [Unreleased]: Added ×3 (filtro, reserva, diagnóstico) + Changed ×2 (store chaveado com retry — trabalho pré-existente da sessão anterior, sem entrada até então; module deepening já registrada).
+
+## Decisões reservadas ao humano
+- customInstruction (texto livre do usuário) segue no JSON de settings do blob de diagnóstico — avaliado como aceitável (cópia disparada pelo usuário, fica local até colar); redação futura é um refinamento possível.
+- Versão do harness indisponível client-side (nenhuma superfície expõe) — o blob declara a ausência; se o harness passar a expor, basta acrescentar a linha.
+- Override de modelo por conversa é ignorado pela reserva (por contrato: a reserva usa o default do chat).
