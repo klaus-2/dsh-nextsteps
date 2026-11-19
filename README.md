@@ -54,6 +54,9 @@ dsh plugin --profile web add dsh-nextsteps
 - **Regenerate a single card** — replaces one suggestion with a fresh single-card generation, keeping the rest of the round intact.
 - **Per-conversation generation model** — the conversation options panel can pick a model that rides the generate request, alongside the language and followups overrides.
 - **Avoid already-sent suggestions** — the generator receives the prompts already present in the conversation (clicked ones first) and is told not to repeat them.
+- **Near-identical suggestions are filtered** — the round's prompts are compared by normalized text (token overlap of at least 0.8) and near-duplicates are dropped; when the filter shrinks the answer below the request, the generator is asked once for replacements that also respect the avoid list.
+- **Fallback model** — an opt-in setting repeats a failed or timed-out generation round once with the chat's default model; reserve cards show a fallback origin label, and the client deadline doubles so the reserve can finish.
+- **Copy diagnostics** — a button in the About tab copies a support report with the plugin version, environment, active settings, performance metrics and the last recorded error; the harness version is not reachable from the client and the report says so.
 - **Card origin label** — the last card of a round shows the model that produced it and when, and the label persists with the capture.
 - **Safety badges** — heuristic checks flag suggestions that look like prompt-injection attempts or carry credential-like strings; the card shows a badge and sending stays possible.
 - **Favourites management** — search, edit the text, bulk copy/remove, JSON export and import (backup and moving between machines), and drag or keyboard reordering; the Markdown export follows the saved order.
@@ -68,7 +71,7 @@ dsh plugin --profile web add dsh-nextsteps
 - **Style badge** — a card can carry a small badge naming the angle the generator gave it — Next action, Explore or Deep dive.
 - **Pause suggestions** — a conversation options switch that stops all generation for that conversation; cards captured while paused stay stored but hidden until you resume.
 - An incremental capture history: each session keeps its own key and an index tracks the order, so a session you never open is never read.
-- Settings page inside the dsh settings — language, followups per turn, styles, generation mode, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates.
+- Settings page inside the dsh settings — language, followups per turn, styles, generation mode, fallback model, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates, diagnostics.
 - An explicit language (or an explicit model) switches to a separate clean model call, so the cards hold that language even in a conversation written in another one; `Auto` with no model follows the conversation inside the turn.
 - In-app updater — version check against npm, one-click install, restart prompt.
 - UI in English, Português (Brasil) and 简体中文.
@@ -84,7 +87,9 @@ Each action writes its outcome into one live region — a single element with `r
 - `Auto` with no model keeps the cards inside the turn: the answering model writes them in the conversation language.
 - Any other choice (an explicit language, or an explicit model) moves the cards to a separate clean model call with its own system prompt. The transcript there is data, not instructions, so the cards keep the chosen language even when the conversation is written in another one.
 - For Simplified Chinese, Japanese, Korean, Russian, Arabic and Hindi the plugin checks the script of the answer. A reply with none of the target script's characters is discarded — you get no cards rather than cards in the wrong language.
+- Near-identical answers are filtered: prompts that repeat the same idea after normalization are dropped, and when the filter shrinks the answer below the request the generator is asked once for replacements.
 - If generation fails, no card appears and the reason is written once to the dsh log. Nothing is inserted into the chat.
+- With the fallback model on, a failed or timed-out round is repeated once with the chat's default model and the reserve cards are labelled as such.
 - With no model selected, the cards use the chat's default model.
 
 The turn still ends with the answer after the tool call, and the plugin adds no to-do nudge and no call cap.
@@ -100,6 +105,7 @@ Open the dsh settings and find the **Nextsteps** section:
 | Followups per turn | How many suggested prompts are produced (1–6). |
 | Suggestion styles | The angles the suggestions should cover: *Next action*, *Explore*, *Deep dive*. Any combination; the default is all three. |
 | Generation | `Auto` suggests the followups when the turn ends; `On demand` waits for you to press the button under the answer. |
+| Fallback model | When a round fails or runs out of time, it is repeated once with the chat's default model; reserve cards carry a `via <model> (fallback)` origin label. Off by default. |
 | Latency budget | How long the generator may run before the request is given up (5 000–120 000 ms). |
 | Suggestion length | How long a single prompt may be (60–600 characters). |
 | Show header | The small label above the cards. |

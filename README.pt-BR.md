@@ -54,6 +54,9 @@ dsh plugin --profile web add dsh-nextsteps
 - **Regenerar um único cartão** — substitui uma sugestão por uma geração nova de cartão único, mantendo o restante da rodada intacto.
 - **Modelo de geração por conversa** — o painel de opções da conversa pode escolher um modelo que vai na requisição de geração, junto com os overrides de idioma e quantidade.
 - **Evitar sugestões já enviadas** — o gerador recebe os prompts já presentes na conversa (os clicados primeiro) e é instruído a não repeti-los.
+- **Sugestões quase idênticas são filtradas** — os prompts da rodada são comparados por texto normalizado (sobreposição de tokens de pelo menos 0.8) e as quase-duplicatas são descartadas; quando o filtro encolhe a resposta abaixo do pedido, o gerador recebe um pedido único de substituições que também respeitam a lista de evitar.
+- **Modelo reserva** — uma opção desligada por padrão repete uma rodada falha ou estourada uma vez com o modelo padrão da conversa; os cartões da reserva mostram o rótulo de origem de reserva, e o prazo do cliente dobra para a reserva terminar.
+- **Copiar diagnóstico** — um botão na aba Sobre copia um relatório de suporte com a versão do plugin, o ambiente, as configurações ativas, as métricas de desempenho e o último erro registrado; a versão do harness não é acessível pelo cliente e o relatório diz isso.
 - **Rótulo de origem do cartão** — o último cartão da rodada mostra o modelo que o produziu e quando, e o rótulo persiste com o capture.
 - **Selos de segurança** — verificações heurísticas marcam sugestões que parecem tentativas de injeção de prompt ou contêm strings semelhantes a credenciais; o cartão mostra um selo e o envio continua possível.
 - **Gestão de favoritos** — busca, edição do texto, copiar/remover em lote, exportação e importação em JSON (backup e troca de máquina) e reordenação por arraste ou teclado; a exportação em Markdown segue a ordem salva.
@@ -84,6 +87,7 @@ Cada ação grava seu resultado em uma região viva — um único elemento com `
 - `Automático` sem modelo mantém os cards dentro do turno: o modelo que responde os escreve no idioma da conversa.
 - Qualquer outra escolha (idioma explícito ou modelo explícito) passa os cards para uma chamada limpa separada, com system prompt próprio. Ali o transcript é dado, não instrução, então os cards mantêm o idioma escolhido mesmo quando a conversa está em outro.
 - Para chinês simplificado, japonês, coreano, russo, árabe e hindi o plugin confere o alfabeto da resposta. Uma resposta sem nenhum caractere do alfabeto alvo é descartada — você fica sem cards, nunca com cards no idioma errado.
+- Respostas quase idênticas são filtradas: prompts que repetem a mesma ideia após a normalização são descartados, e quando o filtro encolhe a resposta abaixo do pedido o gerador recebe um pedido único de substituições.
 - Se a geração falhar, nenhum card aparece e o motivo é escrito uma única vez no log do dsh. Nada é inserido no chat.
 - Sem modelo selecionado, os cards usam o modelo padrão da conversa.
 
@@ -100,6 +104,7 @@ Abra as configurações do dsh e encontre a seção **Nextsteps**:
 | Followups por turno | Quantas sugestões são produzidas (1–6). |
 | Estilos de sugestão | Os ângulos que as sugestões devem cobrir: *Próxima ação*, *Explorar*, *Aprofundar*. Qualquer combinação; o padrão são os três. |
 | Geração | `Automático` sugere os followups quando o turno termina; `Sob demanda` espera você apertar o botão sob a resposta. |
+| Modelo reserva | Quando uma rodada falha ou estoura o tempo, ela é repetida uma vez com o modelo padrão da conversa; os cartões da reserva recebem o rótulo de origem `via <modelo> (reserva)`. Desligado por padrão. |
 | Orçamento de latência | Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5 000–120 000 ms). |
 | Tamanho da sugestão | Quanto tempo um prompt pode ter (60–600 caracteres). |
 | Mostrar cabeçalho | O pequeno rótulo acima dos cards. |

@@ -6,8 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Near-identical suggestions are filtered.** The generation round compares its prompts by normalized text (lowercased, punctuation collapsed; token overlap of at least 0.8 counts as the same idea) and drops near-duplicates, first occurrence wins. When the filter shrinks the answer below the requested count, the generator is asked exactly once for replacements, with the kept and discarded prompts plus the user's avoid list as constraints; a replacement that comes back in the wrong script is rejected and the kept set ships.
+- **Fallback model.** A new `fallbackModel` setting (off by default) repeats a failed or timed-out generation round once with the chat's default model; reserve cards carry the `via <model> (fallback)` origin label and the client deadline doubles so the reserve can finish. The reserve never runs on a moved-on conversation (409) or a cancellation, and if it also fails the original error is what reaches the UI.
+- **Copy diagnostics.** A button in the About tab copies a support report with the plugin version, the environment user agent, whether the plugin runs in host or inline mode, the active settings (with an explicit marker of whether host settings were loaded), the performance metrics and the last recorded generation error. The harness version is not reachable from the client and the report says so.
+
 ### Changed
 
+- **Local writes go through a retrying keyed store.** Every localStorage write in the client runs through `createLocalStore`, which batches writes, retries refused writes with a backoff (250 ms, 1 s, 4 s) before dropping with a warning, and applies the per-domain private-session policies; the capture, favourites, audit, metrics and session domains share one mechanism.
 - **The generation round is deepened in a host module, with the wire contract unchanged.** The host gate, model retry, rewrite handoff and error mapping moved to `lib/host/generation-round.mjs`; the client's deadline-bound in-flight controller, probe and request-body builder stay inline in `client.js` so the browser module loader can resolve the bundle. The host module directory ships in the package `files`. Routes, statuses, `source`/`model`/`rev` values, settings and i18n strings are unchanged; the golden replay adapter in `scripts/suite/replay.test.mjs` still pins the response contract.
 
 ## [1.10.0] - 2026-11-16
