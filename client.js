@@ -329,9 +329,350 @@ window.__ModuleLoader__.load({
       return apiDiscovery;
     }
 
-    const remembered = () => { try { return localStorage.getItem(UPDATE_KEY) ?? ''; } catch { return ''; } };
-    const remember = (value) => { try { localStorage.setItem(UPDATE_KEY, value); } catch {} };
-    const forget = () => { try { localStorage.removeItem(UPDATE_KEY); } catch {} };
+    function createLocalStore(deps) {
+      const retryDelays = Array.isArray(deps?.retryDelays) ? deps.retryDelays : WRITE_RETRY_DELAYS_MS;
+      const nowOf = typeof deps?.now === 'function' ? deps.now : () => Date.now();
+      const isPrivateOf = typeof deps?.isPrivate === 'function' ? deps.isPrivate : () => false;
+      const pendingWrites = new Map();
+      const handles = new Map();
+      let writeTimer = null;
+      let writeTimerAt = Infinity;
+
+      function scheduleFlush(delay) {
+        const wait = Math.max(0, Number(delay) || 0);
+        const due = nowOf() + wait;
+        if (writeTimer !== null && writeTimerAt <= due) return;
+        if (writeTimer !== null) deps.cancel(writeTimer);
+        writeTimerAt = due;
+        writeTimer = deps.schedule(wait, () => {
+          writeTimer = null;
+          writeTimerAt = Infinity;
+          flushPending();
+        });
+      }
+
+      function flushPending() {
+        if (pendingWrites.size === 0) return;
+        const now = nowOf();
+        let nextDelay = 0;
+        const dropped = [];
+        for (const [key, pending] of [...pendingWrites.entries()]) {
+          if (pending.nextAt > now) {
+            const wait = pending.nextAt - now;
+            if (nextDelay === 0 || wait < nextDelay) nextDelay = wait;
+            continue;
+          }
+          let written = false;
+          try {
+            if (pending.remove === true) deps.storage.removeItem(key);
+            else deps.storage.setItem(key, pending.value);
+            written = true;
+          } catch {
+            written = false;
+          }
+          if (written) {
+            pendingWrites.delete(key);
+            continue;
+          }
+          const delay = retryDelays[pending.attempt];
+          if (delay === undefined) {
+            pendingWrites.delete(key);
+            dropped.push(key);
+            continue;
+          }
+          pending.attempt += 1;
+          pending.nextAt = now + delay;
+          if (nextDelay === 0 || delay < nextDelay) nextDelay = delay;
+        }
+        if (dropped.length > 0) console.warn('dsh-nextsteps: the capture store could not be written:', dropped.join(', '));
+        if (pendingWrites.size === 0) return;
+        scheduleFlush(nextDelay);
+      }
+
+      function flush() {
+        if (writeTimer !== null) {
+          deps.cancel(writeTimer);
+          writeTimer = null;
+          writeTimerAt = Infinity;
+        }
+        flushPending();
+      }
+
+      function resolveCallArgs(sessionIdOrOptions, maybeOptions) {
+        if (sessionIdOrOptions !== null && typeof sessionIdOrOptions === 'object') {
+          return { sessionId: undefined, options: sessionIdOrOptions };
+        }
+        return {
+          sessionId: typeof sessionIdOrOptions === 'string' ? sessionIdOrOptions : undefined,
+          options: maybeOptions !== null && typeof maybeOptions === 'object' ? maybeOptions : undefined
+        };
+      }
+
+      function createDomainMemory(memoryKind) {
+        if (memoryKind === 'map-session') {
+          const map = new Map();
+          return {
+            write(sessionId, value) {
+              if (typeof sessionId !== 'string' || sessionId === '') return;
+              if (typeof value !== 'string' || value === '') map.delete(sessionId);
+              else map.set(sessionId, value);
+            },
+            read(sessionId) {
+              if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+              if (isPrivateOf(sessionId) === true) return map.get(sessionId) ?? '';
+              return map.has(sessionId) ? map.get(sessionId) : undefined;
+            },
+            delete(sessionId) {
+              if (sessionId === undefined) map.clear();
+              else map.delete(sessionId);
+            }
+          };
+        }
+        if (memoryKind === 'map-session-list') {
+          const map = new Map();
+          return {
+            write(sessionId, list) {
+              if (typeof sessionId !== 'string' || sessionId === '') return;
+              if (!Array.isArray(list) || list.length === 0) map.delete(sessionId);
+              else map.set(sessionId, [...list]);
+            },
+            read(sessionId) {
+              if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+              if (isPrivateOf(sessionId) === true) return map.get(sessionId) ?? [];
+              return map.has(sessionId) ? map.get(sessionId) : undefined;
+            },
+            delete(sessionId) {
+              if (sessionId === undefined) map.clear();
+              else map.delete(sessionId);
+            }
+          };
+        }
+        if (memoryKind === 'set-items') {
+          const set = new Set();
+          return {
+            write(sessionIdOrItemId, maybeItemId) {
+              const itemId = maybeItemId !== undefined ? maybeItemId : sessionIdOrItemId;
+              if (typeof itemId === 'string' && itemId !== '') set.add(itemId);
+            },
+            read(itemId) {
+              if (itemId === undefined) return new Set(set);
+              return typeof itemId === 'string' && set.has(itemId) ? itemId : undefined;
+            },
+            delete(itemId) {
+              if (itemId === undefined) set.clear();
+              else set.delete(itemId);
+            }
+          };
+        }
+        return null;
+      }
+
+      function handle(key, policy) {
+        const existing = handles.get(key);
+        if (existing !== undefined) return existing;
+        const mode = policy?.private ?? 'none';
+        const memory = mode === 'memory' ? createDomainMemory(policy?.memoryKind) : null;
+        const listeners = new Set();
+
+        function notify(sessionId) {
+          for (const listener of [...listeners]) listener(sessionId);
+        }
+
+        function subscribe(listener) {
+          if (typeof listener !== 'function') return () => {};
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        }
+
+        function read(options) {
+          try {
+            const value = deps.storage.getItem(key);
+            return value === undefined || value === null ? null : String(value);
+          } catch (error) {
+            if (options?.silent !== true) console.warn('dsh-nextsteps: could not read ' + key + ':', error);
+            return null;
+          }
+        }
+
+        function readState(readStore, emptyState) {
+          const pending = pendingWrites.get(key);
+          if (pending !== undefined) {
+            if (pending.remove === true) return emptyState;
+            if (typeof pending.value === 'string') {
+              try {
+                const parsed = JSON.parse(pending.value);
+                if (parsed !== null && typeof parsed === 'object') return parsed;
+              } catch {
+                return readStore();
+              }
+            }
+          }
+          return readStore();
+        }
+
+        function queueFailedDirect(value, isRemove) {
+          const delay = retryDelays[0];
+          if (delay === undefined) {
+            pendingWrites.delete(key);
+            console.warn('dsh-nextsteps: the capture store could not be written:', key);
+            return;
+          }
+          pendingWrites.set(key, { value, remove: isRemove, attempt: 1, nextAt: nowOf() + delay });
+          scheduleFlush(delay);
+        }
+
+        function memoryWrite(sessionId, value) {
+          if (memory !== null) memory.write(sessionId, value);
+        }
+
+        function memoryRead(sessionId) {
+          return memory !== null ? memory.read(sessionId) : undefined;
+        }
+
+        function memoryDelete(sessionId) {
+          if (memory !== null) memory.delete(sessionId);
+        }
+
+        function write(payload, sessionIdOrOptions, maybeOptions) {
+          const { sessionId, options } = resolveCallArgs(sessionIdOrOptions, maybeOptions);
+          const shouldNotify = options?.notify !== false;
+          const priv = typeof sessionId === 'string' && sessionId !== '' && isPrivateOf(sessionId) === true;
+          if (priv) {
+            if (mode === 'skip') {
+              if (shouldNotify) notify(sessionId);
+              return true;
+            }
+            if (mode === 'memory') {
+              if (options !== undefined && 'memoryValue' in options) memoryWrite(sessionId, options.memoryValue);
+              if (shouldNotify) notify(sessionId);
+              return true;
+            }
+          }
+          const nextValue = typeof payload === 'function' ? payload() : payload;
+          let ok = false;
+          if (nextValue === null) {
+            try {
+              deps.storage.removeItem(key);
+              ok = true;
+            } catch {
+              ok = false;
+            }
+            if (ok) pendingWrites.delete(key);
+            else queueFailedDirect(null, true);
+          } else {
+            const serialized = String(nextValue);
+            try {
+              deps.storage.setItem(key, serialized);
+              ok = true;
+            } catch {
+              ok = false;
+            }
+            if (ok) pendingWrites.delete(key);
+            else queueFailedDirect(serialized, false);
+          }
+          if (shouldNotify) notify(sessionId);
+          return ok;
+        }
+
+        function enqueue(payload, sessionIdOrOptions, maybeOptions) {
+          const { sessionId, options } = resolveCallArgs(sessionIdOrOptions, maybeOptions);
+          const shouldNotify = options?.notify !== false;
+          const priv = typeof sessionId === 'string' && sessionId !== '' && isPrivateOf(sessionId) === true;
+          if (priv) {
+            if (mode === 'skip') {
+              if (shouldNotify) notify(sessionId);
+              return;
+            }
+            if (mode === 'memory') {
+              if (options !== undefined && 'memoryValue' in options) memoryWrite(sessionId, options.memoryValue);
+              if (shouldNotify) notify(sessionId);
+              return;
+            }
+          }
+          const nextValue = typeof payload === 'function' ? payload() : payload;
+          const isRemove = nextValue === null;
+          const serialized = isRemove ? null : String(nextValue);
+          const pending = pendingWrites.get(key);
+          if (pending === undefined) {
+            pendingWrites.set(key, { value: serialized, remove: isRemove, attempt: 0, nextAt: 0 });
+            scheduleFlush(0);
+          } else {
+            pending.value = serialized;
+            pending.remove = isRemove;
+            scheduleFlush(Math.max(0, pending.nextAt - nowOf()));
+          }
+          if (shouldNotify) notify(sessionId);
+        }
+
+        function remove(sessionIdOrOptions, maybeOptions) {
+          write(null, sessionIdOrOptions, maybeOptions);
+        }
+
+        const created = {
+          key,
+          read,
+          readState,
+          write,
+          enqueue,
+          remove,
+          subscribe,
+          notify,
+          memoryWrite,
+          memoryRead,
+          memoryDelete
+        };
+        handles.set(key, created);
+        return created;
+      }
+
+      return { handle, flush };
+    }
+
+    const store = createLocalStore({
+      storage: {
+        getItem: (key) => window.localStorage.getItem(key),
+        setItem: (key, value) => window.localStorage.setItem(key, value),
+        removeItem: (key) => window.localStorage.removeItem(key)
+      },
+      isPrivate: (sessionId) => isPrivateSession(sessionId),
+      retryDelays: WRITE_RETRY_DELAYS_MS,
+      now: () => Date.now(),
+      schedule: (delay, fn) => window.setTimeout(fn, delay),
+      cancel: (timerId) => window.clearTimeout(timerId)
+    });
+
+    function readHandleJson(handle, fallback) {
+      const raw = handle.read();
+      if (raw === null) return fallback;
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed === null ? fallback : parsed;
+      } catch (error) {
+        console.warn('dsh-nextsteps: could not parse ' + handle.key + ':', error);
+        return fallback;
+      }
+    }
+
+    const updateHandle = store.handle(UPDATE_KEY, { private: 'none' });
+    const favoritesOrderHandle = store.handle(FAVORITES_ORDER_KEY, { private: 'none' });
+    const metricsHandle = store.handle(METRICS_KEY, { private: 'none' });
+    const sessionOverridesHandle = store.handle(SESSION_OVERRIDES_KEY, { private: 'none' });
+    const sessionInstructionsHandle = store.handle(SESSION_INSTRUCTIONS_KEY, { private: 'memory', memoryKind: 'map-session' });
+    const notRelevantHandle = store.handle(NOT_RELEVANT_KEY, { private: 'memory', memoryKind: 'map-session-list' });
+    const clickedHandle = store.handle(CLICKED_KEY, { private: 'memory', memoryKind: 'set-items' });
+    const privateHandle = store.handle(PRIVATE_KEY, { private: 'none' });
+    const pausedHandle = store.handle(PAUSED_KEY, { private: 'none' });
+    const favoritesHandle = store.handle(FAVORITES_KEY, { private: 'skip' });
+    const discardedHandle = store.handle(DISCARDED_KEY, { private: 'skip' });
+    const cardOrderHandle = store.handle(CARD_ORDER_KEY, { private: 'skip' });
+    const collapsedHandle = store.handle(COLLAPSED_KEY, { private: 'skip' });
+    const auditHandle = store.handle(AUDIT_KEY, { private: 'skip' });
+
+    const remembered = () => updateHandle.read({ silent: true }) ?? '';
+    const remember = (value) => { updateHandle.write(String(value)); };
+    const forget = () => { updateHandle.remove({ notify: false }); };
 
     const CSS = `
 .dsh-sf-root { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
@@ -404,10 +745,6 @@ window.__ModuleLoader__.load({
     const captureCache = new Map();
     let capturesIndex = null;
     const captureListeners = new Set();
-    const discardListeners = new Set();
-    const sessionOverrideListeners = new Set();
-    const sessionInstructionListeners = new Set();
-    const sessionInstructionsMemory = new Map();
     const pendingWrites = new Map();
     let writeTimer = null;
 
@@ -519,6 +856,7 @@ window.__ModuleLoader__.load({
     }
 
     function flushWrites() {
+      store.flush();
       if (writeTimer !== null) {
         window.clearTimeout(writeTimer);
         writeTimer = null;
@@ -528,12 +866,11 @@ window.__ModuleLoader__.load({
 
     const privateSessions = new Set();
     let privateLoaded = false;
-    const privateClicked = new Set();
 
     function readPrivateSessions() {
       if (privateLoaded) return privateSessions;
       privateLoaded = true;
-      const parsed = readJson(PRIVATE_KEY, {});
+      const parsed = readHandleJson(privateHandle, {});
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const sessionId of Object.keys(parsed)) {
           if (typeof sessionId === 'string' && sessionId !== '') privateSessions.add(sessionId);
@@ -570,12 +907,13 @@ window.__ModuleLoader__.load({
       }
       residue = !writeThrough(CAPTURE_SESSION_KEY + '.' + sessionId, null) || residue;
       const sid = contentHash(sessionId);
-      const auditEntries = storeStateForWrite(AUDIT_KEY, readAudit, []);
-      const auditKept = auditEntries.filter((entry) => entry.sid !== sid);
+      const rawAuditEntries = auditHandle.readState(readAudit, []);
+      const auditEntries = Array.isArray(rawAuditEntries) ? rawAuditEntries : [];
+      const auditKept = auditEntries.filter((entry) => entry !== null && typeof entry === 'object' && entry.sid !== sid);
       if (auditKept.length !== auditEntries.length) {
-        residue = !writeThrough(AUDIT_KEY, auditKept.length === 0 ? null : JSON.stringify(auditKept.slice(-AUDIT_LIMIT))) || residue;
+        residue = !auditHandle.write(auditKept.length === 0 ? null : JSON.stringify(auditKept.slice(-AUDIT_LIMIT)), { notify: false }) || residue;
       }
-      const discardEntries = Object.entries(storeStateForWrite(DISCARDED_KEY, readDiscarded, {}));
+      const discardEntries = Object.entries(readDiscardedState());
       const discardKept = discardEntries.filter(([, value]) => value === null || typeof value !== 'object' || value.sessionId !== sessionId);
       if (discardKept.length !== discardEntries.length) {
         let payload = null;
@@ -584,26 +922,26 @@ window.__ModuleLoader__.load({
           for (const [key, value] of discardKept) kept[key] = value;
           payload = JSON.stringify(kept);
         }
-        residue = !writeThrough(DISCARDED_KEY, payload) || residue;
+        residue = !discardedHandle.write(payload, { notify: false }) || residue;
       }
-      const markEntries = storeStateForWrite(NOT_RELEVANT_KEY, readNotRelevant, {});
+      const markEntries = notRelevantHandle.readState(readNotRelevant, {});
       if (markEntries[sessionId] !== undefined) {
         const kept = {};
         for (const [key, value] of Object.entries(markEntries)) {
           if (key !== sessionId) kept[key] = value;
         }
-        residue = !writeThrough(NOT_RELEVANT_KEY, Object.keys(kept).length === 0 ? null : JSON.stringify(kept)) || residue;
+        residue = !notRelevantHandle.write(Object.keys(kept).length === 0 ? null : JSON.stringify(kept), { notify: false }) || residue;
       }
-      notRelevantMemory.delete(sessionId);
-      const instructionEntries = storeStateForWrite(SESSION_INSTRUCTIONS_KEY, readSessionInstructions, {});
+      notRelevantHandle.memoryDelete(sessionId);
+      const instructionEntries = sessionInstructionsHandle.readState(readSessionInstructions, {});
       if (instructionEntries[sessionId] !== undefined) {
         const kept = {};
         for (const [key, value] of Object.entries(instructionEntries)) {
           if (key !== sessionId) kept[key] = value;
         }
-        residue = !writeThrough(SESSION_INSTRUCTIONS_KEY, Object.keys(kept).length === 0 ? null : JSON.stringify(kept)) || residue;
+        residue = !sessionInstructionsHandle.write(Object.keys(kept).length === 0 ? null : JSON.stringify(kept), { notify: false }) || residue;
       }
-      sessionInstructionsMemory.delete(sessionId);
+      sessionInstructionsHandle.memoryDelete(sessionId);
       const legacy = storeStateForWrite(CAPTURES_KEY, () => {
         const parsed = readJson(CAPTURES_KEY, null);
         return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -623,23 +961,22 @@ window.__ModuleLoader__.load({
         residue = purgeSessionRecords(sessionId) === true;
       } else {
         next.delete(sessionId);
-        sessionInstructionsMemory.delete(sessionId);
-        notRelevantMemory.delete(sessionId);
+        sessionInstructionsHandle.memoryDelete(sessionId);
+        notRelevantHandle.memoryDelete(sessionId);
       }
       const payload = {};
       for (const id of next) payload[id] = true;
-      residue = !writeThrough(PRIVATE_KEY, Object.keys(payload).length === 0 ? null : JSON.stringify(payload)) || residue;
+      residue = !privateHandle.write(Object.keys(payload).length === 0 ? null : JSON.stringify(payload)) || residue;
       return residue;
     }
 
     const pausedSessions = new Set();
     let pausedLoaded = false;
-    const pausedSessionListeners = new Set();
 
     function readPausedSessions() {
       if (pausedLoaded) return pausedSessions;
       pausedLoaded = true;
-      const parsed = readJson(PAUSED_KEY, {});
+      const parsed = readHandleJson(pausedHandle, {});
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const sessionId of Object.keys(parsed)) {
           if (typeof sessionId === 'string' && sessionId !== '') pausedSessions.add(sessionId);
@@ -660,12 +997,11 @@ window.__ModuleLoader__.load({
         if (isPrivateSession(id)) continue;
         payload[id] = true;
       }
-      writeThrough(PAUSED_KEY, Object.keys(payload).length === 0 ? null : JSON.stringify(payload));
-      for (const listener of pausedSessionListeners) listener(sessionId);
+      pausedHandle.write(Object.keys(payload).length === 0 ? null : JSON.stringify(payload), sessionId);
     }
 
     function readSessionOverrides() {
-      const parsed = readJson(SESSION_OVERRIDES_KEY, {});
+      const parsed = readHandleJson(sessionOverridesHandle, {});
       const overrides = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
       const clean = {};
       for (const [sessionId, entry] of Object.entries(overrides)) {
@@ -680,11 +1016,11 @@ window.__ModuleLoader__.load({
     }
 
     function sessionOverrideOf(sessionId) {
-      return readSessionOverrides()[sessionId];
+      return sessionOverridesHandle.readState(readSessionOverrides, {})[sessionId];
     }
 
     function writeSessionOverride(sessionId, patch) {
-      const overrides = readSessionOverrides();
+      const overrides = sessionOverridesHandle.readState(readSessionOverrides, {});
       const merged = { ...(overrides[sessionId] ?? {}) };
       for (const [field, value] of Object.entries(patch)) {
         if (value === undefined || value === '' || value === null) delete merged[field];
@@ -696,32 +1032,21 @@ window.__ModuleLoader__.load({
         clearSessionOverride(sessionId);
         return;
       }
-      const payload = JSON.stringify({ ...overrides, [sessionId]: merged });
-      if (!writeNow(SESSION_OVERRIDES_KEY, payload)) scheduleWrite(SESSION_OVERRIDES_KEY, payload);
-      else pendingWrites.delete(SESSION_OVERRIDES_KEY);
-      for (const listener of sessionOverrideListeners) listener(sessionId);
+      sessionOverridesHandle.write(JSON.stringify({ ...overrides, [sessionId]: merged }), sessionId);
     }
 
     function clearSessionOverride(sessionId) {
-      const overrides = readSessionOverrides();
+      const overrides = sessionOverridesHandle.readState(readSessionOverrides, {});
       if (overrides[sessionId] === undefined) {
-        for (const listener of sessionOverrideListeners) listener(sessionId);
+        sessionOverridesHandle.notify(sessionId);
         return;
       }
       delete overrides[sessionId];
-      if (Object.keys(overrides).length === 0) {
-        if (!removeNow(SESSION_OVERRIDES_KEY)) scheduleRemove(SESSION_OVERRIDES_KEY);
-        else pendingWrites.delete(SESSION_OVERRIDES_KEY);
-      } else {
-        const payload = JSON.stringify(overrides);
-        if (!writeNow(SESSION_OVERRIDES_KEY, payload)) scheduleWrite(SESSION_OVERRIDES_KEY, payload);
-        else pendingWrites.delete(SESSION_OVERRIDES_KEY);
-      }
-      for (const listener of sessionOverrideListeners) listener(sessionId);
+      sessionOverridesHandle.write(Object.keys(overrides).length === 0 ? null : JSON.stringify(overrides), sessionId);
     }
 
     function readSessionInstructions() {
-      const parsed = readJson(SESSION_INSTRUCTIONS_KEY, {});
+      const parsed = readHandleJson(sessionInstructionsHandle, {});
       const instructions = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
       const clean = {};
       for (const [sessionId, value] of Object.entries(instructions)) {
@@ -733,15 +1058,13 @@ window.__ModuleLoader__.load({
     }
 
     function sessionInstructionOf(sessionId) {
-      if (isPrivateSession(sessionId)) return sessionInstructionsMemory.get(sessionId) ?? '';
-      return readSessionInstructions()[sessionId] ?? '';
+      const inMemory = sessionInstructionsHandle.memoryRead(sessionId);
+      if (inMemory !== undefined) return inMemory;
+      return sessionInstructionsHandle.readState(readSessionInstructions, {})[sessionId] ?? '';
     }
 
-    const notRelevantMemory = new Map();
-    const notRelevantListeners = new Set();
-
     function readNotRelevant() {
-      const parsed = readJson(NOT_RELEVANT_KEY, {});
+      const parsed = readHandleJson(notRelevantHandle, {});
       const marks = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
       const clean = {};
       for (const [sessionId, hashes] of Object.entries(marks)) {
@@ -754,56 +1077,35 @@ window.__ModuleLoader__.load({
     }
 
     function notRelevantFor(sessionId) {
-      if (isPrivateSession(sessionId)) return notRelevantMemory.get(sessionId) ?? [];
-      return readNotRelevant()[sessionId] ?? [];
+      const inMemory = notRelevantHandle.memoryRead(sessionId);
+      if (inMemory !== undefined) return inMemory;
+      return notRelevantHandle.readState(readNotRelevant, {})[sessionId] ?? [];
     }
 
     function writeNotRelevant(sessionId, hashes) {
       if (typeof sessionId !== 'string' || sessionId === '') return;
       const list = Array.isArray(hashes) ? hashes.filter((hash) => typeof hash === 'string' && hash !== '').slice(0, NOT_RELEVANT_PER_SESSION) : [];
-      if (isPrivateSession(sessionId)) {
-        if (list.length === 0) notRelevantMemory.delete(sessionId); else notRelevantMemory.set(sessionId, list);
-        for (const listener of notRelevantListeners) listener(sessionId);
-        return;
-      }
-      const marks = readNotRelevant();
-      if (list.length === 0) delete marks[sessionId]; else marks[sessionId] = list;
-      while (Object.keys(marks).length > NOT_RELEVANT_LIMIT) delete marks[Object.keys(marks)[0]];
-      if (Object.keys(marks).length === 0) {
-        if (!removeNow(NOT_RELEVANT_KEY)) scheduleRemove(NOT_RELEVANT_KEY);
-        else pendingWrites.delete(NOT_RELEVANT_KEY);
-      } else {
-        const payload = JSON.stringify(marks);
-        if (!writeNow(NOT_RELEVANT_KEY, payload)) scheduleWrite(NOT_RELEVANT_KEY, payload);
-        else pendingWrites.delete(NOT_RELEVANT_KEY);
-      }
-      for (const listener of notRelevantListeners) listener(sessionId);
+      notRelevantHandle.write(() => {
+        const marks = notRelevantHandle.readState(readNotRelevant, {});
+        if (list.length === 0) delete marks[sessionId]; else marks[sessionId] = list;
+        while (Object.keys(marks).length > NOT_RELEVANT_LIMIT) delete marks[Object.keys(marks)[0]];
+        return Object.keys(marks).length === 0 ? null : JSON.stringify(marks);
+      }, sessionId, { memoryValue: list });
     }
 
     function writeSessionInstruction(sessionId, text) {
       if (typeof sessionId !== 'string' || sessionId === '') return;
       const value = typeof text === 'string' ? text.trim().slice(0, MAX_SESSION_INSTRUCTION_CHARS) : '';
-      if (isPrivateSession(sessionId)) {
-        if (value === '') sessionInstructionsMemory.delete(sessionId); else sessionInstructionsMemory.set(sessionId, value);
-        for (const listener of sessionInstructionListeners) listener(sessionId);
-        return;
-      }
-      const instructions = readSessionInstructions();
-      if (value === '') delete instructions[sessionId]; else instructions[sessionId] = value;
-      while (Object.keys(instructions).length > SESSION_INSTRUCTIONS_LIMIT) delete instructions[Object.keys(instructions)[0]];
-      if (Object.keys(instructions).length === 0) {
-        if (!removeNow(SESSION_INSTRUCTIONS_KEY)) scheduleRemove(SESSION_INSTRUCTIONS_KEY);
-        else pendingWrites.delete(SESSION_INSTRUCTIONS_KEY);
-      } else {
-        const payload = JSON.stringify(instructions);
-        if (!writeNow(SESSION_INSTRUCTIONS_KEY, payload)) scheduleWrite(SESSION_INSTRUCTIONS_KEY, payload);
-        else pendingWrites.delete(SESSION_INSTRUCTIONS_KEY);
-      }
-      for (const listener of sessionInstructionListeners) listener(sessionId);
+      sessionInstructionsHandle.write(() => {
+        const instructions = sessionInstructionsHandle.readState(readSessionInstructions, {});
+        if (value === '') delete instructions[sessionId]; else instructions[sessionId] = value;
+        while (Object.keys(instructions).length > SESSION_INSTRUCTIONS_LIMIT) delete instructions[Object.keys(instructions)[0]];
+        return Object.keys(instructions).length === 0 ? null : JSON.stringify(instructions);
+      }, sessionId, { memoryValue: value });
     }
 
     function readCardOrder() {
-      const parsed = readJson(CARD_ORDER_KEY, {});
+      const parsed = readHandleJson(cardOrderHandle, {});
       const order = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
       const clean = {};
       for (const [orderKey, itemIds] of Object.entries(order)) {
@@ -814,29 +1116,34 @@ window.__ModuleLoader__.load({
       return clean;
     }
 
-    function writeCardOrder(orderKey, itemIds) {
+    function writeCardOrder(orderKey, itemIds, sessionId) {
       if (typeof orderKey !== 'string') return;
-      const next = readCardOrder();
-      next[orderKey] = itemIds;
-      while (Object.keys(next).length > CARD_ORDER_LIMIT) delete next[Object.keys(next)[0]];
-      scheduleWrite(CARD_ORDER_KEY, JSON.stringify(next));
+      cardOrderHandle.enqueue(() => {
+        const rawOrder = cardOrderHandle.readState(readCardOrder, {});
+        const next = rawOrder !== null && typeof rawOrder === 'object' && !Array.isArray(rawOrder) ? { ...rawOrder } : {};
+        next[orderKey] = itemIds;
+        while (Object.keys(next).length > CARD_ORDER_LIMIT) delete next[Object.keys(next)[0]];
+        return JSON.stringify(next);
+      }, sessionId);
     }
 
     function readCollapsed() {
-      const parsed = readJson(COLLAPSED_KEY, []);
+      const parsed = readHandleJson(collapsedHandle, []);
       if (!Array.isArray(parsed)) return new Set();
       return new Set(parsed.filter((id) => typeof id === 'string' && id !== '' && id.includes('|')));
     }
 
-    function writeCollapsed(collapsedKey, collapsed) {
+    function writeCollapsed(collapsedKey, collapsed, sessionId) {
       if (typeof collapsedKey !== 'string') return;
-      const source = storeStateForWrite(COLLAPSED_KEY, readCollapsed, []);
-      const ids = source instanceof Set ? [...source] : Array.isArray(source) ? source : [];
-      const next = new Set(ids.filter((id) => typeof id === 'string' && id !== '' && id.includes('|')));
-      if (collapsed === true) next.add(collapsedKey); else next.delete(collapsedKey);
-      const list = [...next];
-      while (list.length > COLLAPSED_LIMIT) list.shift();
-      scheduleWrite(COLLAPSED_KEY, JSON.stringify(list));
+      collapsedHandle.enqueue(() => {
+        const source = collapsedHandle.readState(readCollapsed, []);
+        const ids = source instanceof Set ? [...source] : Array.isArray(source) ? source : [];
+        const next = new Set(ids.filter((id) => typeof id === 'string' && id !== '' && id.includes('|')));
+        if (collapsed === true) next.add(collapsedKey); else next.delete(collapsedKey);
+        const list = [...next];
+        while (list.length > COLLAPSED_LIMIT) list.shift();
+        return JSON.stringify(list);
+      }, sessionId);
     }
 
     function readIndex() {
@@ -1089,24 +1396,20 @@ window.__ModuleLoader__.load({
     }
 
     function readClickedMap() {
-      try {
-        const raw = window.localStorage.getItem(CLICKED_KEY);
-        const parsed = raw === null ? {} : JSON.parse(raw);
-        return parsed !== null && typeof parsed === 'object' ? parsed : {};
-      } catch (error) {
-        console.warn('dsh-nextsteps: could not read clicked state:', error);
-        return {};
-      }
+      const parsed = readHandleJson(clickedHandle, {});
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
     }
 
-    function markClicked(clickedId) {
-      const clicked = readClickedMap();
-      clicked[clickedId] = true;
-      scheduleWrite(CLICKED_KEY, JSON.stringify(clicked));
+    function markClicked(clickedId, sessionId) {
+      clickedHandle.enqueue(() => {
+        const clicked = clickedHandle.readState(readClickedMap, {});
+        clicked[clickedId] = true;
+        return JSON.stringify(clicked);
+      }, sessionId, { memoryValue: clickedId });
     }
 
     function readAudit() {
-      const parsed = readJson(AUDIT_KEY, []);
+      const parsed = readHandleJson(auditHandle, []);
       return Array.isArray(parsed)
         ? parsed.filter((entry) => entry !== null && typeof entry === 'object' && (entry.kind === 'generated' || entry.kind === 'sent') && typeof entry.hash === 'string' && typeof entry.at === 'number')
         : [];
@@ -1129,11 +1432,13 @@ window.__ModuleLoader__.load({
     }
 
     function recordAudit(kind, text, sessionId) {
-      if (isPrivateSession(sessionId)) return;
       if (typeof text !== 'string' || text === '') return;
-      const entries = storeStateForWrite(AUDIT_KEY, readAudit, []);
-      entries.push({ at: Date.now(), kind, hash: contentHash(text), len: text.length, sid: contentHash(sessionId) });
-      scheduleWrite(AUDIT_KEY, JSON.stringify(entries.slice(-AUDIT_LIMIT)));
+      auditHandle.enqueue(() => {
+        const rawEntries = auditHandle.readState(readAudit, []);
+        const entries = Array.isArray(rawEntries) ? [...rawEntries] : [];
+        entries.push({ at: Date.now(), kind, hash: contentHash(text), len: text.length, sid: contentHash(sessionId) });
+        return JSON.stringify(entries.slice(-AUDIT_LIMIT));
+      }, sessionId);
     }
 
     function avoidPromptsFor(sessionId) {
@@ -1157,8 +1462,13 @@ window.__ModuleLoader__.load({
     }
 
     function readFavorites() {
-      const parsed = readJson(FAVORITES_KEY, null);
+      const parsed = readHandleJson(favoritesHandle, null);
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+
+    function readFavoritesState() {
+      const state = favoritesHandle.readState(readFavorites, {});
+      return state !== null && typeof state === 'object' && !Array.isArray(state) ? { ...state } : {};
     }
 
     function normalizeFavorite(text) {
@@ -1166,13 +1476,13 @@ window.__ModuleLoader__.load({
     }
 
     function readFavoritesOrder() {
-      const parsed = readJson(FAVORITES_ORDER_KEY, null);
+      const parsed = readHandleJson(favoritesOrderHandle, null);
       if (!Array.isArray(parsed)) return [];
       return parsed.filter((id) => typeof id === 'string' && id !== '');
     }
 
     function writeFavoritesOrder(hashes) {
-      scheduleWrite(FAVORITES_ORDER_KEY, JSON.stringify(hashes));
+      favoritesOrderHandle.enqueue(JSON.stringify(hashes));
     }
 
     function orderedFavoriteEntries(store, order) {
@@ -1215,15 +1525,20 @@ window.__ModuleLoader__.load({
     }
 
     function readDiscarded() {
-      const parsed = readJson(DISCARDED_KEY, null);
+      const parsed = readHandleJson(discardedHandle, null);
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+
+    function readDiscardedState() {
+      const state = discardedHandle.readState(readDiscarded, {});
+      return state !== null && typeof state === 'object' && !Array.isArray(state) ? { ...state } : {};
     }
 
     let metricsCache = null;
 
     function readMetrics() {
       if (metricsCache !== null) return metricsCache;
-      const parsed = readJson(METRICS_KEY, null);
+      const parsed = readHandleJson(metricsHandle, null);
       const metrics = { generation: [], persistence: [], rendering: [] };
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const stage of Object.keys(metrics)) {
@@ -1242,7 +1557,7 @@ window.__ModuleLoader__.load({
       if (!Array.isArray(samples)) return;
       samples.push(Math.round(ms));
       while (samples.length > METRIC_SAMPLES) samples.shift();
-      scheduleWrite(METRICS_KEY, JSON.stringify(metrics));
+      metricsHandle.enqueue(JSON.stringify(metrics));
     }
 
     function turnIdOf(value) {
@@ -1476,7 +1791,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = React.useState('');
       const [itemState, setItemState] = React.useState(() => ({}));
       const [orderState, setOrderState] = React.useState(() => ({}));
-      const [localStores, setLocalStores] = React.useState(() => ({ favorites: readFavorites(), discarded: readDiscarded() }));
+      const [localStores, setLocalStores] = React.useState(() => ({ favorites: readFavoritesState(), discarded: readDiscardedState() }));
       const [draggingId, setDraggingId] = React.useState(null);
       const dragRef = React.useRef(null);
       const busyRef = React.useRef(null);
@@ -1503,13 +1818,7 @@ window.__ModuleLoader__.load({
       const discarded = localStores.discarded;
       const items = Array.isArray(entries) ? entries : [];
       const [marksVersion, setMarksVersion] = React.useState(0);
-      React.useEffect(() => {
-        const listener = () => setMarksVersion((v) => v + 1);
-        notRelevantListeners.add(listener);
-        return () => {
-          notRelevantListeners.delete(listener);
-        };
-      }, []);
+      React.useEffect(() => notRelevantHandle.subscribe(() => setMarksVersion((v) => v + 1)), []);
       const markedHashes = marksVersion >= 0 ? notRelevantFor(sessionId) : [];
       const secretsWarnedRef = React.useRef(false);
 
@@ -1606,8 +1915,7 @@ window.__ModuleLoader__.load({
         Promise.resolve()
           .then(() => sendFollowup(text))
           .then(() => {
-            if (isPrivateSession(sessionId)) privateClicked.add(itemId);
-            else markClicked(itemId);
+            markClicked(itemId, sessionId);
             recordAudit('sent', text, sessionId);
             setSentLocally((previous) => new Set(previous).add(itemId));
             setFailure(null);
@@ -1634,7 +1942,7 @@ window.__ModuleLoader__.load({
       };
 
       const toggleFavorite = (favId, prompt, label) => {
-        const store = readFavorites();
+        const store = readFavoritesState();
         if (store[favId] !== undefined) delete store[favId];
         else {
           const candidate = normalizeFavorite(prompt);
@@ -1645,12 +1953,7 @@ window.__ModuleLoader__.load({
           }
           store[favId] = { prompt, label, at: Date.now() };
         }
-        if (isPrivateSession(sessionId)) {
-          refreshLocalStores(store, undefined);
-          setNotice(t('srFavorited'));
-          return;
-        }
-        scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+        favoritesHandle.enqueue(JSON.stringify(store), sessionId);
         refreshLocalStores(store, undefined);
         setNotice(t('srFavorited'));
       };
@@ -1664,18 +1967,15 @@ window.__ModuleLoader__.load({
       };
 
       const discard = (captureKey, prompt, label, turn) => {
-        const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
-        store[captureKey] = { prompt, label, at: Date.now(), sessionId, turn };
-        if (isPrivateSession(sessionId)) {
-          refreshLocalStores(undefined, store);
-          setNotice(t('srDiscarded'));
-          for (const listener of discardListeners) listener(sessionId);
-          return;
-        }
-        scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
-        refreshLocalStores(undefined, store);
+        const entry = { prompt, label, at: Date.now(), sessionId, turn };
+        const nextLocal = { ...discarded, ...readDiscardedState(), [captureKey]: entry };
+        refreshLocalStores(undefined, nextLocal);
         setNotice(t('srDiscarded'));
-        for (const listener of discardListeners) listener(sessionId);
+        discardedHandle.enqueue(() => {
+          const nextStore = readDiscardedState();
+          nextStore[captureKey] = entry;
+          return JSON.stringify(nextStore);
+        }, sessionId);
       };
 
       const regenerate = (itemId, prompt, label, entry) => {
@@ -1827,13 +2127,17 @@ window.__ModuleLoader__.load({
       const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
 
       const undoDiscard = (captureKey) => {
-        const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
-        if (store[captureKey] === undefined) return;
-        delete store[captureKey];
-        if (!isPrivateSession(sessionId)) scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
-        refreshLocalStores(undefined, store);
+        const persisted = readDiscardedState();
+        if (persisted[captureKey] === undefined && discarded[captureKey] === undefined) return;
+        const nextLocal = { ...discarded, ...persisted };
+        delete nextLocal[captureKey];
+        refreshLocalStores(undefined, nextLocal);
         setNotice(t('srRestored'));
-        for (const listener of discardListeners) listener(sessionId);
+        discardedHandle.enqueue(() => {
+          const nextStore = readDiscardedState();
+          delete nextStore[captureKey];
+          return JSON.stringify(nextStore);
+        }, sessionId);
       };
 
       const onItemKey = (event, itemId, prompt, label, entry) => {
@@ -1906,7 +2210,7 @@ window.__ModuleLoader__.load({
       const commitOrder = (ids) => {
         if (orderKey === undefined) return;
         setOrderState((previous) => ({ ...previous, [orderKey]: ids }));
-        if (!isPrivateSession(sessionId)) writeCardOrder(orderKey, ids);
+        writeCardOrder(orderKey, ids, sessionId);
         setNotice(t('srReordered'));
       };
       const moveItem = (draggedId, targetId, before = false) => {
@@ -1941,7 +2245,7 @@ window.__ModuleLoader__.load({
           const label = displayLabel(followup);
           const prompt = followup.prompt;
           const state = itemState[itemId] ?? {};
-          const sent = sentLocally.has(itemId) || clicked[itemId] === true || privateClicked.has(itemId);
+          const sent = sentLocally.has(itemId) || clicked[itemId] === true || clickedHandle.memoryRead(itemId) === itemId;
           const canExpand = prompt !== label;
           const favId = contentHash(prompt);
           const fav = favorites[favId] !== undefined;
@@ -2299,37 +2603,13 @@ window.__ModuleLoader__.load({
           };
         }, []);
 
-        React.useEffect(() => {
-          const listener = () => refresh();
-          discardListeners.add(listener);
-          return () => {
-            discardListeners.delete(listener);
-          };
-        }, []);
+        React.useEffect(() => discardedHandle.subscribe(() => refresh()), []);
 
-        React.useEffect(() => {
-          const listener = () => setOverridesVersion((v) => v + 1);
-          sessionOverrideListeners.add(listener);
-          return () => {
-            sessionOverrideListeners.delete(listener);
-          };
-        }, []);
+        React.useEffect(() => sessionOverridesHandle.subscribe(() => setOverridesVersion((v) => v + 1)), []);
 
-        React.useEffect(() => {
-          const listener = () => refresh();
-          sessionInstructionListeners.add(listener);
-          return () => {
-            sessionInstructionListeners.delete(listener);
-          };
-        }, []);
+        React.useEffect(() => sessionInstructionsHandle.subscribe(() => refresh()), []);
 
-        React.useEffect(() => {
-          const listener = () => refresh();
-          pausedSessionListeners.add(listener);
-          return () => {
-            pausedSessionListeners.delete(listener);
-          };
-        }, []);
+        React.useEffect(() => pausedHandle.subscribe(() => refresh()), []);
 
         React.useEffect(() => {
           if (sessionId === '' || turn === undefined) return undefined;
@@ -2366,7 +2646,7 @@ window.__ModuleLoader__.load({
             nextMap.set(orderKey, next);
             return nextMap;
           });
-          if (!isPrivateSession(sessionId)) writeCollapsed(orderKey, next);
+          writeCollapsed(orderKey, next, sessionId);
         };
         const paused = isPausedSession(sessionId);
         const [instructionDraft, setInstructionDraft] = React.useState(undefined);
@@ -2412,7 +2692,7 @@ window.__ModuleLoader__.load({
             }
           }, t('retryGeneration'))) : null;
 
-        const sessionDiscards = Object.entries(readDiscarded())
+        const sessionDiscards = Object.entries(readDiscardedState())
           .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId);
         sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
         const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
@@ -2797,8 +3077,11 @@ window.__ModuleLoader__.load({
         const [settings, setSettings] = React.useState(pluginSettings);
         const [updateState, setUpdateState] = React.useState({ version: '', update: null, checking: false, installing: false, installed: '', installError: '', asked: '' });
         const [instructionDraft, setInstructionDraft] = React.useState(undefined);
-        const [local, setLocal] = React.useState(() => ({ favorites: readFavorites(), discarded: readDiscarded() }));
-        const [audit, setAudit] = React.useState(() => readAudit());
+        const [local, setLocal] = React.useState(() => ({ favorites: readFavoritesState(), discarded: readDiscardedState() }));
+        const [audit, setAudit] = React.useState(() => {
+          const entries = auditHandle.readState(readAudit, []);
+          return Array.isArray(entries) ? entries : [];
+        });
         const [localNotice, setLocalNotice] = React.useState('');
         const [favQuery, setFavQuery] = React.useState('');
         const [editingFav, setEditingFav] = React.useState(null);
@@ -2843,7 +3126,7 @@ window.__ModuleLoader__.load({
             console.warn('dsh-nextsteps: settings save failed:', error);
           }
         };
-        const refreshLocal = () => setLocal({ favorites: readFavorites(), discarded: readDiscarded() });
+        const refreshLocal = () => setLocal({ favorites: readFavoritesState(), discarded: readDiscardedState() });
         const clearAudit = () => {
           if (auditClearArmed !== true) {
             setAuditClearArmed(true);
@@ -2857,8 +3140,7 @@ window.__ModuleLoader__.load({
           for (const timerId of auditTimersRef.current) window.clearTimeout(timerId);
           auditTimersRef.current.clear();
           setAuditClearArmed(false);
-          pendingWrites.delete(AUDIT_KEY);
-          removeNow(AUDIT_KEY);
+          auditHandle.remove(undefined, { notify: false });
           setAudit([]);
           setLocalNotice(t('auditCleared'));
         };
@@ -2875,8 +3157,7 @@ window.__ModuleLoader__.load({
           for (const timerId of discardedTimersRef.current) window.clearTimeout(timerId);
           discardedTimersRef.current.clear();
           setDiscardedClearArmed(false);
-          pendingWrites.delete(DISCARDED_KEY);
-          removeNow(DISCARDED_KEY);
+          discardedHandle.remove(undefined, { notify: false });
           refreshLocal();
           setLocalNotice(t('discardedCleared'));
         };
@@ -2886,7 +3167,7 @@ window.__ModuleLoader__.load({
           if (nextPrompt === '') return;
           const favId = editingFav.favId;
           const nextHash = contentHash(nextPrompt);
-          const store = readFavorites();
+          const store = readFavoritesState();
           const old = store[favId];
           if (favId !== nextHash && store[nextHash] !== undefined) {
             setLocalNotice(t('favoriteDuplicate'));
@@ -2894,7 +3175,7 @@ window.__ModuleLoader__.load({
           }
           delete store[favId];
           store[nextHash] = { prompt: nextPrompt, label: old?.label ?? null, at: old?.at ?? Date.now() };
-          scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+          favoritesHandle.enqueue(JSON.stringify(store));
           if (favId !== nextHash) {
             const order = readFavoritesOrder();
             const at = order.indexOf(favId);
@@ -2931,9 +3212,9 @@ window.__ModuleLoader__.load({
           for (const timerId of bulkTimersRef.current) window.clearTimeout(timerId);
           bulkTimersRef.current.clear();
           setBulkRemoveArmed(false);
-          const store = readFavorites();
+          const store = readFavoritesState();
           for (const favId of ids) delete store[favId];
-          scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+          favoritesHandle.enqueue(JSON.stringify(store));
           const order = readFavoritesOrder().filter((favId) => store[favId] !== undefined);
           if (order.length !== readFavoritesOrder().length) writeFavoritesOrder(order);
           refreshLocal();
@@ -2950,7 +3231,7 @@ window.__ModuleLoader__.load({
         };
         const exportFavorites = () => {
           try {
-            const markdown = buildFavoritesMarkdown(readFavorites(), readFavoritesOrder());
+            const markdown = buildFavoritesMarkdown(readFavoritesState(), readFavoritesOrder());
             const blob = new Blob([markdown], { type: 'text/markdown' });
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
@@ -2973,7 +3254,7 @@ window.__ModuleLoader__.load({
         };
         const exportFavoritesJson = () => {
           try {
-            const json = buildFavoritesJson(readFavorites(), readFavoritesOrder());
+            const json = buildFavoritesJson(readFavoritesState(), readFavoritesOrder());
             const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
@@ -3011,7 +3292,7 @@ window.__ModuleLoader__.load({
             if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.favorites === null || typeof parsed.favorites !== 'object' || Array.isArray(parsed.favorites)) {
               throw new Error('the file carries no favourites object');
             }
-            const store = readFavorites();
+            const store = readFavoritesState();
             let added = 0;
             let updated = 0;
             let skipped = 0;
@@ -3034,7 +3315,7 @@ window.__ModuleLoader__.load({
                 skipped += 1;
               }
             }
-            scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+            favoritesHandle.enqueue(JSON.stringify(store));
             if (additions.length > 0) {
               const savedOrder = readFavoritesOrder().filter((favId) => store[favId] !== undefined);
               const fileOrder = Array.isArray(parsed.order)
@@ -3257,7 +3538,7 @@ window.__ModuleLoader__.load({
             return next;
           });
         };
-        const favoriteOrderIds = () => orderedFavoriteEntries(readFavorites(), readFavoritesOrder()).map(([favId]) => favId);
+        const favoriteOrderIds = () => orderedFavoriteEntries(readFavoritesState(), readFavoritesOrder()).map(([favId]) => favId);
         const moveFavTo = (draggedId, targetId, before = false) => {
           if (draggedId === targetId) return;
           const ids = favoriteOrderIds();
@@ -3378,9 +3659,9 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dsh-sf-action',
                 onClick: () => {
-                  const store = readFavorites();
+                  const store = readFavoritesState();
                   delete store[favId];
-                  scheduleWrite(FAVORITES_KEY, JSON.stringify(store));
+                  favoritesHandle.enqueue(JSON.stringify(store));
                   const order = readFavoritesOrder();
                   const at = order.indexOf(favId);
                   if (at !== -1) {
@@ -3414,9 +3695,9 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'dsh-sf-action',
               onClick: () => {
-                const store = storeStateForWrite(DISCARDED_KEY, readDiscarded, {});
+                const store = readDiscardedState();
                 delete store[captureKey];
-                scheduleWrite(DISCARDED_KEY, JSON.stringify(store));
+                discardedHandle.enqueue(JSON.stringify(store));
                 refreshLocal();
               }
             }, t('discardRestore')))));
@@ -3553,6 +3834,30 @@ window.__ModuleLoader__.load({
     }
 
 
+    const localStore = {
+      WRITE_RETRY_DELAYS_MS,
+      createLocalStore,
+      store,
+      flush: () => store.flush(),
+      handle: (key, policy) => store.handle(key, policy),
+      handles: {
+        update: updateHandle,
+        favoritesOrder: favoritesOrderHandle,
+        metrics: metricsHandle,
+        sessionOverrides: sessionOverridesHandle,
+        sessionInstructions: sessionInstructionsHandle,
+        notRelevant: notRelevantHandle,
+        clicked: clickedHandle,
+        privateSessions: privateHandle,
+        pausedSessions: pausedHandle,
+        favorites: favoritesHandle,
+        discarded: discardedHandle,
+        cardOrder: cardOrderHandle,
+        collapsed: collapsedHandle,
+        audit: auditHandle
+      }
+    };
+
     return {
       inject: ['slots', 'locale', 'remote'],
       apply(ctx) {
@@ -3604,7 +3909,8 @@ window.__ModuleLoader__.load({
         }, createSettings(ctx)));
       },
       flushWrites,
-      generationRound
+      generationRound,
+      localStore
     };
   }
 });

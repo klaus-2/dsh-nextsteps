@@ -104,6 +104,74 @@ export function memoryStorage(initial = {}) {
   };
 }
 
+function failureBudget(spec) {
+  if (typeof spec === "function") return (key, value, attempt) => Boolean(spec(key, value, attempt));
+  if (spec instanceof Map || (spec !== null && typeof spec === "object")) {
+    const byKey = new Map(spec instanceof Map ? spec : Object.entries(spec));
+    return (key) => {
+      const remaining = byKey.get(key) ?? 0;
+      if (remaining <= 0) return false;
+      byKey.set(key, remaining - 1);
+      return true;
+    };
+  }
+  let remaining = typeof spec === "number" ? spec : 0;
+  return () => {
+    if (remaining <= 0) return false;
+    remaining -= 1;
+    return true;
+  };
+}
+
+export function failingStorage({ initial = {}, failSetItemTimes = 0, failRemoveItemTimes = 0, failGetItem = false } = {}) {
+  const base = memoryStorage(initial);
+  const shouldFailSet = failureBudget(failSetItemTimes);
+  const shouldFailRemove = failureBudget(failRemoveItemTimes);
+  const shouldFailGet = failureBudget(failGetItem === true ? Infinity : failGetItem);
+  const setAttemptsByKey = new Map();
+  const removeAttemptsByKey = new Map();
+  const getAttemptsByKey = new Map();
+  const writes = [];
+  const removes = [];
+  let setAttempts = 0;
+  let removeAttempts = 0;
+  let getAttempts = 0;
+  return {
+    getItem: (key) => {
+      getAttempts += 1;
+      const attempt = (getAttemptsByKey.get(key) ?? 0) + 1;
+      getAttemptsByKey.set(key, attempt);
+      if (shouldFailGet(key, undefined, attempt)) throw new Error("the storage refused the read");
+      return base.getItem(key);
+    },
+    setItem: (key, value) => {
+      setAttempts += 1;
+      const attempt = (setAttemptsByKey.get(key) ?? 0) + 1;
+      setAttemptsByKey.set(key, attempt);
+      if (shouldFailSet(key, value, attempt)) throw new Error("the storage refused the write");
+      writes.push(key);
+      base.setItem(key, value);
+    },
+    removeItem: (key) => {
+      removeAttempts += 1;
+      const attempt = (removeAttemptsByKey.get(key) ?? 0) + 1;
+      removeAttemptsByKey.set(key, attempt);
+      if (shouldFailRemove(key, undefined, attempt)) throw new Error("the storage refused the write");
+      removes.push(key);
+      base.removeItem(key);
+    },
+    _data: base._data,
+    writes,
+    removes,
+    setAttemptsByKey,
+    removeAttemptsByKey,
+    getAttemptsByKey,
+    get setAttempts() { return setAttempts; },
+    get removeAttempts() { return removeAttempts; },
+    get getAttempts() { return getAttempts; }
+  };
+}
+
 export function fakeClipboard(options = {}) {
   const writes = [];
   return {
