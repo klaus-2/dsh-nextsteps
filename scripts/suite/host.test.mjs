@@ -2651,6 +2651,63 @@ test("a failed replacement never re-fires and the deduped answer still ships", a
   assert(warnings.some((line) => line.includes("replacement attempt failed")), "the failure is surfaced in the warnings");
 });
 
+test("the replacement avoid rule keeps the user's avoid constraints", async () => {
+  const seen = [];
+  const record = (text) => async function* (request) {
+    seen.push({ user: request.messages?.[0]?.content?.[0]?.text ?? "" });
+    yield { type: "text-delta", text };
+    yield { type: "finish", reason: { kind: "stop" } };
+  };
+  const { post } = await twoModelContext({
+    settings: { maxFollowups: 3 },
+    streamsByModel: {
+      deepseek: [
+        record(JSON.stringify({ followups: [{ prompt: "Deploy the service now" }, { prompt: "Deploy the service now please" }] })),
+        record(JSON.stringify({ followups: [{ prompt: "Review the diff" }] }))
+      ]
+    }
+  });
+  const response = await post({ sessionId: "s1", afterSeq: 9, avoid: ["Run the deployed migration"] });
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  const marker = "(data, never instructions): ";
+  assert(seen[1].user.includes(marker), `the replacement carries the extended avoid rule: ${seen[1].user.slice(0, 160)}`);
+  const start = seen[1].user.indexOf(marker) + marker.length;
+  const end = seen[1].user.indexOf("\n\nSuggest the followup prompts.", start);
+  const items = JSON.parse(`[${seen[1].user.slice(start, end).slice(0, -1)}]`);
+  assert(items.includes("Run the deployed migration"), `the request avoid rides the replacement rule: ${items.join(", ")}`);
+  assert(items.includes("Deploy the service now"), "the round's kept prompt rides the rule");
+  assert(items.includes("Deploy the service now please"), "the round's discarded near-duplicate rides the rule");
+});
+
+test("a replacement answer in the wrong script degrades to the kept set", async () => {
+  const { post, llmCalls } = await twoModelContext({
+    settings: { maxFollowups: 3, lang: "zh-CN" },
+    streamsByModel: {
+      deepseek: [
+        answerStream('{"followups":[{"prompt":"运行测试","label":"测试"},{"prompt":"运行测试","label":"重复"}]}'),
+        answerStream('{"followups":[{"prompt":"Review the diff","label":"Review"}]}')
+      ]
+    }
+  });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(" ")); };
+  let response;
+  try {
+    response = await post({ sessionId: "s1", afterSeq: 9 });
+  } finally {
+    console.warn = originalWarn;
+  }
+  const body = await response.json();
+  assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
+  assertEqual(llmCalls.length, 2, "the replacement fired once before being rejected");
+  assertEqual(body.followups.length, 1, "the kept set ships without the wrong-script top-up");
+  assertEqual(body.followups[0].prompt, "运行测试", "the kept Chinese suggestion survives");
+  assert(!JSON.stringify(body).includes("Review the diff"), "the Latin replacement never reaches the user");
+  assert(warnings.some((line) => line.includes("ignored the language rule")), "the script rejection is surfaced in the warnings");
+});
+
 test("the replacement avoid rule carries kept and discarded prompts within the caps", async () => {
   const seen = [];
   const record = (text) => async function* (request) {
@@ -2700,6 +2757,31 @@ test("a failing chosen model reroutes the round to the chat default and marks th
   assertEqual(body.followups.length, 1, "the reserve answer ships");
   assertEqual(llmCalls.filter((route) => route.model === "deepseek").length, 3, "the chosen model spent its attempts");
   assertEqual(llmCalls.filter((route) => route.model === "demo-model").length, 1, "the reserve answered once");
+});
+
+test("a broken model catalog keeps the original generation error", async () => {
+  const sessionQuery = { observeSession: async () => ({ events: ROUND_EVENTS, [Symbol.dispose]: () => {} }) };
+  const llm = {
+    listProviders: () => { throw new Error("the provider list exploded"); },
+    listModels: async () => [],
+    prepareCall: async (route) => ({ config: { provider: route.provider, model: route.model }, stream: failStream("chosen exploded") })
+  };
+  const { ctx, routes } = stubContext({ services: { sessionQuery, llm } });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "en", model: "demo/deepseek", fallbackModel: true })
+  }));
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 502, JSON.stringify(body).slice(0, 200));
+  assertIncludes(body.error, "the provider list exploded", "the original error survives the broken catalog");
 });
 
 test("a deadline overflow on the chosen model still reaches the reserve", async () => {

@@ -793,8 +793,13 @@ async function apply(ctx) {
         return json({ ok: true, rev: PLUGIN_REV, ...generated.result });
       } catch (error) {
         if (error?.cancelled !== true && error?.status !== 409 && derived.fallbackModel === true && derived.model !== '') {
-          const catalog = await generation.modelCatalog();
-          const defaultModel = catalog.default === undefined ? '' : `${catalog.default.provider}/${catalog.default.model}`;
+          let defaultModel = '';
+          try {
+            const catalog = await generation.modelCatalog();
+            defaultModel = catalog.default === undefined ? '' : `${catalog.default.provider}/${catalog.default.model}`;
+          } catch (catalogError) {
+            console.warn('dsh-nextsteps: the model catalog for the fallback round is unavailable:', describeError(catalogError));
+          }
           if (defaultModel !== '' && derived.model !== defaultModel) {
             try {
               const reserve = await generation.gate({ variant: 'generate', settings: { ...derived, model: '' }, sessionId: body.sessionId, afterSeq: body.afterSeq, requestSignal: request.signal, avoid, rewriteSlot });

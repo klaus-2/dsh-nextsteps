@@ -3402,6 +3402,7 @@ test("the diagnostics button copies the support blob and announces the copy", as
     assertIncludes(text, "plugin: dsh-nextsteps 1.0.0", "the blob names the plugin and its version");
     assertIncludes(text, "environment: unknown", "the harness navigator carries no userAgent, so the blob pins the fallback");
     assertIncludes(text, "mode: host", "the mode uses the same host predicate as the settings");
+    assertIncludes(text, "settings source: host", "the blob marks the settings as host-loaded");
     assertIncludes(text, '"latencyBudgetMs":30000', "the active settings ride as JSON");
     assertIncludes(text, "metrics: generation n=2 avg=200ms max=300ms; persistence n=1 avg=50ms max=50ms; rendering n=0", "the metrics line carries count, average and maximum");
     assertIncludes(text, "last error: the generator answered with HTTP 502: upstream exploded at 2023-11-14T22:13:20.000Z (timedOut: true)", "the last error carries message, timestamp and timeout flag");
@@ -3426,6 +3427,25 @@ test("a refused diagnostics copy announces the failure", async () => {
     const after = section.component({ t: (key) => key });
     const notice = walk(after, (node) => String(node.props?.className ?? "") === "dsh-sf-notice");
     assert(notice.length === 1 && notice[0].children.join("").includes("copyFailed"), `the refused copy is announced: ${JSON.stringify(notice[0]?.children)}`);
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("the diagnostics blob reports default settings when the host settings never load", async () => {
+  const clipboard = fakeClipboard();
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": () => new Response(JSON.stringify({ ok: false }), { status: 500, headers: { "content-type": "application/json" } })
+  }, { clipboard });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const button = walk(tree, (node) => node.type === "button" && node.children.includes("diagCopy"))[0];
+    assert(button !== undefined, "the about pane still offers the diagnostics button");
+    await button.props.onClick();
+    const text = clipboard.writes[0];
+    assertIncludes(text, "settings source: defaults (host settings not loaded)", "the blob marks the default settings as not host-loaded");
   } finally {
     client.fetchStub.restore();
   }
@@ -5018,6 +5038,34 @@ test("regenerating a card discards it and stores the answer as a manual capture"
     const live = walk(rendered, (node) => node.props?.role === "status");
     assertEqual(live.length, 1, "the single live region is preserved");
     assertEqual(live[0].children.join(""), "srRegenerated", "the regeneration is announced");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a failed regeneration records the last error", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
+    "/api/dsh-nextsteps.generate": () => new Response(JSON.stringify({ error: "upstream exploded" }), { status: 502, headers: { "content-type": "application/json" } })
+  }, { storage });
+  try {
+    await settled(client);
+    const tail = tailOf(registrations);
+    const props = { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key };
+    seedCaptures(registrations, "s1", 1, ["primeira sugestao"]);
+    client.instance.flushWrites();
+    const rendered = renderTail(client, tail, props);
+    const regenerate = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionRegenerate");
+    assert(regenerate !== undefined, "the card offers the regenerate action");
+    await regenerate.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    client.instance.flushWrites();
+    const record = JSON.parse(storage._data["dsh-nextsteps.last-error"] ?? "null");
+    assert(record !== null && typeof record === "object", "the failed regeneration persists the last error");
+    assertIncludes(record.message, "upstream exploded", "the record carries the failure message");
+    assertEqual(record.timedOut, false, "the regen failure is not a timeout");
+    assert(typeof record.at === "number", "the record carries the timestamp");
   } finally {
     client.fetchStub.restore();
   }

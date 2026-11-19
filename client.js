@@ -1446,7 +1446,7 @@ window.__ModuleLoader__.load({
     function recordLastError(key, message, timedOut) {
       const splitAt = typeof key === 'string' ? key.indexOf('|') : -1;
       const sessionId = splitAt > 0 ? key.slice(0, splitAt) : undefined;
-      lastErrorHandle.enqueue(JSON.stringify({ message: String(message ?? ''), at: Date.now(), timedOut: timedOut === true }), sessionId);
+      lastErrorHandle.enqueue(JSON.stringify({ message: String(message ?? '').slice(0, 300), at: Date.now(), timedOut: timedOut === true }), sessionId);
     }
 
     function readLastError() {
@@ -2036,7 +2036,11 @@ window.__ModuleLoader__.load({
             setFailure(null);
             setNotice(t('srRegenerated'));
           } catch (error) {
-            if (!isAbortError(error)) setFailure(t('generationFailed') + errorMessage(error));
+            if (!isAbortError(error)) {
+              const message = errorMessage(error);
+              setFailure(t('generationFailed') + message);
+              recordLastError(regenKey, message, false);
+            }
           } finally {
             round.untrack('regen|' + regenKey, controller);
             if (regenState.get(regenKey)?.controller === controller) regenState.delete(regenKey);
@@ -3028,6 +3032,7 @@ window.__ModuleLoader__.load({
       cardActions: [...CARD_ACTION_IDS]
     };
     let pluginSettings = { ...DEFAULT_SETTINGS };
+    let hostSettingsLoaded = false;
     let updateManager = undefined;
 
     let pluginVersion;
@@ -3060,6 +3065,7 @@ window.__ModuleLoader__.load({
       const merged = { ...DEFAULT_SETTINGS, ...next };
       if (settingsSignature(merged) !== settingsSignature(pluginSettings)) settingsRevision += 1;
       pluginSettings = merged;
+      hostSettingsLoaded = true;
       return pluginSettings;
     }
 
@@ -3773,6 +3779,7 @@ window.__ModuleLoader__.load({
             `environment: ${userAgent}`,
             `mode: ${hostMode(pluginSettings) ? 'host' : 'inline'}`,
             `settings: ${JSON.stringify(pluginSettings)}`,
+            `settings source: ${hostSettingsLoaded ? 'host' : 'defaults (host settings not loaded)'}`,
             `metrics: generation ${metricSummary(metrics.generation)}; persistence ${metricSummary(metrics.persistence)}; rendering ${metricSummary(metrics.rendering)}`,
             `last error: ${lastError === null ? 'none recorded' : `${lastError.message} at ${new Date(lastError.at).toISOString()} (timedOut: ${lastError.timedOut === true})`}`,
             'harness version: not available from the client'
