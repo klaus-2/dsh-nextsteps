@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - **Local writes go through a retrying keyed store.** Every localStorage write in the client runs through `createLocalStore`, which batches writes, retries refused writes with a backoff (250 ms, 1 s, 4 s) before dropping with a warning, and applies the per-domain private-session policies; the capture, favourites, audit, metrics and session domains share one mechanism.
 - **The generation round is deepened in a host module, with the wire contract unchanged.** The host gate, model retry, rewrite handoff and error mapping moved to `lib/host/generation-round.mjs`; the client's deadline-bound in-flight controller, probe and request-body builder stay inline in `client.js` so the browser module loader can resolve the bundle. The host module directory ships in the package `files`. Routes, statuses, `source`/`model`/`rev` values, settings and i18n strings are unchanged; the golden replay adapter in `scripts/suite/replay.test.mjs` still pins the response contract.
+- **The host's followup parsing lives in one module.** The three followup parsers and their validation — tool-argument coercion, result validation and salvage of the model's answer text — moved out of the plugin entry point and the generation round into `lib/host/followup-interpretation.mjs` behind a single `interpret()` interface; every route, error message, cap and wire field is unchanged.
 
 ## [1.10.0] - 2026-11-16
 

@@ -136,7 +136,7 @@ The same settings page asks the npm registry for the latest `dsh-nextsteps` rele
 ## Development
 
 - `npm test` runs the regression suite and the unit suite.
-- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js` and `lib/host/generation-round.mjs`; the gate enforces the measured floor of 81% of lines and 79% of functions.
+- `npm run test:coverage` runs the unit suite under the c8 coverage gate over `index.js`, `lib/host/generation-round.mjs` and `lib/host/followup-interpretation.mjs`; the gate enforces the measured floor of 81% of lines and 79% of functions.
 
 The generation round is deepened in the host module `lib/host/generation-round.mjs` (gate, model retry, rewrite handoff and error mapping); the client's deadline-bound in-flight controller, probe and request-body builder stay inside `client.js`, because the browser module loader resolves only seed words and bare package names, never a plugin subpath. The host module directory ships in the package `files`; the wire contract — routes, statuses, `source`/`model`/`rev` values, settings and i18n strings — is unchanged.
 
