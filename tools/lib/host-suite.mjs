@@ -734,6 +734,7 @@ export async function runHostSuite(harness, { pluginDir }) {
         await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
         await mkdir(path.join(staged, "lib", "host"), { recursive: true });
         await copyFile(path.join(pluginDir, "lib", "host", "generation-round.mjs"), path.join(staged, "lib", "host", "generation-round.mjs"));
+        await copyFile(path.join(pluginDir, "lib", "host", "followup-interpretation.mjs"), path.join(staged, "lib", "host", "followup-interpretation.mjs"));
         const installModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
         const installServer = await installModule.startServer({ port: await freePort() });
         const installPort = installServer.port ?? installServer.address().port;
@@ -763,6 +764,7 @@ export async function runHostSuite(harness, { pluginDir }) {
         await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
         await mkdir(path.join(staged, "lib", "host"), { recursive: true });
         await copyFile(path.join(pluginDir, "lib", "host", "generation-round.mjs"), path.join(staged, "lib", "host", "generation-round.mjs"));
+        await copyFile(path.join(pluginDir, "lib", "host", "followup-interpretation.mjs"), path.join(staged, "lib", "host", "followup-interpretation.mjs"));
         const stagedUrl = pathToFileURL(path.join(staged, "index.js")).href;
         const stagedModule = await import(stagedUrl);
         const newerServer = await stagedModule.startServer({ port: await freePort() });

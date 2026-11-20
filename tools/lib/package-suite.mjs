@@ -77,6 +77,7 @@ export async function runPackageSuite(harness, { pluginDir, packageName }) {
         "cordis.patch.yml",
         "package.json",
         "lib/host/generation-round.mjs",
+        "lib/host/followup-interpretation.mjs",
         "lib/locale/en.json",
         "lib/locale/pt-BR.json",
         "lib/locale/zh-CN.json",
