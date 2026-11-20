@@ -2,8 +2,49 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertThrows, pluginId } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
+import { createConversationOptions } from "../../lib/host/conversation-options.mjs";
 
 suite("contract: host and client agree");
+
+const LANGUAGES = ["auto", "en", "pt-BR", "zh-CN", "es", "fr", "de", "it", "ja", "ko", "ru", "ar", "hi", "id", "tr", "vi"];
+const STYLE_IDS = ["next-action", "explore", "deep-dive"];
+const CARD_ACTION_IDS = ["copy", "favorite", "edit", "insert", "discard", "regenerate", "moveEarlier", "moveLater", "expand", "newChat", "notRelevant"];
+const GENERATION_MODES = ["auto", "on-demand"];
+const CONSTANTS = {
+  generateTimeoutMs: 60000,
+  defaultMaxSuggestionChars: 200,
+  maxCustomInstructionChars: 500,
+  minLatencyBudgetMs: 5000,
+  maxLatencyBudgetMs: 120000,
+  minMaxSuggestionChars: 60,
+  maxMaxSuggestionChars: 600
+};
+
+const HOST_FIELD_NAMES = [
+  "lang",
+  "maxFollowups",
+  "showHeader",
+  "model",
+  "fallbackModel",
+  "styles",
+  "generationMode",
+  "latencyBudgetMs",
+  "maxSuggestionChars",
+  "retentionDays",
+  "transcriptScope",
+  "customInstruction",
+  "confirmBeforeSend",
+  "cardActions"
+];
+
+const hostOptions = createConversationOptions({
+  languages: LANGUAGES,
+  styleIds: STYLE_IDS,
+  cardActionIds: CARD_ACTION_IDS,
+  generationModes: GENERATION_MODES,
+  constants: CONSTANTS
+});
+const hostFieldNames = hostOptions.fields.map((field) => field.name);
 
 const clientSource = readFileSync(path.join(root, "client.js"), "utf8");
 const hostSource = readFileSync(path.join(root, "index.js"), "utf8");
@@ -39,14 +80,13 @@ test("the settings the client sends are the ones the host reads", () => {
   const clientSends = [...clientSource.matchAll(/save\(\{ ([a-zA-Z]+):/g)].map((match) => match[1]);
   assert(clientSends.length > 0, "the client sends settings");
   for (const key of clientSends) {
-    assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
+    assert(hostFieldNames.includes(key), `the host reads the ${key} setting`);
   }
 });
 
 test("the settings the host stores are the ones the client renders", () => {
-  const hostStores = [...hostSource.matchAll(/^\s+(lang|maxFollowups|showHeader|model|fallbackModel|styles|generationMode|latencyBudgetMs|maxSuggestionChars|retentionDays|transcriptScope|customInstruction|cardActions):/gm)].map((match) => match[1]);
-  assertEqual(new Set(hostStores).size, 13, "the host stores the four old and the new settings, including the action layout");
-  for (const key of new Set(hostStores)) {
+  assertEqual(hostFieldNames, HOST_FIELD_NAMES, "the host stores the four old and the new settings, including the action layout");
+  for (const key of hostFieldNames) {
     assert(clientSource.includes(key), `the client renders the ${key} setting`);
   }
 });
@@ -64,10 +104,10 @@ test("the client sends the four new settings and nothing the host ignores", () =
   const clientSends = [...new Set([...clientSource.matchAll(/save\(\{ ([a-zA-Z]+):/g)].map((match) => match[1]))];
   for (const key of ["styles", "generationMode", "latencyBudgetMs", "maxSuggestionChars"]) {
     assert(clientSends.includes(key), `the client sends the ${key} setting`);
-    assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
+    assert(hostFieldNames.includes(key), `the host reads the ${key} setting`);
   }
   for (const key of clientSends) {
-    assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
+    assert(hostFieldNames.includes(key), `the host reads the ${key} setting`);
   }
 });
 
