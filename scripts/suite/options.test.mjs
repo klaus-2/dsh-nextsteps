@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { suite, test, assert, assertEqual, assertThrows } from "../harness.mjs";
+import { root } from "../client-harness.mjs";
 import { createConversationOptions } from "../../lib/host/conversation-options.mjs";
 
 suite("options: the canonical conversation options schema");
@@ -380,4 +383,38 @@ test("the parity derivation fails on a control table instead of passing vacuousl
     () => deriveParity([], observed),
     "an empty field table fails the derivation",
   );
+});
+
+const PARITY_BLOCK_PATTERN = /\/\* CONVERSATION-OPTIONS-PARITY:BEGIN \*\/([\s\S]*?)\/\* CONVERSATION-OPTIONS-PARITY:END \*\//;
+const clientSource = readFileSync(path.join(root, "client.js"), "utf8");
+
+function parseParityBlock(source) {
+  const match = source.match(PARITY_BLOCK_PATTERN);
+  return match === null ? null : JSON.parse(match[1]);
+}
+
+function sortedJson(value) {
+  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`).sort();
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+test("the inline client mirror matches the canonical parity table field for field", () => {
+  const options = makeOptions();
+  const observed = options.defaults();
+  const mirror = parseParityBlock(clientSource);
+  assert(mirror !== null, "the client carries the CONVERSATION-OPTIONS-PARITY block");
+  assertEqual(Object.keys(mirror), options.fields.map((field) => field.name), "the mirror lists the canonical 14 names in module order");
+  for (const field of options.fields) {
+    assertEqual(sortedJson(mirror[field.name]), sortedJson(field.parity), `the ${field.name} mirror entry equals the canonical parity shape`);
+    assertEqual(mirror[field.name].default, observed[field.name], `the ${field.name} mirror default matches the observed default`);
+  }
+});
+
+test("the mirror extraction is real: a source without the markers yields nothing and the client carries the block", () => {
+  assertEqual(parseParityBlock("const DEFAULT_SETTINGS = { lang: 'auto' };"), null, "a control source without the markers parses to nothing");
+  assert(parseParityBlock(clientSource) !== null, "the real client source yields the parity block");
 });
