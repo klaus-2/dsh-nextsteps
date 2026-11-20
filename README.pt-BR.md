@@ -135,7 +135,7 @@ A mesma página de configurações pergunta ao npm registry qual é a versão ma
 ## Desenvolvimento
 
 - `npm test` roda a suíte de regressão e a suíte de testes unitários.
-- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre `index.js` e `lib/host/generation-round.mjs`; o gate aplica o piso medido de 81% das linhas e 79% das funções.
+- `npm run test:coverage` roda a suíte unitária sob o gate de cobertura c8 sobre `index.js`, `lib/host/generation-round.mjs` e `lib/host/conversation-options.mjs`; o gate aplica o piso medido de 81% das linhas e 79% das funções.
 
 A rodada de geração foi aprofundada no módulo do host `lib/host/generation-round.mjs` (gate, nova tentativa ao modelo, entrega da reescrita e mapeamento de erros); o controlador em voo com prazo, a sonda e o construtor do corpo da requisição do cliente permanecem em `client.js`, porque o carregador de módulos do navegador resolve apenas palavras-semente e nomes de pacote, nunca um subpath de plugin. O diretório do módulo do host é publicado no pacote; o contrato de fio — rotas, status, valores de `source`/`model`/`rev`, configurações e strings i18n — não muda.
 
