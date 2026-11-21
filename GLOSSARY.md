@@ -18,6 +18,10 @@ _Avoid_: suggestion, next step, quick reply
 A Followup as rendered in the chat, together with its action bar and state.
 _Avoid_: tile, widget, UI element
 
+**Card action**:
+An interaction the user performs on a Card — send, copy, favourite, mark as not relevant, discard, regenerate, new conversation, insert draft, undo discard, move earlier or later and expand; the editor, the drag reorder and the send confirmation ride the same path. Each action is an intent handed to one dispatch — `dispatch(itemId, actionId, payload) -> { uiState, effect, notice }`, implemented by the inline `createCardActions` module in client.js in place of the per-component closures the cards used to carry — whose outcome carries the per-item ui state, the storage and service effects through the store handles, and the i18n notice key, emitted untranslated and translated only at render.
+_Avoid_: handler, closure, click handler
+
 **Capture**:
 The stored record of the Followups of a Turn, including which of them were sent.
 _Avoid_: save, stored card, snapshot

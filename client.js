@@ -211,6 +211,7 @@ window.__ModuleLoader__.load({
     }
 
     const generationRound = { PROBE_TIMEOUT_MS, buildBody, createGenerationRound, generationKey, isAbortError };
+    const cardActions = { createCardActions };
 
     const NS = 'dsh-nextsteps';
     const TOOL_NAME = 'suggest_followups';
@@ -1754,6 +1755,502 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function createCardActions(deps) {
+      const itemMirror = new Map();
+      const orderMirror = new Map();
+      const timers = new Map();
+      const regenState = new Map();
+      const listeners = new Set();
+      let busy = null;
+      let discardedView = {};
+
+      function notify(event) {
+        for (const listener of [...listeners]) listener(event);
+      }
+
+      function apply(itemId, patch) {
+        const previous = itemMirror.get(itemId) ?? {};
+        itemMirror.set(itemId, { ...previous, ...patch });
+        deps.updateItem(itemId, patch);
+        notify({ type: 'item', itemId, patch });
+        return patch;
+      }
+
+      function clearTimer(timerKey) {
+        const timerId = timers.get(timerKey);
+        if (timerId !== undefined) {
+          deps.cancel(timerId);
+          timers.delete(timerKey);
+        }
+      }
+
+      function armTimer(timerKey, onExpire) {
+        const timerId = deps.schedule(() => {
+          timers.delete(timerKey);
+          onExpire();
+        }, deps.confirmResetMs);
+        timers.set(timerKey, timerId);
+      }
+
+      function emptyOutcome() {
+        return { uiState: undefined, effect: undefined, notice: undefined };
+      }
+
+      function outcome(uiState, effect, notice) {
+        return { uiState, effect, notice };
+      }
+
+      function readHandleObject(handle) {
+        const raw = handle.read();
+        if (raw === null) return null;
+        try {
+          const parsed = JSON.parse(raw);
+          return parsed === null ? null : parsed;
+        } catch (error) {
+          console.warn('dsh-nextsteps: could not parse ' + handle.key + ':', error);
+          return null;
+        }
+      }
+
+      function readObjectState(handle) {
+        const state = handle.readState(() => {
+          const parsed = readHandleObject(handle);
+          return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        }, {});
+        return state !== null && typeof state === 'object' && !Array.isArray(state) ? { ...state } : {};
+      }
+
+      function readNotRelevantState() {
+        const parsed = readHandleObject(deps.notRelevantHandle);
+        const marks = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        const clean = {};
+        for (const [markedSessionId, hashes] of Object.entries(marks)) {
+          if (typeof markedSessionId !== 'string' || markedSessionId === '' || !Array.isArray(hashes)) continue;
+          const list = hashes.filter((hash) => typeof hash === 'string' && hash !== '');
+          if (list.length === 0) continue;
+          clean[markedSessionId] = list.slice(0, NOT_RELEVANT_PER_SESSION);
+        }
+        return clean;
+      }
+
+      function notRelevantFor(markedSessionId) {
+        const inMemory = deps.notRelevantHandle.memoryRead(markedSessionId);
+        if (inMemory !== undefined) return inMemory;
+        return deps.notRelevantHandle.readState(readNotRelevantState, {})[markedSessionId] ?? [];
+      }
+
+      function writeNotRelevant(markedSessionId, hashes) {
+        if (typeof markedSessionId !== 'string' || markedSessionId === '') return;
+        const list = Array.isArray(hashes) ? hashes.filter((hash) => typeof hash === 'string' && hash !== '').slice(0, NOT_RELEVANT_PER_SESSION) : [];
+        deps.notRelevantHandle.write(() => {
+          const marks = deps.notRelevantHandle.readState(readNotRelevantState, {});
+          if (list.length === 0) delete marks[markedSessionId]; else marks[markedSessionId] = list;
+          while (Object.keys(marks).length > NOT_RELEVANT_LIMIT) delete marks[Object.keys(marks)[0]];
+          return Object.keys(marks).length === 0 ? null : JSON.stringify(marks);
+        }, markedSessionId, { memoryValue: list });
+      }
+
+      function send(text, itemId, announcement) {
+        if (busy !== null) return;
+        busy = itemId;
+        let sendFollowup;
+        try {
+          sendFollowup = deps.resolveSend(deps.sessionId);
+        } catch (error) {
+          console.warn('dsh-nextsteps: send unavailable:', error);
+          deps.setFailure({ key: 'sendFailed', message: deps.errorMessage(error) });
+          busy = null;
+          return;
+        }
+        Promise.resolve()
+          .then(() => sendFollowup(text))
+          .then(() => {
+            deps.markClicked(itemId, deps.sessionId);
+            deps.recordAudit('sent', text, deps.sessionId);
+            apply(itemId, { sent: true });
+            deps.setFailure(null);
+            deps.setNotice({ key: announcement });
+          })
+          .catch((error) => {
+            console.warn('dsh-nextsteps: send failed:', deps.describeError(error));
+            deps.setFailure({ key: 'sendFailed', message: deps.errorMessage(error) });
+          })
+          .finally(() => {
+            busy = null;
+          });
+      }
+
+      async function copy(text, itemId) {
+        const copied = await deps.copyText(text);
+        if (!copied) {
+          deps.setNotice({ key: 'copyFailed' });
+          return;
+        }
+        deps.setNotice({ key: 'srCopied' });
+        apply(itemId, { copied: true });
+        const timerKey = itemId + '|copy';
+        clearTimer(timerKey);
+        timers.set(timerKey, deps.schedule(() => {
+          timers.delete(timerKey);
+          apply(itemId, { copied: false });
+        }, 2000));
+      }
+
+      function toggleFavorite(prompt, label) {
+        const favId = contentHash(prompt);
+        const store = readObjectState(deps.favoritesHandle);
+        if (store[favId] !== undefined) delete store[favId];
+        else {
+          const candidate = normalizeFavorite(prompt);
+          const duplicate = Object.keys(store).some((id) => normalizeFavorite(store[id]?.prompt) === candidate);
+          if (duplicate === true) {
+            deps.setNotice({ key: 'favoriteDuplicate' });
+            return outcome(undefined, undefined, { key: 'favoriteDuplicate' });
+          }
+          store[favId] = { prompt, label, at: Date.now() };
+        }
+        deps.favoritesHandle.enqueue(JSON.stringify(store), deps.sessionId);
+        deps.refreshStores({ favorites: store, discarded: undefined });
+        deps.setNotice({ key: 'srFavorited' });
+        return outcome(undefined, { kind: 'favorite', favId }, { key: 'srFavorited' });
+      }
+
+      function toggleNotRelevant(prompt) {
+        const hash = contentHash(prompt.trim());
+        const list = notRelevantFor(deps.sessionId);
+        const markedNow = list.includes(hash);
+        writeNotRelevant(deps.sessionId, markedNow ? list.filter((entry) => entry !== hash) : [...list, hash]);
+        const notice = markedNow ? { key: 'notRelevantUnmarked' } : { key: 'notRelevantMarked' };
+        deps.setNotice(notice);
+        return outcome(undefined, { kind: 'notRelevant', marked: !markedNow }, notice);
+      }
+
+      function discard(captureKey, prompt, label, turn) {
+        const entry = { prompt, label, at: Date.now(), sessionId: deps.sessionId, turn };
+        const nextLocal = { ...discardedView, ...readObjectState(deps.discardedHandle), [captureKey]: entry };
+        discardedView = nextLocal;
+        deps.refreshStores({ favorites: undefined, discarded: nextLocal });
+        deps.setNotice({ key: 'srDiscarded' });
+        deps.discardedHandle.enqueue(() => {
+          const nextStore = readObjectState(deps.discardedHandle);
+          nextStore[captureKey] = entry;
+          return JSON.stringify(nextStore);
+        }, deps.sessionId);
+        return outcome(undefined, { kind: 'discard', captureKey, turn }, { key: 'srDiscarded' });
+      }
+
+      function undoDiscard(captureKey) {
+        const persisted = readObjectState(deps.discardedHandle);
+        if (persisted[captureKey] === undefined && discardedView[captureKey] === undefined) return emptyOutcome();
+        const nextLocal = { ...discardedView, ...persisted };
+        delete nextLocal[captureKey];
+        discardedView = nextLocal;
+        deps.refreshStores({ favorites: undefined, discarded: nextLocal });
+        deps.setNotice({ key: 'srRestored' });
+        deps.discardedHandle.enqueue(() => {
+          const nextStore = readObjectState(deps.discardedHandle);
+          delete nextStore[captureKey];
+          return JSON.stringify(nextStore);
+        }, deps.sessionId);
+        return outcome(undefined, { kind: 'undo', captureKey }, { key: 'srRestored' });
+      }
+
+      function regenerate(itemId, prompt, label, entry) {
+        const turn = entry?.turn;
+        if (turn === undefined || deps.afterSeq === undefined) return emptyOutcome();
+        const regenKey = deps.sessionId + '|' + turn;
+        if (regenState.has(regenKey)) return emptyOutcome();
+        const controller = new AbortController();
+        regenState.set(regenKey, { controller });
+        deps.round.track('regen|' + regenKey, controller);
+        apply(itemId, { regenerating: true });
+        deps.setNotice({ key: 'regenerating' });
+        discard(itemId, prompt, label, turn);
+        (async () => {
+          try {
+            const seq = deps.generationAfterSeq.get(deps.generationKey(deps.sessionId, turn)) ?? deps.afterSeq;
+            if (seq === undefined) return;
+            const override = deps.sessionOverrideOf(deps.sessionId);
+            const response = await deps.fetchImpl(deps.route, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(deps.buildBody({
+                variant: 'generate',
+                sessionId: deps.sessionId,
+                afterSeq: seq,
+                maxFollowups: 1,
+                ...(typeof override?.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
+                ...(typeof override?.model === 'string' && override.model !== '' ? { model: override.model } : {}),
+                ...(deps.sessionInstructionOf(deps.sessionId) !== '' ? { customInstruction: deps.sessionInstructionOf(deps.sessionId) } : {}),
+                avoid: [prompt, ...deps.avoidPromptsFor(deps.sessionId).filter((item) => item !== prompt)]
+              })),
+              signal: controller.signal
+            });
+            const data = await deps.responseJson(response);
+            if (!response.ok) {
+              const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
+              throw new Error(`the generator answered with HTTP ${response.status}${detail}`);
+            }
+            const followups = deps.validateFollowups(Array.isArray(data?.followups) ? data.followups : null);
+            if (followups === null) throw new Error('the generator answered without suggestions');
+            deps.rememberCapture(deps.sessionId, 'manual-' + turn + '-' + deps.manualCountFor(deps.sessionId, turn), turn, followups.slice(0, 1));
+            deps.setFailure(null);
+            deps.setNotice({ key: 'srRegenerated' });
+          } catch (error) {
+            if (!deps.isAbortError(error)) {
+              const message = deps.errorMessage(error);
+              deps.setFailure({ key: 'generationFailed', message });
+              deps.recordLastError(regenKey, message, false);
+            }
+          } finally {
+            deps.round.untrack('regen|' + regenKey, controller);
+            if (regenState.get(regenKey)?.controller === controller) regenState.delete(regenKey);
+            apply(itemId, { regenerating: false });
+          }
+        })();
+        return outcome({ regenerating: true }, { kind: 'regenerate', turn, regenKey }, { key: 'regenerating' });
+      }
+
+      function openNewChat(prompt) {
+        try {
+          deps.startSession(prompt);
+        } catch (error) {
+          console.warn('dsh-nextsteps: new conversation failed:', deps.describeError(error));
+          deps.setNotice({ key: 'newChatUnavailable' });
+        }
+      }
+
+      function insertDraft(text) {
+        try {
+          deps.composerDraft(text);
+        } catch (error) {
+          console.warn('dsh-nextsteps: the composer draft is unavailable:', error);
+          deps.setNotice({ key: 'insertDraftUnavailable' });
+          return false;
+        }
+        deps.setNotice({ key: 'srInserted' });
+        return true;
+      }
+
+      function confirmGate(itemId, kind, { armedPatch, disarmPatch, execute, effect }) {
+        const state = itemMirror.get(itemId) ?? {};
+        const timerKey = itemId + '|' + kind;
+        const armedFlag = kind === 'send' ? 'armed' : 'chatArmed';
+        if (deps.confirmBeforeSend !== true) {
+          execute(state);
+          return outcome(undefined, effect, undefined);
+        }
+        if (state[armedFlag] === true) {
+          clearTimer(timerKey);
+          const part = apply(itemId, disarmPatch);
+          execute(state);
+          return outcome(part, effect, undefined);
+        }
+        clearTimer(itemId + '|' + (kind === 'send' ? 'chat' : 'send'));
+        const part = apply(itemId, armedPatch);
+        deps.setNotice({ key: 'srSendConfirm' });
+        armTimer(timerKey, () => apply(itemId, disarmPatch));
+        return outcome(part, { kind: 'arm', timerKey, ms: deps.confirmResetMs }, { key: 'srSendConfirm' });
+      }
+
+      function requestSend(itemId, text, announcement) {
+        return confirmGate(itemId, 'send', {
+          armedPatch: { armed: true, armedText: text, armedAnnouncement: announcement, chatArmed: false },
+          disarmPatch: { armed: false, armedText: undefined, armedAnnouncement: undefined },
+          effect: { kind: 'send', text },
+          execute: (state) => send(state.armedText ?? text, itemId, state.armedAnnouncement ?? announcement)
+        });
+      }
+
+      function requestNewChat(itemId, prompt) {
+        return confirmGate(itemId, 'chat', {
+          armedPatch: { chatArmed: true, armed: false, armedText: undefined, armedAnnouncement: undefined },
+          disarmPatch: { chatArmed: false },
+          effect: { kind: 'newChat', prompt },
+          execute: () => openNewChat(prompt)
+        });
+      }
+
+      function editorConfirm(itemId, prompt) {
+        const state = itemMirror.get(itemId) ?? {};
+        const draft = (state.draft ?? prompt).trim();
+        if (draft === '') return emptyOutcome();
+        if (deps.confirmBeforeSend === true && state.armed === true) {
+          clearTimer(itemId + '|send');
+          const disarm = apply(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
+          send(draft, itemId, 'srEdited');
+          const close = apply(itemId, { editing: false, draft: '' });
+          return outcome({ ...disarm, ...close }, { kind: 'send', text: draft }, undefined);
+        }
+        const inner = requestSend(itemId, draft, 'srEdited');
+        if (deps.confirmBeforeSend !== true) {
+          const close = apply(itemId, { editing: false, draft: '' });
+          return outcome(close, inner.effect, inner.notice);
+        }
+        return inner;
+      }
+
+      function orderedIds(naturalIds) {
+        if (deps.orderKey === undefined) return naturalIds;
+        const local = orderMirror.get(deps.orderKey);
+        const stored = Array.isArray(local) && local.length > 0 ? local : deps.readCardOrder()[deps.orderKey];
+        if (!Array.isArray(stored) || stored.length === 0) return naturalIds;
+        return stored.filter((id) => naturalIds.includes(id)).concat(naturalIds.filter((id) => !stored.includes(id)));
+      }
+
+      function commitOrder(ids) {
+        if (deps.orderKey === undefined) return;
+        orderMirror.set(deps.orderKey, ids);
+        deps.writeCardOrder(deps.orderKey, ids, deps.sessionId);
+        deps.setNotice({ key: 'srReordered' });
+      }
+
+      function moveItem(draggedId, targetId, before, naturalIds) {
+        if (deps.orderKey === undefined || !Array.isArray(naturalIds) || draggedId === targetId) return emptyOutcome();
+        const ids = [...orderedIds(naturalIds)];
+        const from = ids.indexOf(draggedId);
+        const to = ids.indexOf(targetId);
+        if (from === -1 || to === -1) return emptyOutcome();
+        const insertAt = before === true ? (from < to ? to - 1 : to) : (from < to ? to : to + 1);
+        ids.splice(insertAt, 0, ids.splice(from, 1)[0]);
+        commitOrder(ids);
+        return outcome(undefined, { kind: 'order', ids }, { key: 'srReordered' });
+      }
+
+      function moveItemBy(itemId, delta, naturalIds) {
+        if (deps.orderKey === undefined || !Array.isArray(naturalIds)) return emptyOutcome();
+        const ids = [...orderedIds(naturalIds)];
+        const from = ids.indexOf(itemId);
+        const to = from + delta;
+        if (from === -1 || to < 0 || to >= ids.length) return emptyOutcome();
+        ids.splice(to, 0, ids.splice(from, 1)[0]);
+        commitOrder(ids);
+        return outcome(undefined, { kind: 'order', ids }, { key: 'srReordered' });
+      }
+
+      function dispatch(itemId, actionId, payload) {
+        const data = payload ?? {};
+        switch (actionId) {
+          case 'send':
+            return requestSend(itemId, data.text, data.announcement);
+          case 'newChat':
+            return requestNewChat(itemId, data.prompt);
+          case 'copy':
+            copy(data.text, itemId);
+            return outcome(undefined, { kind: 'copy', text: data.text }, undefined);
+          case 'favorite':
+            return toggleFavorite(data.prompt, data.label);
+          case 'edit':
+            return outcome(apply(itemId, { editing: true, draft: data.prompt }), undefined, undefined);
+          case 'editorDraft':
+            return outcome(apply(itemId, { draft: data.draft }), undefined, undefined);
+          case 'editorCancel':
+            clearTimer(itemId + '|send');
+            return outcome(apply(itemId, { editing: false, draft: '', armed: false, armedText: undefined, armedAnnouncement: undefined }), undefined, undefined);
+          case 'cancelArm':
+            clearTimer(itemId + '|send');
+            clearTimer(itemId + '|chat');
+            return outcome(apply(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined, chatArmed: false }), undefined, undefined);
+          case 'editorConfirm':
+            return editorConfirm(itemId, data.prompt);
+          case 'insert': {
+            const inserted = insertDraft(data.text);
+            return outcome(undefined, { kind: 'insert', text: data.text }, inserted ? { key: 'srInserted' } : { key: 'insertDraftUnavailable' });
+          }
+          case 'discard':
+            return discard(itemId, data.prompt, data.label, data.turn);
+          case 'regenerate':
+            return regenerate(itemId, data.prompt, data.label, data.entry);
+          case 'moveEarlier':
+            return moveItemBy(itemId, -1, data.naturalIds);
+          case 'moveLater':
+            return moveItemBy(itemId, 1, data.naturalIds);
+          case 'move':
+            return moveItem(itemId, data.targetId, data.before === true, data.naturalIds);
+          case 'expand': {
+            const state = itemMirror.get(itemId) ?? {};
+            return outcome(apply(itemId, { expanded: state.expanded !== true }), undefined, undefined);
+          }
+          case 'notRelevant':
+            return toggleNotRelevant(data.prompt);
+          case 'undo':
+            return undoDiscard(data.captureKey);
+          default:
+            return emptyOutcome();
+        }
+      }
+
+      function key(rawEvent, itemId, context) {
+        if (rawEvent === null || typeof rawEvent !== 'object') return emptyOutcome();
+        const keyValue = typeof rawEvent.key === 'string' ? rawEvent.key : '';
+        if (keyValue === '') return emptyOutcome();
+        const target = rawEvent.target;
+        const tag = target !== null && typeof target === 'object' && typeof target.tagName === 'string' ? target.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return emptyOutcome();
+        if (rawEvent.ctrlKey === true || rawEvent.metaKey === true || rawEvent.altKey === true || rawEvent.shiftKey === true) return emptyOutcome();
+        if (rawEvent.defaultPrevented === true) return emptyOutcome();
+        const stop = () => {
+          if (typeof rawEvent.preventDefault === 'function') rawEvent.preventDefault();
+        };
+        const prompt = context?.prompt;
+        if (keyValue === 'c' || keyValue === 'C') {
+          stop();
+          return dispatch(itemId, 'copy', { text: prompt });
+        }
+        if (keyValue === 'f' || keyValue === 'F') {
+          stop();
+          return dispatch(itemId, 'favorite', { prompt, label: context?.label });
+        }
+        if (keyValue === 'e' || keyValue === 'E') {
+          stop();
+          return dispatch(itemId, 'edit', { prompt });
+        }
+        if (keyValue === 'i' || keyValue === 'I') {
+          stop();
+          return dispatch(itemId, 'insert', { text: prompt });
+        }
+        if (keyValue === 'd' || keyValue === 'D') {
+          stop();
+          return dispatch(itemId, 'discard', { prompt, label: context?.label, turn: context?.entry?.turn });
+        }
+        if (keyValue === 'Escape') {
+          const state = itemMirror.get(itemId) ?? {};
+          if (state.editing === true) {
+            stop();
+            return outcome(apply(itemId, { editing: false, draft: '' }), undefined, undefined);
+          }
+          if (state.expanded === true) {
+            stop();
+            return outcome(apply(itemId, { expanded: false }), undefined, undefined);
+          }
+        }
+        return emptyOutcome();
+      }
+
+      function subscribe(listener) {
+        if (typeof listener !== 'function') return () => {};
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      }
+
+      function getState(itemId) {
+        return itemMirror.get(itemId);
+      }
+
+      function dispose() {
+        for (const timerId of timers.values()) deps.cancel(timerId);
+        timers.clear();
+        deps.round.cancelAll(deps.sessionId);
+        for (const regenKey of regenState.keys()) {
+          if (regenKey.startsWith(deps.sessionId + '|')) regenState.delete(regenKey);
+        }
+      }
+
+      return { dispatch, key, subscribe, getState, dispose };
+    }
+
     function resolveSend(ctx, sessionId) {
       const sessions = ctx.get('sessions');
       const conversation = ctx.get('conversation');
@@ -1802,38 +2299,125 @@ window.__ModuleLoader__.load({
       });
     }
 
+    function composerDraft(ctx, sessionId, text) {
+      const sessions = ctx.get('sessions');
+      const conversation = ctx.get('conversation');
+      if (sessions === undefined || sessions === null || conversation === undefined || conversation === null) {
+        throw new Error('session services are not available yet');
+      }
+      const input = typeof conversation.input === 'object' && conversation.input !== null ? conversation.input : undefined;
+      const shell = input !== undefined && typeof input.shell === 'function' ? input.shell(sessionId) : undefined;
+      const actions = shell !== undefined && shell !== null && shell.actions !== undefined && shell.actions !== null ? shell.actions : undefined;
+      if (actions === undefined || typeof actions.setDraft !== 'function') {
+        throw new Error('the composer exposes no draft action for this session');
+      }
+      actions.setDraft(text);
+    }
+
+    function startSession(ctx, prompt) {
+      let workspace;
+      try {
+        workspace = typeof ctx?.get === 'function' ? ctx.get('uiWorkspace') : undefined;
+      } catch {
+        workspace = undefined;
+      }
+      if (workspace === undefined || workspace === null || typeof workspace.startSession !== 'function') {
+        throw new Error('the uiWorkspace service is unavailable for the new-conversation action');
+      }
+      workspace.startSession(undefined, { prompt, whenDraftExists: 'replace' });
+    }
+
     function FollowupsCard({ entries, sessionId, ctx, t, header, generatingLabel, footer, deferred, rootRef, retry, orderKey, afterSeq, turn }) {
-      const [sentLocally, setSentLocally] = React.useState(() => new Set());
+      const [notice, setNotice] = React.useState(null);
       const [failure, setFailure] = React.useState(null);
-      const [notice, setNotice] = React.useState('');
       const [itemState, setItemState] = React.useState(() => ({}));
-      const [orderState, setOrderState] = React.useState(() => ({}));
-      const [localStores, setLocalStores] = React.useState(() => ({ favorites: readFavoritesState(), discarded: readDiscardedState() }));
       const [draggingId, setDraggingId] = React.useState(null);
+      const [localStores, setLocalStores] = React.useState(() => ({ favorites: readFavoritesState(), discarded: readDiscardedState() }));
+      const [orderState, setOrderState] = React.useState(() => ({}));
       const dragRef = React.useRef(null);
-      const busyRef = React.useRef(null);
-      const sendTimersRef = React.useRef(new Map());
+      const modulesRef = React.useRef(null);
+      const depsRef = React.useRef(null);
       const clicked = readClickedMap();
-
-      React.useEffect(() => () => {
-        for (const timerId of sendTimersRef.current.values()) window.clearTimeout(timerId);
-        sendTimersRef.current.clear();
-        round.cancelAll(sessionId);
-        for (const regenKey of regenState.keys()) {
-          if (regenKey.startsWith(sessionId + '|')) regenState.delete(regenKey);
-        }
-      }, []);
-
-      const clearSendTimers = (itemId) => {
-        const timerId = sendTimersRef.current.get(itemId);
-        if (timerId !== undefined) {
-          window.clearTimeout(timerId);
-          sendTimersRef.current.delete(itemId);
-        }
-      };
       const favorites = localStores.favorites;
       const discarded = localStores.discarded;
       const items = Array.isArray(entries) ? entries : [];
+
+      const updateItem = (itemId, patch) => {
+        setItemState((previous) => ({ ...previous, [itemId]: { ...(previous[itemId] ?? {}), ...patch } }));
+      };
+
+      if (depsRef.current === null) {
+        depsRef.current = {
+          sessionId,
+          afterSeq,
+          orderKey,
+          confirmBeforeSend: pluginSettings.confirmBeforeSend === true,
+          updateItem,
+          setNotice,
+          setFailure,
+          refreshStores: undefined,
+          resolveSend: undefined,
+          composerDraft: undefined,
+          startSession: undefined,
+          copyText,
+          favoritesHandle,
+          discardedHandle,
+          notRelevantHandle,
+          markClicked,
+          recordAudit,
+          recordLastError,
+          writeCardOrder,
+          rememberCapture,
+          manualCountFor,
+          avoidPromptsFor,
+          sessionOverrideOf,
+          sessionInstructionOf,
+          generationAfterSeq,
+          buildBody,
+          route: GENERATE_ROUTE,
+          fetchImpl: undefined,
+          round,
+          generationKey,
+          validateFollowups,
+          responseJson,
+          isAbortError,
+          errorMessage,
+          describeError,
+          schedule: undefined,
+          cancel: undefined,
+          confirmResetMs: CONFIRM_RESET_MS,
+          readCardOrder
+        };
+      }
+      const deps = depsRef.current;
+      deps.sessionId = sessionId;
+      deps.afterSeq = afterSeq;
+      deps.orderKey = orderKey;
+      deps.confirmBeforeSend = pluginSettings.confirmBeforeSend === true;
+      deps.updateItem = updateItem;
+      deps.refreshStores = (next) => setLocalStores((previous) => ({
+        favorites: next?.favorites ?? previous.favorites,
+        discarded: next?.discarded ?? previous.discarded
+      }));
+      deps.resolveSend = (boundSessionId) => resolveSend(ctx, boundSessionId);
+      deps.composerDraft = (text) => composerDraft(ctx, sessionId, text);
+      deps.startSession = (prompt) => startSession(ctx, prompt);
+      deps.fetchImpl = (url, init) => fetch(url, init);
+      deps.schedule = (fn, ms) => window.setTimeout(fn, ms);
+      deps.cancel = (timerId) => window.clearTimeout(timerId);
+
+      if (modulesRef.current === null) {
+        modulesRef.current = cardActions.createCardActions(deps);
+      }
+      const actions = modulesRef.current;
+
+      React.useEffect(() => () => {
+        if (modulesRef.current !== null) {
+          modulesRef.current.dispose();
+          modulesRef.current = null;
+        }
+      }, []);
+
       const [marksVersion, setMarksVersion] = React.useState(0);
       React.useEffect(() => notRelevantHandle.subscribe(() => setMarksVersion((v) => v + 1)), []);
       const markedHashes = marksVersion >= 0 ? notRelevantFor(sessionId) : [];
@@ -1844,7 +2428,7 @@ window.__ModuleLoader__.load({
         const hasSecrets = items.some((entry) => (Array.isArray(entry?.followups) ? entry.followups : []).some((followup) => typeof followup?.prompt === 'string' && cardWarnings(followup.prompt).includes('secrets')));
         if (hasSecrets !== true) return;
         secretsWarnedRef.current = true;
-        setNotice(t('srSecretsWarning'));
+        setNotice({ key: 'srSecretsWarning' });
       });
 
       React.useEffect(() => () => {
@@ -1890,7 +2474,7 @@ window.__ModuleLoader__.load({
           if (commit === true && drag.active === true && typeof drag.targetId === 'string') {
             const rect = drag.target?.getBoundingClientRect?.();
             const before = rect !== undefined ? endEvent.clientY < (rect.top + rect.bottom) / 2 : false;
-            moveItem(itemId, drag.targetId, before);
+            dispatchOn(itemId, 'move', { targetId: drag.targetId, before, naturalIds });
           }
         };
         const onUp = (upEvent) => settle(upEvent, true);
@@ -1906,311 +2490,34 @@ window.__ModuleLoader__.load({
         document.addEventListener('pointercancel', onCancel);
       };
 
-      const updateItem = (itemId, patch) => {
-        setItemState((previous) => ({ ...previous, [itemId]: { ...(previous[itemId] ?? {}), ...patch } }));
-      };
-
-      const refreshLocalStores = (favoritesNext, discardedNext) => {
-        setLocalStores((previous) => ({
-          favorites: favoritesNext ?? previous.favorites,
-          discarded: discardedNext ?? previous.discarded
-        }));
-      };
-
-      const send = (text, itemId, announcement) => {
-        if (busyRef.current !== null) return;
-        busyRef.current = itemId;
-        let sendFollowup;
-        try {
-          sendFollowup = resolveSend(ctx, sessionId);
-        } catch (error) {
-          console.warn('dsh-nextsteps: send unavailable:', error);
-          setFailure(t('sendFailed') + errorMessage(error));
-          busyRef.current = null;
-          return;
-        }
-        Promise.resolve()
-          .then(() => sendFollowup(text))
-          .then(() => {
-            markClicked(itemId, sessionId);
-            recordAudit('sent', text, sessionId);
-            setSentLocally((previous) => new Set(previous).add(itemId));
-            setFailure(null);
-            setNotice(announcement);
-          })
-          .catch((error) => {
-            console.warn('dsh-nextsteps: send failed:', describeError(error));
-            setFailure(t('sendFailed') + errorMessage(error));
-          })
-          .finally(() => {
-            busyRef.current = null;
-          });
-      };
-
-      const copy = async (text, itemId) => {
-        const copied = await copyText(text);
-        if (!copied) {
-          setNotice(t('copyFailed'));
-          return;
-        }
-        setNotice(t('srCopied'));
-        updateItem(itemId, { copied: true });
-        window.setTimeout(() => updateItem(itemId, { copied: false }), 2000);
-      };
-
-      const toggleFavorite = (favId, prompt, label) => {
-        const store = readFavoritesState();
-        if (store[favId] !== undefined) delete store[favId];
-        else {
-          const candidate = normalizeFavorite(prompt);
-          const duplicate = Object.keys(store).some((id) => normalizeFavorite(store[id]?.prompt) === candidate);
-          if (duplicate === true) {
-            setNotice(t('favoriteDuplicate'));
-            return;
-          }
-          store[favId] = { prompt, label, at: Date.now() };
-        }
-        favoritesHandle.enqueue(JSON.stringify(store), sessionId);
-        refreshLocalStores(store, undefined);
-        setNotice(t('srFavorited'));
-      };
-
-      const toggleNotRelevant = (itemId, prompt) => {
-        const hash = contentHash(prompt.trim());
-        const list = notRelevantFor(sessionId);
-        const markedNow = list.includes(hash);
-        writeNotRelevant(sessionId, markedNow ? list.filter((entry) => entry !== hash) : [...list, hash]);
-        setNotice(markedNow ? t('notRelevantUnmarked') : t('notRelevantMarked'));
-      };
-
-      const discard = (captureKey, prompt, label, turn) => {
-        const entry = { prompt, label, at: Date.now(), sessionId, turn };
-        const nextLocal = { ...discarded, ...readDiscardedState(), [captureKey]: entry };
-        refreshLocalStores(undefined, nextLocal);
-        setNotice(t('srDiscarded'));
-        discardedHandle.enqueue(() => {
-          const nextStore = readDiscardedState();
-          nextStore[captureKey] = entry;
-          return JSON.stringify(nextStore);
-        }, sessionId);
-      };
-
-      const regenerate = (itemId, prompt, label, entry) => {
-        const turn = entry?.turn;
-        if (turn === undefined || afterSeq === undefined) return;
-        const regenKey = sessionId + '|' + turn;
-        if (regenState.has(regenKey)) return;
-        const controller = new AbortController();
-        regenState.set(regenKey, { controller });
-        round.track('regen|' + regenKey, controller);
-        updateItem(itemId, { regenerating: true });
-        setNotice(t('regenerating'));
-        discard(itemId, prompt, label, turn);
-        (async () => {
-          try {
-            const seq = generationAfterSeq.get(generationKey(sessionId, turn)) ?? afterSeq;
-            if (seq === undefined) return;
-            const override = sessionOverrideOf(sessionId);
-            const response = await fetch(GENERATE_ROUTE, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                sessionId,
-                afterSeq: seq,
-                maxFollowups: 1,
-                ...(typeof override?.lang === 'string' && override.lang !== '' ? { lang: override.lang } : {}),
-                ...(typeof override?.model === 'string' && override.model !== '' ? { model: override.model } : {}),
-                ...(sessionInstructionOf(sessionId) !== '' ? { customInstruction: sessionInstructionOf(sessionId) } : {}),
-                avoid: [prompt, ...avoidPromptsFor(sessionId).filter((item) => item !== prompt)]
-              }),
-              signal: controller.signal
-            });
-            const data = await responseJson(response);
-            if (!response.ok) {
-              const detail = typeof data?.error === 'string' && data.error !== '' ? `: ${data.error}` : '';
-              throw new Error(`the generator answered with HTTP ${response.status}${detail}`);
-            }
-            const followups = validateFollowups(Array.isArray(data?.followups) ? data.followups : null);
-            if (followups === null) throw new Error('the generator answered without suggestions');
-            rememberCapture(sessionId, 'manual-' + turn + '-' + manualCountFor(sessionId, turn), turn, followups.slice(0, 1));
-            setFailure(null);
-            setNotice(t('srRegenerated'));
-          } catch (error) {
-            if (!isAbortError(error)) {
-              const message = errorMessage(error);
-              setFailure(t('generationFailed') + message);
-              recordLastError(regenKey, message, false);
-            }
-          } finally {
-            round.untrack('regen|' + regenKey, controller);
-            if (regenState.get(regenKey)?.controller === controller) regenState.delete(regenKey);
-            updateItem(itemId, { regenerating: false });
-          }
-        })();
-      };
-
-      const openNewChat = (prompt) => {
-        let workspace;
-        try { workspace = typeof ctx?.get === 'function' ? ctx.get('uiWorkspace') : undefined; } catch { workspace = undefined; }
-        if (workspace === undefined || workspace === null || typeof workspace.startSession !== 'function') {
-          console.warn('dsh-nextsteps: the uiWorkspace service is unavailable for the new-conversation action');
-          setNotice(t('newChatUnavailable'));
-          return;
-        }
-        try {
-          workspace.startSession(undefined, { prompt, whenDraftExists: 'replace' });
-        } catch (error) {
-          console.warn('dsh-nextsteps: new conversation failed:', describeError(error));
-          setNotice(t('newChatUnavailable'));
-        }
-      };
-
-      const requestSend = (itemId, text, announcement) => {
-        const state = itemState[itemId] ?? {};
-        if (pluginSettings.confirmBeforeSend !== true) {
-          send(text, itemId, announcement);
-          return;
-        }
-        if (state.armed === true) {
-          clearSendTimers(`${itemId}|send`);
-          updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
-          send(state.armedText ?? text, itemId, state.armedAnnouncement ?? announcement);
-          return;
-        }
-        clearSendTimers(`${itemId}|chat`);
-        updateItem(itemId, { armed: true, armedText: text, armedAnnouncement: announcement, chatArmed: false });
-        setNotice(t('srSendConfirm'));
-        const timerKey = `${itemId}|send`;
-        const timerId = window.setTimeout(() => {
-          sendTimersRef.current.delete(timerKey);
-          updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
-        }, CONFIRM_RESET_MS);
-        sendTimersRef.current.set(timerKey, timerId);
-      };
-
-      const requestNewChat = (itemId, prompt) => {
-        const state = itemState[itemId] ?? {};
-        if (pluginSettings.confirmBeforeSend !== true) {
-          openNewChat(prompt);
-          return;
-        }
-        if (state.chatArmed === true) {
-          clearSendTimers(`${itemId}|chat`);
-          updateItem(itemId, { chatArmed: false });
-          openNewChat(prompt);
-          return;
-        }
-        clearSendTimers(`${itemId}|send`);
-        updateItem(itemId, { chatArmed: true, armed: false, armedText: undefined, armedAnnouncement: undefined });
-        setNotice(t('srSendConfirm'));
-        const timerKey = `${itemId}|chat`;
-        const timerId = window.setTimeout(() => {
-          sendTimersRef.current.delete(timerKey);
-          updateItem(itemId, { chatArmed: false });
-        }, CONFIRM_RESET_MS);
-        sendTimersRef.current.set(timerKey, timerId);
-      };
-
-      const insertDraft = (text) => {
-        let shell;
-        try {
-          const sessions = ctx.get('sessions');
-          const conversation = ctx.get('conversation');
-          if (sessions === undefined || sessions === null || conversation === undefined || conversation === null) {
-            throw new Error('session services are not available yet');
-          }
-          const input = typeof conversation.input === 'object' && conversation.input !== null ? conversation.input : undefined;
-          shell = input !== undefined && typeof input.shell === 'function' ? input.shell(sessionId) : undefined;
-        } catch (error) {
-          console.warn('dsh-nextsteps: the composer draft is unavailable:', error);
-          setNotice(t('insertDraftUnavailable'));
-          return;
-        }
-        const actions = shell !== undefined && shell !== null && shell.actions !== undefined && shell.actions !== null ? shell.actions : undefined;
-        if (actions === undefined || typeof actions.setDraft !== 'function') {
-          console.warn('dsh-nextsteps: the composer exposes no draft action for this session');
-          setNotice(t('insertDraftUnavailable'));
-          return;
-        }
-        try {
-          actions.setDraft(text);
-        } catch (error) {
-          console.warn('dsh-nextsteps: placing the draft in the composer failed:', error);
-          setNotice(t('insertDraftUnavailable'));
-          return;
-        }
-        setNotice(t('srInserted'));
-      };
-
       const sessionDiscards = Object.entries(discarded)
         .filter(([, value]) => value !== null && typeof value === 'object' && value.sessionId === sessionId && (turn === undefined || value.turn === undefined || String(value.turn) === String(turn)));
       sessionDiscards.sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0));
       const recentDiscard = sessionDiscards.length === 0 ? undefined : sessionDiscards[0];
 
-      const undoDiscard = (captureKey) => {
-        const persisted = readDiscardedState();
-        if (persisted[captureKey] === undefined && discarded[captureKey] === undefined) return;
-        const nextLocal = { ...discarded, ...persisted };
-        delete nextLocal[captureKey];
-        refreshLocalStores(undefined, nextLocal);
-        setNotice(t('srRestored'));
-        discardedHandle.enqueue(() => {
-          const nextStore = readDiscardedState();
-          delete nextStore[captureKey];
-          return JSON.stringify(nextStore);
-        }, sessionId);
-      };
-
-      const onItemKey = (event, itemId, prompt, label, entry) => {
-        if (event === null || typeof event !== 'object') return;
-        const key = typeof event.key === 'string' ? event.key : '';
-        if (key === '') return;
-        const target = event.target;
-        const tag = target !== null && typeof target === 'object' && typeof target.tagName === 'string' ? target.tagName.toLowerCase() : '';
-        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-        if (event.ctrlKey === true || event.metaKey === true || event.altKey === true || event.shiftKey === true) return;
-        if (event.defaultPrevented === true) return;
-        const stop = () => {
-          if (typeof event.preventDefault === 'function') event.preventDefault();
-        };
-        if (key === 'c' || key === 'C') {
-          stop();
-          copy(prompt, itemId);
-          return;
-        }
-        if (key === 'f' || key === 'F') {
-          stop();
-          toggleFavorite(contentHash(prompt), prompt, label);
-          return;
-        }
-        if (key === 'e' || key === 'E') {
-          stop();
-          updateItem(itemId, { editing: true, draft: prompt });
-          return;
-        }
-        if (key === 'i' || key === 'I') {
-          stop();
-          insertDraft(prompt);
-          return;
-        }
-        if (key === 'd' || key === 'D') {
-          stop();
-          discard(itemId, prompt, label, entry.turn);
-          return;
-        }
-        if (key === 'Escape') {
-          const state = itemState[itemId] ?? {};
-          if (state.editing === true) {
-            stop();
-            updateItem(itemId, { editing: false, draft: '' });
-            return;
-          }
-          if (state.expanded === true) {
-            stop();
-            updateItem(itemId, { expanded: false });
-          }
-        }
-      };
+      const noticeText = notice === null || notice === undefined ? '' : ({
+        srFollowupSent: t('srFollowupSent'),
+        srCopied: t('srCopied'),
+        copyFailed: t('copyFailed'),
+        srFavorited: t('srFavorited'),
+        favoriteDuplicate: t('favoriteDuplicate'),
+        notRelevantMarked: t('notRelevantMarked'),
+        notRelevantUnmarked: t('notRelevantUnmarked'),
+        srDiscarded: t('srDiscarded'),
+        srRestored: t('srRestored'),
+        srReordered: t('srReordered'),
+        srSendConfirm: t('srSendConfirm'),
+        srEdited: t('srEdited'),
+        srInserted: t('srInserted'),
+        insertDraftUnavailable: t('insertDraftUnavailable'),
+        newChatUnavailable: t('newChatUnavailable'),
+        regenerating: t('regenerating'),
+        srRegenerated: t('srRegenerated'),
+        srSecretsWarning: t('srSecretsWarning')
+      }[notice.key] ?? t(notice.key));
+      const failureText = failure === null || failure === undefined ? null
+        : ({ sendFailed: t('sendFailed'), generationFailed: t('generationFailed') }[failure.key] ?? t(failure.key))
+          + (typeof failure.message === 'string' ? failure.message : '');
 
       const naturalIds = [];
       for (const entry of items) {
@@ -2228,30 +2535,13 @@ window.__ModuleLoader__.load({
         if (!Array.isArray(stored) || stored.length === 0) return naturalIds;
         return stored.filter((id) => naturalIds.includes(id)).concat(naturalIds.filter((id) => !stored.includes(id)));
       };
-      const commitOrder = (ids) => {
-        if (orderKey === undefined) return;
-        setOrderState((previous) => ({ ...previous, [orderKey]: ids }));
-        writeCardOrder(orderKey, ids, sessionId);
-        setNotice(t('srReordered'));
-      };
-      const moveItem = (draggedId, targetId, before = false) => {
-        if (orderKey === undefined || draggedId === targetId) return;
-        const ids = [...orderedIds()];
-        const from = ids.indexOf(draggedId);
-        const to = ids.indexOf(targetId);
-        if (from === -1 || to === -1) return;
-        const insertAt = before ? (from < to ? to - 1 : to) : (from < to ? to : to + 1);
-        ids.splice(insertAt, 0, ids.splice(from, 1)[0]);
-        commitOrder(ids);
-      };
-      const moveItemBy = (itemId, delta) => {
-        if (orderKey === undefined) return;
-        const ids = [...orderedIds()];
-        const from = ids.indexOf(itemId);
-        const to = from + delta;
-        if (from === -1 || to < 0 || to >= ids.length) return;
-        ids.splice(to, 0, ids.splice(from, 1)[0]);
-        commitOrder(ids);
+      const dispatchOn = (itemId, actionId, payload) => {
+        const outcome = actions.dispatch(itemId, actionId, payload);
+        const ids = outcome?.effect?.kind === 'order' && Array.isArray(outcome.effect.ids) ? outcome.effect.ids : undefined;
+        if (ids !== undefined && orderKey !== undefined) {
+          setOrderState((previous) => ({ ...previous, [orderKey]: ids }));
+        }
+        return outcome;
       };
 
       const rows = [];
@@ -2266,7 +2556,7 @@ window.__ModuleLoader__.load({
           const label = displayLabel(followup);
           const prompt = followup.prompt;
           const state = itemState[itemId] ?? {};
-          const sent = sentLocally.has(itemId) || clicked[itemId] === true || clickedHandle.memoryRead(itemId) === itemId;
+          const sent = clicked[itemId] === true || clickedHandle.memoryRead(itemId) === itemId || state.sent === true;
           const canExpand = prompt !== label;
           const favId = contentHash(prompt);
           const fav = favorites[favId] !== undefined;
@@ -2279,7 +2569,7 @@ window.__ModuleLoader__.load({
             className: 'dsh-sf-item' + (marked === true ? ' dsh-sf-marked' : ''),
             role: 'group',
             'aria-label': prompt,
-            onKeyDown: (event) => onItemKey(event, itemId, prompt, label, entry)
+            onKeyDown: (event) => actions.key(event, itemId, { prompt, label, entry })
           },
             h('div', {
               className: 'dsh-sf-cardline' + (draggingId === itemId ? ' is-dragging' : ''),
@@ -2299,7 +2589,7 @@ window.__ModuleLoader__.load({
                 'aria-label': prompt,
                 onClick: () => {
                   if (sent) return;
-                  requestSend(itemId, prompt, t('srFollowupSent'));
+                  actions.dispatch(itemId, 'send', { text: prompt, announcement: 'srFollowupSent' });
                 }
               },
                 h('span', { className: 'dsh-sf-icon', 'aria-hidden': true }, sent ? '✓' : '→'),
@@ -2326,7 +2616,7 @@ window.__ModuleLoader__.load({
                     'aria-label': state.copied === true ? t('copied') : t('actionCopy'),
                     title: state.copied === true ? t('copied') : `${t('actionCopy')} (C)`,
                     'aria-keyshortcuts': 'c',
-                    onClick: () => copy(prompt, itemId)
+                    onClick: () => actions.dispatch(itemId, 'copy', { text: prompt })
                   }, state.copied === true ? t('copied') : '⧉')];
                 }
                 if (actionId === 'favorite') {
@@ -2336,7 +2626,7 @@ window.__ModuleLoader__.load({
                     'aria-label': t('actionFavorite'),
                     title: `${t('actionFavorite')} (F)`,
                     'aria-keyshortcuts': 'f',
-                    onClick: () => toggleFavorite(favId, prompt, label)
+                    onClick: () => actions.dispatch(itemId, 'favorite', { prompt, label })
                   }, fav ? '★' : '☆')];
                 }
                 if (actionId === 'edit') {
@@ -2346,7 +2636,7 @@ window.__ModuleLoader__.load({
                     'aria-label': t('actionEdit'),
                     title: `${t('actionEdit')} (E)`,
                     'aria-keyshortcuts': 'e',
-                    onClick: () => updateItem(itemId, { editing: true, draft: prompt })
+                    onClick: () => actions.dispatch(itemId, 'edit', { prompt })
                   }, '✎')];
                 }
                 if (actionId === 'insert') {
@@ -2356,7 +2646,7 @@ window.__ModuleLoader__.load({
                     'aria-label': t('actionInsertDraft'),
                     title: `${t('actionInsertDraft')} (I)`,
                     'aria-keyshortcuts': 'i',
-                    onClick: () => insertDraft(prompt)
+                    onClick: () => actions.dispatch(itemId, 'insert', { text: prompt })
                   }, '⤓')];
                 }
                 if (actionId === 'discard') {
@@ -2366,17 +2656,22 @@ window.__ModuleLoader__.load({
                     'aria-label': t('actionDiscard'),
                     title: `${t('actionDiscard')} (D)`,
                     'aria-keyshortcuts': 'd',
-                    onClick: () => discard(itemId, prompt, label, entry.turn)
+                    onClick: () => actions.dispatch(itemId, 'discard', { prompt, label, turn: entry.turn })
                   }, '✕')];
                 }
                 if (actionId === 'regenerate') {
+                  const turnText = String(entry.turn ?? '');
+                  const regenTurnBusy = items.some((other) => String(other.turn ?? '') === turnText
+                    && (Array.isArray(other?.followups) ? other.followups : []).some((followup, siblingIndex) => {
+                      return actions.getState(`${other.clickedId}:${siblingIndex}`)?.regenerating === true;
+                    }));
                   return [h('button', {
                     type: 'button',
                     className: 'dsh-sf-action',
                     'aria-label': t('actionRegenerate'),
                     title: t('actionRegenerate'),
-                    disabled: regenState.has(sessionId + '|' + (entry.turn ?? '')) || state.regenerating === true,
-                    onClick: () => regenerate(itemId, prompt, label, entry)
+                    disabled: regenTurnBusy || state.regenerating === true,
+                    onClick: () => dispatchOn(itemId, 'regenerate', { prompt, label, entry })
                   }, '↻')];
                 }
                 if (actionId === 'moveEarlier') {
@@ -2385,7 +2680,7 @@ window.__ModuleLoader__.load({
                     className: 'dsh-sf-action',
                     'aria-label': t('actionMoveEarlier'),
                     title: t('actionMoveEarlier'),
-                    onClick: () => moveItemBy(itemId, -1)
+                    onClick: () => dispatchOn(itemId, 'moveEarlier', { naturalIds })
                   }, '↑')];
                 }
                 if (actionId === 'moveLater') {
@@ -2394,7 +2689,7 @@ window.__ModuleLoader__.load({
                     className: 'dsh-sf-action',
                     'aria-label': t('actionMoveLater'),
                     title: t('actionMoveLater'),
-                    onClick: () => moveItemBy(itemId, 1)
+                    onClick: () => dispatchOn(itemId, 'moveLater', { naturalIds })
                   }, '↓')];
                 }
                 if (actionId === 'expand') {
@@ -2403,7 +2698,7 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     className: 'dsh-sf-action',
                     'aria-label': state.expanded === true ? t('actionCollapse') : t('actionExpand'),
-                    onClick: () => updateItem(itemId, { expanded: state.expanded !== true })
+                    onClick: () => actions.dispatch(itemId, 'expand', {})
                   }, state.expanded === true ? '⌃' : '…')];
                 }
                 if (actionId === 'newChat') {
@@ -2412,7 +2707,7 @@ window.__ModuleLoader__.load({
                     className: 'dsh-sf-action',
                     'aria-label': t('actionNewChat'),
                     title: t('actionNewChat'),
-                    onClick: () => requestNewChat(itemId, prompt)
+                    onClick: () => actions.dispatch(itemId, 'newChat', { prompt })
                   }, '↗')];
                 }
                 if (actionId === 'notRelevant') {
@@ -2421,7 +2716,7 @@ window.__ModuleLoader__.load({
                     className: 'dsh-sf-action',
                     'aria-label': t('actionNotRelevant'),
                     title: t('actionNotRelevant'),
-                    onClick: () => toggleNotRelevant(itemId, prompt)
+                    onClick: () => actions.dispatch(itemId, 'notRelevant', { prompt })
                   }, marked === true ? '⚑' : '⚐')];
                 }
                 return [];
@@ -2433,22 +2728,16 @@ window.__ModuleLoader__.load({
                 className: 'dsh-sf-action',
                 onClick: () => {
                   if (state.chatArmed === true) {
-                    clearSendTimers(`${itemId}|chat`);
-                    updateItem(itemId, { chatArmed: false });
-                    openNewChat(prompt);
+                    actions.dispatch(itemId, 'newChat', { prompt });
                     return;
                   }
-                  requestSend(itemId, prompt, t('srFollowupSent'));
+                  actions.dispatch(itemId, 'send', { text: prompt, announcement: 'srFollowupSent' });
                 }
               }, t('sendConfirmYes')),
               h('button', {
                 type: 'button',
                 className: 'dsh-sf-action',
-                onClick: () => {
-                  clearSendTimers(`${itemId}|send`);
-                  clearSendTimers(`${itemId}|chat`);
-                  updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined, chatArmed: false });
-                }
+                onClick: () => actions.dispatch(itemId, 'cancelArm', {})
               }, t('editCancel'))) : null,
             state.expanded === true ? h('div', { className: 'dsh-sf-prompt' }, prompt) : null,
             state.editing === true ? h('div', { className: 'dsh-sf-editor' },
@@ -2456,7 +2745,7 @@ window.__ModuleLoader__.load({
                 className: 'dsh-sf-textarea',
                 'aria-label': t('editPrompt'),
                 value: state.draft ?? prompt,
-                onChange: (event) => updateItem(itemId, { draft: event.target.value })
+                onChange: (event) => actions.dispatch(itemId, 'editorDraft', { draft: event.target.value })
               }),
               h('span', {
                 className: 'dsh-sf-charcount' + (charRemaining < 0 ? ' dsh-sf-charcount-over' : '')
@@ -2467,27 +2756,12 @@ window.__ModuleLoader__.load({
                 h('button', {
                   type: 'button',
                   className: 'dsh-sf-action',
-                onClick: () => {
-                  const draft = (state.draft ?? prompt).trim();
-                  if (draft === '') return;
-                  if (pluginSettings.confirmBeforeSend === true && state.armed === true) {
-                    clearSendTimers(`${itemId}|send`);
-                    updateItem(itemId, { armed: false, armedText: undefined, armedAnnouncement: undefined });
-                    send(draft, itemId, t('srEdited'));
-                    updateItem(itemId, { editing: false, draft: '' });
-                    return;
-                  }
-                  requestSend(itemId, draft, t('srEdited'));
-                  if (pluginSettings.confirmBeforeSend !== true) updateItem(itemId, { editing: false, draft: '' });
-                }
+                  onClick: () => actions.dispatch(itemId, 'editorConfirm', { prompt })
                 }, t('editConfirm')),
                 h('button', {
                   type: 'button',
                   className: 'dsh-sf-action',
-                  onClick: () => {
-                    clearSendTimers(`${itemId}|send`);
-                    updateItem(itemId, { editing: false, draft: '', armed: false, armedText: undefined, armedAnnouncement: undefined });
-                  }
+                  onClick: () => actions.dispatch(itemId, 'editorCancel', {})
                 }, t('editCancel')))) : null,
             h('span', { className: 'dsh-sf-hints' },
               `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionInsertDraft')} I · ${t('actionDiscard')} D`)));
@@ -2503,17 +2777,17 @@ window.__ModuleLoader__.load({
         deferred === true
           ? h('div', { className: 'dsh-sf-placeholder' }, '…')
           : h('div', { className: 'dsh-sf-row' }, rows),
-        failure === null ? null : h('div', { className: 'dsh-sf-error' }, failure),
+        failure === null ? null : h('div', { className: 'dsh-sf-error' }, failureText),
         h('div', { className: 'dsh-sf-status' },
-          h('div', { className: 'dsh-sf-notice', style: notice === '' ? { display: 'none' } : undefined }, notice),
+          h('div', { className: 'dsh-sf-notice', style: noticeText === '' ? { display: 'none' } : undefined }, noticeText),
           recentDiscard === undefined ? null : h('button', {
             type: 'button',
             className: 'dsh-sf-action dsh-sf-undo',
             'aria-label': t('undoDiscard'),
             title: t('undoDiscard'),
-            onClick: () => undoDiscard(recentDiscard[0])
+            onClick: () => actions.dispatch(recentDiscard[0], 'undo', { captureKey: recentDiscard[0] })
           }, t('undoDiscard'))),
-        h('div', { className: 'dsh-sf-sr', role: 'status' }, notice),
+        h('div', { className: 'dsh-sf-sr', role: 'status' }, noticeText),
         footer ?? null,
         retry ?? null);
     }
@@ -2521,7 +2795,6 @@ window.__ModuleLoader__.load({
     const generationAfterSeq = new Map();
     const failedGenerations = new Map();
     const timedOutGenerations = new Set();
-    const regenState = new Map();
     const validatedTurns = new Map();
     let settingsRevision = 0;
     const VALIDATED_TURNS_LIMIT = 200;
@@ -3968,6 +4241,7 @@ window.__ModuleLoader__.load({
       },
       flushWrites,
       generationRound,
+      cardActions,
       localStore
     };
   }
