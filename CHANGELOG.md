@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - **Local writes go through a retrying keyed store.** Every localStorage write in the client runs through `createLocalStore`, which batches writes, retries refused writes with a backoff (250 ms, 1 s, 4 s) before dropping with a warning, and applies the per-domain private-session policies; the capture, favourites, audit, metrics and session domains share one mechanism.
 - **The generation round is deepened in a host module, with the wire contract unchanged.** The host gate, model retry, rewrite handoff and error mapping moved to `lib/host/generation-round.mjs`; the client's deadline-bound in-flight controller, probe and request-body builder stay inline in `client.js` so the browser module loader can resolve the bundle. The host module directory ships in the package `files`. Routes, statuses, `source`/`model`/`rev` values, settings and i18n strings are unchanged; the golden replay adapter in `scripts/suite/replay.test.mjs` still pins the response contract.
+- **The client's inline dictionaries are generated from `lib/locale/*.json`.** A committed generator (`scripts/build-dictionaries.mjs`) rebuilds the `DICTIONARIES` block between its markers, with a byte-parity test in `scripts/suite/package.test.mjs` keeping that block equal to the generator output from the locale sources; i18n registration and fallback moved to an inline `createI18n` factory. No observable behavior, key, translated string or wire contract changed.
 
 ## [1.10.0] - 2026-11-16
 
