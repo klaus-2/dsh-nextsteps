@@ -14,7 +14,9 @@ dsh plugin --profile web add dsh-nextsteps
 
 ## Tour do produto
 
-![Demo do Nextsteps](docs/assets/demo.svg)
+![Demo do Nextsteps](docs/assets/demo.gif)
+
+<sub>[Assistir vídeo em HD (1280×720, 30 fps MP4)](docs/assets/demo.mp4)</sub>
 
 1. Pergunte qualquer coisa. Em `Automático` o próprio modelo escreve os cards, como último passo antes da resposta final; com um idioma ou modelo explícito, o plugin os gera depois do turno.
 2. O turno concluído renderiza seus próprios cards de sugestão — atribuídos àquele turno, nunca repetidos entre mensagens.

@@ -14,7 +14,9 @@ dsh plugin --profile web add dsh-nextsteps
 
 ## 产品导览
 
-![Nextsteps 演示](docs/assets/demo.svg)
+![Nextsteps 演示](docs/assets/demo.gif)
+
+<sub>[观看高清视频（1280×720，30 fps MP4）](docs/assets/demo.mp4)</sub>
 
 1. 随意提问。选择“自动”时,由模型自己写出卡片,作为最终回答前的最后一步;指定语言或模型时,则由插件在回合结束后生成卡片。
 2. 已完成的回合渲染出属于自己的建议卡片——归属于该回合，不会跨消息重复。
