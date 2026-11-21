@@ -68,6 +68,18 @@ function assertNoUncalledHostRoutes(hostRoutes, clientRoutes) {
   }
 }
 
+function extractHostArray(name) {
+  const match = hostSource.match(new RegExp(`const ${name} = \\[([^\\]]*)\\];`));
+  assert(match !== null, `the host declares the ${name} array as a single-line literal`);
+  return JSON.parse(`[${match[1].replace(/'/g, '"')}]`);
+}
+
+function extractHostNumber(name) {
+  const match = hostSource.match(new RegExp(`const ${name} = (\\d+);`));
+  assert(match !== null, `the host declares the ${name} numeric constant`);
+  return Number(match[1]);
+}
+
 test("every route the client calls is registered by the host", () => {
   assertClientCallsAreRegistered(CLIENT_ROUTES, HOST_ROUTES);
 });
@@ -148,4 +160,22 @@ test("empty extraction fails both parity directions", () => {
     () => assertNoUncalledHostRoutes(EMPTY_ROUTES, CLIENT_ROUTES),
     "empty host extraction fails the host-to-client direction",
   );
+});
+
+test("the test constants mirror the real host declarations", () => {
+  assertEqual(extractHostArray("LANGUAGES"), LANGUAGES, "the transcribed LANGUAGES mirror the host LANGUAGES");
+  assertEqual(extractHostArray("STYLE_IDS"), STYLE_IDS, "the transcribed STYLE_IDS mirror the host STYLE_IDS");
+  assertEqual(extractHostArray("CARD_ACTION_IDS"), CARD_ACTION_IDS, "the transcribed CARD_ACTION_IDS mirror the host CARD_ACTION_IDS");
+  assertEqual(extractHostArray("GENERATION_MODES"), GENERATION_MODES, "the transcribed GENERATION_MODES mirror the host GENERATION_MODES");
+  for (const [constant, name] of [
+    ["generateTimeoutMs", "GENERATE_TIMEOUT_MS"],
+    ["defaultMaxSuggestionChars", "DEFAULT_MAX_SUGGESTION_CHARS"],
+    ["maxCustomInstructionChars", "MAX_CUSTOM_INSTRUCTION_CHARS"],
+    ["minLatencyBudgetMs", "MIN_LATENCY_BUDGET_MS"],
+    ["maxLatencyBudgetMs", "MAX_LATENCY_BUDGET_MS"],
+    ["minMaxSuggestionChars", "MIN_MAX_SUGGESTION_CHARS"],
+    ["maxMaxSuggestionChars", "MAX_MAX_SUGGESTION_CHARS"]
+  ]) {
+    assertEqual(extractHostNumber(name), CONSTANTS[constant], `the transcribed ${constant} mirrors the host ${name}`);
+  }
 });
