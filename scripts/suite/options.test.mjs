@@ -293,14 +293,23 @@ test("merge keeps the current value when the patch value is invalid", () => {
   assertEqual(next, current, "an invalid patch value keeps the current field");
 });
 
-test("merge resets the model on an empty patch value and keeps it on an invalid non-empty one", () => {
+test("merge resets the model only on an explicit empty string and keeps it on an absent patch value", () => {
   const options = makeOptions();
   const current = { ...options.defaults(), model: "demo/demo-model" };
   assertEqual(options.merge(current, { model: "" }).model, "", "an empty string resets the model");
-  assertEqual(options.merge(current, { model: undefined }).model, "", "an undefined model resets");
-  assertEqual(options.merge(current, { model: null }).model, "", "a null model resets");
+  assertEqual(options.merge(current, { model: undefined }).model, "demo/demo-model", "an undefined model keeps the current model");
+  assertEqual(options.merge(current, { model: null }).model, "demo/demo-model", "a null model keeps the current model");
   assertEqual(options.merge(current, { model: "other/one" }).model, "other/one", "a composed key swaps");
   assertEqual(options.merge(current, { model: "no-slash" }).model, "demo/demo-model", "a plain string without a slash keeps the current model");
+});
+
+test("merge keeps the configured model when the patch carries only another field", () => {
+  const options = makeOptions();
+  const current = { ...options.defaults(), model: "demo/demo-model", customInstruction: "be direct" };
+  const next = options.merge(current, { lang: "pt-BR" });
+  assertEqual(next.model, "demo/demo-model", "a language swap keeps the configured model");
+  assertEqual(next.customInstruction, "be direct", "a language swap keeps the custom instruction");
+  assertEqual(next.lang, "pt-BR", "a language swap applies");
 });
 
 test("merge treats an empty styles patch as keep and an empty cardActions patch as clear", () => {
@@ -321,8 +330,7 @@ test("merge leaves the current settings object untouched on any patch, including
     const next = options.merge(current, patch);
     assert(next !== current, `a ${typeof patch} patch returns a new object`);
     for (const name of FIELD_NAMES) {
-      const expected = name === "model" ? "" : current[name];
-      assertEqual(next[name], expected, `the ${name} field with a ${String(patch)} patch follows the source rule`);
+      assertEqual(next[name], current[name], `the ${name} field with a ${String(patch)} patch follows the source rule`);
     }
     assertEqual(current, snapshot, "the current object keeps its values after a patch without keys");
   }

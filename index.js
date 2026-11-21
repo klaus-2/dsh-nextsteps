@@ -492,7 +492,7 @@ function toolSpec(getSettings, generation, rewriteSlot) {
       const outcome = interpretation.interpret({ source: 'tool-args', value: args.followups });
       if (!outcome.ok) return outcome.problem;
       const followups = outcome.followups;
-      if (hostMode(settings)) {
+      if (hostMode(settings) && settings.model === '') {
         const sessionId = exec !== undefined && exec.agent !== undefined ? exec.agent.id : undefined;
         const callId = exec !== undefined ? exec.callId : undefined;
         if (typeof sessionId === 'string' && typeof callId === 'string') {

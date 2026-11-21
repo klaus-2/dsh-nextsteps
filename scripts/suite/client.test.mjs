@@ -620,6 +620,37 @@ test("the copy action writes the prompt and announces it in the live region", as
   }
 });
 
+test("the first press neither leaves the row nor renders the shortcut hints", async () => {
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } });
+  try {
+    const capture = registrations.find((entry) => entry.spec?.name === "tool.call.toolview");
+    capture.component({
+      sessionId: "s1",
+      callId: "call-1",
+      block: { kind: "tool-result", callId: "call-1", name: "suggest_followups", content: [{ type: "text", text: '{"rev":"sf-2","followups":[{"prompt":"Rodar o build","label":"Rodar build"}]}' }] }
+    });
+    const tail = tailOf(registrations);
+    const rendered = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    assertEqual(walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-hints")).length, 0, "no shortcut hint bar renders inside the item");
+    const card = walk(rendered, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-card"))[0];
+    let cardPrevented = 0;
+    card.props.onMouseDown({ preventDefault: () => { cardPrevented += 1; } });
+    assertEqual(cardPrevented, 1, "the card press keeps the document focus where it was");
+    const row = walk(rendered, (node) => node.props?.className === "dsh-sf-item-actions")[0];
+    let rowPrevented = 0;
+    row.props.onMouseDown({ preventDefault: () => { rowPrevented += 1; } });
+    assertEqual(rowPrevented, 1, "the action row press keeps the document focus where it was");
+    const copy = buttonsOf(rendered).find((node) => node.props?.["aria-label"] === "actionCopy");
+    await copy.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const after = renderTail(client, tail, { sessionId: "s1", turn: { turn: 1 }, seq: 9, t: (key) => key });
+    const copyAfter = buttonsOf(after).find((node) => node.props?.["aria-label"] === "copied");
+    assert(copyAfter !== undefined, "the very first click applies the copy action");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("the clipboard fallback runs when the clipboard refuses the text", async () => {
   const clipboard = fakeClipboard({ fail: true });
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" } }, { clipboard });
@@ -1468,6 +1499,9 @@ test("the stylesheet carries the cardline and hover-reveal contract", () => {
   assert(!source.includes(".dsh-sf-item-actions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; opacity: 0.45; transition: opacity 120ms ease; pointer-events"), "no pointer-events gate steals the first click");
   const itemActionRows = [...source.matchAll(/className: 'dsh-sf-item-actions'/g)].length;
   assertEqual(itemActionRows, 2, "the per-card row and the settings preview carry the reveal class");
+  assert(!source.includes("dsh-sf-hints"), "the green shortcut hint bar is gone from the markup and the stylesheet");
+  assertIncludes(source, "className: 'dsh-sf-item-actions', onMouseDown: (event) => event.preventDefault()", "the per-card actions keep the press inside the row so the first click lands");
+  assertEqual([...source.matchAll(/onMouseDown: \(event\) => event\.preventDefault\(\)/g)].length, 2, "the send card and the action row are the only press guards, so the first click lands");
   const sharedActionRows = [...source.matchAll(/className: 'dsh-sf-actions'/g)].length;
   assertEqual(sharedActionRows, 3, "the editor, manual and footer rows keep the always-visible class");
   assertIncludes(source, "className: 'dsh-sf-action dsh-sf-undo'", "the undo button carries its own compact class");

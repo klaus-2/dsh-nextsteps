@@ -309,6 +309,46 @@ test("the host serves the rewritten drafts at the end of the turn", async () => 
   assertEqual(llmCalls.length, 1, "only the rewrite call ran");
 });
 
+test("a configured model generates from the transcript and ignores the turn drafts", async () => {
+  const events = [
+    { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
+    { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "suggest_followups", arguments: '{"followups":[{"prompt":"Run tests","label":"Tests"}]}' } },
+    { seq: 3, type: "assistant/message", data: { message: { content: [{ type: "text", text: "done" }] } } },
+    { seq: 9, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }
+  ];
+  const sessionQuery = { observeSession: async () => ({ events, [Symbol.dispose]: () => {} }) };
+  const { ctx, routes, registered, llmCalls } = stubContext({
+    services: { sessionQuery },
+    llmModels: [{ id: "configured-model", name: "Configured" }],
+    llmText: '{"followups":[{"prompt":"Gerado pelo modelo configurado","label":"G"}]}'
+  });
+  const mod = await import(moduleUrl.href);
+  await mod.apply(ctx);
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lang: "auto", model: "demo/configured-model" })
+  }));
+  await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
+  const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "s1", afterSeq: 9 })
+  }));
+  const body = await response.json();
+  assertEqual(response.status, 200);
+  assertEqual(body.followups[0]?.prompt, "Gerado pelo modelo configurado", "the configured model generates the cards");
+  assertEqual(body.source, "transcript", "the response names the transcript source");
+  assertEqual(body.model, "configured-model", "the response names the configured model");
+  assertEqual(llmCalls.length, 1, "the configured model runs the only call");
+  assertEqual(llmCalls[0], { provider: "demo", model: "configured-model" }, "the call routes to the configured model");
+  await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "" })
+  }));
+});
+
 test("the explicit language is enforced against a foreign transcript", async () => {
   const events = [
     { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "Please fix the parser bug" }], source: { kind: "user" } } },
@@ -338,7 +378,7 @@ test("the explicit language is enforced against a foreign transcript", async () 
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lang: "zh-CN" })
+    body: JSON.stringify({ lang: "zh-CN", model: "" })
   }));
   const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
     method: "POST",
@@ -367,7 +407,7 @@ test("the non-latin script guard discards a wrong-script reply", async () => {
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lang: "zh-CN" })
+    body: JSON.stringify({ lang: "zh-CN", model: "" })
   }));
   const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
     method: "POST",
@@ -394,7 +434,7 @@ test("the generator survives a malformed model reply", async () => {
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lang: "pt-BR" })
+    body: JSON.stringify({ lang: "pt-BR", model: "" })
   }));
   const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
     method: "POST",
@@ -422,7 +462,7 @@ test("the generator trims the result to the configured count", async () => {
   await routes.get(`/api/${pluginId}.settings`).fetch(new Request("http://x", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lang: "pt-BR", maxFollowups: 2 })
+    body: JSON.stringify({ lang: "pt-BR", maxFollowups: 2, model: "" })
   }));
   const response = await routes.get(`/api/${pluginId}.generate`).fetch(new Request("http://x", {
     method: "POST",
@@ -2884,7 +2924,7 @@ test("a failing reserve propagates the original error", async () => {
   assertEqual(llmCalls.filter((route) => route.model === "demo-model").length, 3, "the reserve spent its own attempts");
 });
 
-test("a cached rewrite is served untouched while the reserve is armed", async () => {
+test("a failing configured round retries once on the chat default model", async () => {
   const events = [
     { seq: 1, type: "user/message", data: { content: [{ type: "text", text: "corrija o parser" }], source: { kind: "user" } } },
     { seq: 2, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "suggest_followups", arguments: '{"followups":[{"prompt":"Run tests","label":"Tests"}]}' } },
@@ -2894,15 +2934,17 @@ test("a cached rewrite is served untouched while the reserve is armed", async ()
   const { post, llmCalls, registered } = await twoModelContext({
     events,
     settings: { lang: "pt-BR" },
-    streamsByModel: { deepseek: answerStream('{"followups":[{"prompt":"Rodar os testes","label":"Testes"}]}') }
+    streamsByModel: { deepseek: failStream("the configured model is down") }
   });
   await registered[0].execute({ followups: [{ prompt: "Run tests", label: "Tests" }] }, { callId: "call-1", agent: { id: "s1" } });
   const response = await post({ sessionId: "s1", afterSeq: 9 });
   const body = await response.json();
   assertEqual(response.status, 200, JSON.stringify(body).slice(0, 200));
-  assertEqual(body.source, "rewrite", "the rewrite answer is untouched by the fallback");
-  assertEqual(body.model, "rewrite", "the rewrite model is untouched");
-  assertEqual(llmCalls.length, 1, "only the rewrite call ran");
+  assertEqual(body.source, "fallback", "the reserve answers as the fallback source");
+  assertEqual(body.model, "demo-model", "the reserve runs on the chat default model");
+  assertEqual(llmCalls.length, 4, "the configured round spends its attempts and the reserve runs once");
+  assertEqual(llmCalls[0], { provider: "demo", model: "deepseek" }, "the configured model runs the primary round");
+  assertEqual(llmCalls[3], { provider: "demo", model: "demo-model" }, "the reserve runs on the chat default model");
 });
 
 test("the fixture mode answers before any reserve logic", async () => {

@@ -708,8 +708,6 @@ window.__ModuleLoader__.load({
 .dsh-sf-editor { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
 .dsh-sf-textarea { min-height: 56px; max-width: 100%; font: inherit; font-size: 12px; line-height: 1.45; padding: 6px 8px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md, 10px); resize: vertical; }
 .dsh-sf-notice { max-width: 100%; color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.dsh-sf-hints { display: none; font-size: 10px; letter-spacing: 0.02em; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
-.dsh-sf-item:focus-within .dsh-sf-hints { display: inline-flex; gap: 8px; }
 .dsh-sf-placeholder { font-size: 11px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
 .dsh-sf-manual { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .dsh-sf-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -2587,6 +2585,7 @@ window.__ModuleLoader__.load({
                 disabled: sent,
                 title: prompt,
                 'aria-label': prompt,
+                onMouseDown: (event) => event.preventDefault(),
                 onClick: () => {
                   if (sent) return;
                   actions.dispatch(itemId, 'send', { text: prompt, announcement: 'srFollowupSent' });
@@ -2607,7 +2606,7 @@ window.__ModuleLoader__.load({
                 'aria-label': t('actionNotRelevant'),
                 title: t('actionNotRelevant')
               }, '⚐') : null),
-            h('span', { className: 'dsh-sf-item-actions' },
+            h('span', { className: 'dsh-sf-item-actions', onMouseDown: (event) => event.preventDefault() },
               ...pluginSettings.cardActions.flatMap((actionId) => {
                 if (actionId === 'copy') {
                   return [h('button', {
@@ -2762,9 +2761,7 @@ window.__ModuleLoader__.load({
                   type: 'button',
                   className: 'dsh-sf-action',
                   onClick: () => actions.dispatch(itemId, 'editorCancel', {})
-                }, t('editCancel')))) : null,
-            h('span', { className: 'dsh-sf-hints' },
-              `${t('actionCopy')} C · ${t('actionFavorite')} F · ${t('actionEdit')} E · ${t('actionInsertDraft')} I · ${t('actionDiscard')} D`)));
+                }, t('editCancel')))) : null));
         }
       }
       for (const sortedId of orderedIds()) rows.push(rowSpecs.get(sortedId));
