@@ -135,7 +135,7 @@ dsh plugin --profile web add dsh-nextsteps
 ## 开发
 
 - `npm test` 运行回归套件和单元测试套件。
-- `npm run test:coverage` 在覆盖 `index.js` 和 `lib/host/generation-round.mjs` 的 c8 覆盖率门禁下运行单元测试套件；门禁会强制执行实测下限：81% 的行和 79% 的函数。
+- `npm run test:coverage` 在覆盖 `index.js`、`lib/host/generation-round.mjs` 和 `lib/host/followup-interpretation.mjs` 的 c8 覆盖率门禁下运行单元测试套件；门禁会强制执行实测下限：81% 的行和 79% 的函数。
 
 生成回合在宿主模块 `lib/host/generation-round.mjs` 中深化（关卡判定、模型重试、改写交接和错误映射）；客户端带期限的在途控制器、探测和请求体构造器保留在 `client.js` 内，因为浏览器模块加载器只解析种子词和包名，不解析插件子路径。宿主模块目录随包发布；线上契约——路由、状态、`source`/`model`/`rev` 取值、设置项和 i18n 字符串——保持不变。
 

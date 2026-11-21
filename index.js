@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGenerationRound, defaultTimeSource } from './lib/host/generation-round.mjs';
+import { createFollowupInterpretation } from './lib/host/followup-interpretation.mjs';
 
 const TOOL_NAME = 'suggest_followups';
 const inject = ['tools', 'connection'];
@@ -422,54 +423,11 @@ async function settingsSave(next) {
   await writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2));
 }
 
-function coerceFollowups(raw) {
-  if (typeof raw === 'string') {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return undefined;
-    }
-  }
-  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
-    try {
-      if (Array.isArray(raw.followups)) raw = raw.followups;
-    } catch {
-      return undefined;
-    }
-  }
-  if (raw === undefined || raw === null) return undefined;
-  if (!Array.isArray(raw)) raw = [raw];
-  return raw;
-}
-
-function validationProblem(followups) {
-  const shape = followups === undefined || followups === null ? 'nothing usable'
-    : Array.isArray(followups) ? `array(${followups.length})`
-    : typeof followups;
-  if (!Array.isArray(followups) || followups.length === 0) {
-    return `Error: \`followups\` must be a non-empty array (aim for ${settingsLoad().maxFollowups}) of objects with a non-empty \`prompt\` string and an optional short \`label\` string. Received ${shape}. Retry with valid followups.`;
-  }
-  for (const followup of followups) {
-    if (followup === null || typeof followup !== 'object') {
-      return 'Error: each followup must be an object with a non-empty `prompt` string. Retry with valid followups.';
-    }
-    let prompt;
-    let label;
-    try {
-      prompt = followup.prompt;
-      label = followup.label;
-    } catch {
-      return 'Error: each followup must be an object with a non-empty `prompt` string. Retry with valid followups.';
-    }
-    if (typeof prompt !== 'string' || prompt.trim() === '') {
-      return 'Error: each followup needs a non-empty `prompt` string (the message sent when the user clicks). Retry with valid followups.';
-    }
-    if (label !== undefined && (typeof label !== 'string' || label.trim() === '')) {
-      return 'Error: `label` must be a short non-empty string when present. Retry with valid followups.';
-    }
-  }
-  return null;
-}
+const interpretation = createFollowupInterpretation({
+  styleIds: STYLE_IDS,
+  defaultMaxChars: DEFAULT_MAX_SUGGESTION_CHARS,
+  maxFollowupsOf: () => settingsLoad().maxFollowups
+});
 
 const PARAMETER_SCHEMA = {
   type: 'object',
@@ -590,16 +548,16 @@ function toolSpec(getSettings, generation, rewriteSlot) {
         if (hostMode(settings) || settings.generationMode === 'on-demand') return [{ type: 'text', text: value }];
         return [
           { type: 'text', text: value },
-          { type: 'text', text: JSON.stringify({ rev: PLUGIN_REV, followups: coerceFollowups(args.followups) ?? [] }) }
+          { type: 'text', text: JSON.stringify({ rev: PLUGIN_REV, followups: interpretation.coerceFollowups(args.followups) ?? [] }) }
         ];
       }
     },
     async execute(args, exec) {
       const settings = getSettings();
       if (settings.generationMode === 'on-demand') return ON_DEMAND_REFUSAL;
-      const followups = coerceFollowups(args.followups);
-      const problem = validationProblem(followups);
-      if (problem !== null) return problem;
+      const outcome = interpretation.interpret({ source: 'tool-args', value: args.followups });
+      if (!outcome.ok) return outcome.problem;
+      const followups = outcome.followups;
       if (hostMode(settings)) {
         const sessionId = exec !== undefined && exec.agent !== undefined ? exec.agent.id : undefined;
         const callId = exec !== undefined ? exec.callId : undefined;
@@ -623,7 +581,7 @@ async function apply(ctx) {
     agentDefaultModel: () => get(ctx, 'agentDefaultModel'),
     time: defaultTimeSource(),
     describeError,
-    coerceFollowups,
+    followupsFromModelText: interpretation.followupsFromModelText,
     latencyBudgetOf,
     guidanceLines,
     customInstructionLines,
@@ -763,9 +721,9 @@ async function apply(ctx) {
       }
       const fixtureText = process.env.DSH_NEXTSTEPS_FIXTURE;
       if (typeof fixtureText === 'string' && fixtureText.trim() !== '') {
-        const fixture = generation.followupsFromModelText(fixtureText, settings.maxSuggestionChars);
-        if (fixture === undefined) return json({ error: 'the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON' }, 400);
-        return json({ ok: true, rev: PLUGIN_REV, followups: fixture.slice(0, settings.maxFollowups), model: 'fixture', source: 'fixture' });
+        const outcome = interpretation.interpret({ source: 'fixture', value: fixtureText, maxChars: settings.maxSuggestionChars, maxFollowups: settings.maxFollowups });
+        if (!outcome.ok) return json({ error: 'the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON' }, 400);
+        return json({ ok: true, rev: PLUGIN_REV, followups: outcome.followups, model: 'fixture', source: 'fixture' });
       }
       const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
       const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;

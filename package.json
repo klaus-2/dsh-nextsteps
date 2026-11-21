@@ -69,7 +69,7 @@
     "test": "node tools/regression.mjs && node scripts/test.mjs",
     "regression": "node tools/regression.mjs",
     "test:unit": "node scripts/test.mjs",
-    "test:coverage": "c8 --include index.js --include lib/host/generation-round.mjs --check-coverage --lines 81 --functions 79 --reporter=text node scripts/test.mjs"
+    "test:coverage": "c8 --include index.js --include lib/host/generation-round.mjs --include lib/host/followup-interpretation.mjs --check-coverage --lines 81 --functions 79 --reporter=text node scripts/test.mjs"
   },
   "icon": "./docs/assets/icon.png",
   "devDependencies": {
