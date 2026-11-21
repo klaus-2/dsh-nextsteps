@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pkg, pluginId, isDevCopy } from "../harness.mjs";
 import { root } from "../client-harness.mjs";
+import { buildTables, renderBlock } from "../build-dictionaries.mjs";
 
 suite("package: layout, dictionaries and static safety");
 
@@ -83,34 +84,44 @@ test("the dictionaries carry the same keys", () => {
   }
 });
 
-function inlineDictionaries(source) {
-  const start = source.indexOf("const DICTIONARIES = {");
-  assert(start !== -1, "client.js declares the inline DICTIONARIES");
-  const entries = {};
-  for (const line of source.slice(start).split("\n").slice(1)) {
-    if (/^\s*\};\s*$/.test(line)) break;
-    const match = line.match(/^\s*(?:'([^']+)'|([a-zA-Z-]+)):\s*(\{.*\}),?\s*$/);
-    if (match === null) continue;
-    entries[match[1] ?? match[2]] = JSON.parse(match[3]);
+test("the generated dictionary block matches the locale files byte for byte", () => {
+  const begin = clientSource.indexOf("// BEGIN GENERATED DICTIONARIES");
+  assert(begin !== -1, "client.js declares the begin marker");
+  const end = clientSource.indexOf("// END GENERATED DICTIONARIES");
+  assert(end !== -1, "client.js declares the end marker");
+  assert(end > begin, "the end marker follows the begin marker");
+  const beginLineEnd = clientSource.indexOf("\n", begin) + 1;
+  const endLineStart = clientSource.lastIndexOf("\n", end - 1) + 1;
+  const extracted = clientSource.slice(beginLineEnd, endLineStart).replace(/\r\n/g, "\n");
+  assert(extracted.endsWith("\n"), "the block ends at a line boundary");
+  const actual = extracted.slice(0, -1);
+  const expected = renderBlock(buildTables(path.join(root, "lib", "locale")));
+  let firstDifference = -1;
+  for (let index = 0; index < Math.min(actual.length, expected.length); index += 1) {
+    if (actual[index] !== expected[index]) {
+      firstDifference = index;
+      break;
+    }
   }
-  return entries;
-}
+  if (firstDifference === -1 && actual.length !== expected.length) firstDifference = Math.min(actual.length, expected.length);
+  assert(actual === expected, `the generated dictionary block is byte-identical to the locale files\n  expected length: ${expected.length}\n  actual length:   ${actual.length}\n  first differing index: ${firstDifference}\n  expected near drift: ${JSON.stringify(expected.slice(Math.max(0, firstDifference - 40), firstDifference + 80))}\n  actual near drift:   ${JSON.stringify(actual.slice(Math.max(0, firstDifference - 40), firstDifference + 80))}`);
+});
 
-test("the inline DICTIONARIES match the locale files", () => {
-  const inline = inlineDictionaries(clientSource);
+test("the generator tables match each locale file's non-meta keys", () => {
+  const tables = buildTables(path.join(root, "lib", "locale"));
   for (const { lang, data } of locales) {
-    assert(inline[lang] !== undefined, `the inline dictionaries declare ${lang}`);
+    assert(tables[lang] !== undefined, `the generator declares ${lang}`);
     const jsonKeys = Object.keys(data).filter((key) => key !== "meta").sort();
-    assertEqual(Object.keys(inline[lang]).sort(), jsonKeys, `${lang} carries the same keys inline and in the locale file`);
+    assertEqual(Object.keys(tables[lang]).sort(), jsonKeys, `${lang} carries the same keys inline and in the locale file`);
   }
 });
 
-test("the inline dictionaries keep the locale count", () => {
-  const inline = inlineDictionaries(clientSource);
-  assertEqual(Object.keys(inline).sort(), ["en", "pt-BR", "zh-CN"], "the inline dictionaries cover the three languages");
+test("the generator tables keep the locale count", () => {
+  const tables = buildTables(path.join(root, "lib", "locale"));
+  assertEqual(Object.keys(tables).sort(), ["en", "pt-BR", "zh-CN"], "the inline dictionaries cover the three languages");
   for (const { lang, data } of locales) {
     const expected = Object.keys(data).filter((key) => key !== "meta").length;
-    assertEqual(Object.keys(inline[lang]).length, expected, `${lang} keeps ${expected} keys in the inline copy`);
+    assertEqual(Object.keys(tables[lang]).length, expected, `${lang} keeps ${expected} keys in the inline copy`);
   }
 });
 

@@ -3017,6 +3017,26 @@ window.__ModuleLoader__.load({
       'zh-CN': {"setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","setConfirmSend":"发送前确认","setConfirmSendTip":"第一次点击进入待确认状态，第二次点击才会发送；同样适用于新建对话。","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","customInstruction":"建议的自定义指令","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","discardedClear":"清空已丢弃","discardedClearConfirm":"再次点击以确认","discardedCleared":"已丢弃的建议已清空。","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","collapseGroup":"收起卡片","expandGroup":"展开卡片","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","sendConfirm":"发送这条建议？","sendConfirmYes":"立即发送","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srSendConfirm":"发送已待确认；再次点击以确认。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：","retryGeneration":"重试","originLabel":"由 {model} 生成","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","sessionPause":"暂停生成建议","sessionInstruction":"本会话指令","openSettings":"打开 Nextsteps 设置","settingsUnavailable":"此处无法打开设置。","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatConfirm":"用这条建议新建对话？","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","actionRegenerate":"重新生成","regenerating":"正在重新生成…","srRegenerated":"建议已重新生成。","actionNotRelevant":"不相关","notRelevantMarked":"已标记为不相关","notRelevantUnmarked":"已取消标记","updatePrecheck":"无法在 npm registry 上验证该版本。","updateNoManager":"此宿主没有可用的插件安装器。","setRetention":"保留期限","setRetentionTip":"自动删除超过此天数的已存建议。0 表示关闭（0-365）。","setTranscriptScope":"历史记录范围","setTranscriptScopeTip":"生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。","optTranscriptFull":"完整历史记录","optTranscriptMinimal":"最小（最后几条）","warnInjection":"这条建议疑似提示词注入","warnSecrets":"这条建议疑似包含凭据或密钥","srSecretsWarning":"有建议疑似包含凭据或密钥。","sessionPrivate":"私人对话","srPrivateOn":"此对话为私人模式；建议仅保留在内存中。","srPrivateOff":"此对话不再是私人模式。","privatePurgeFailed":"无法删除此对话的已存建议；请检查存储。","audit":"审计日志","auditEmpty":"尚无审计事件。","auditClear":"清空审计日志","auditCleared":"审计日志已清空。","auditKindGenerated":"生成","auditKindSent":"发送","originRewrite":"来自本回合的回答","originFixture":"来自测试 fixture","setCardActions":"卡片操作","setCardActionsTip":"选择每张卡片显示哪些操作及其顺序。取消勾选即隐藏；全部取消勾选则不显示任何操作。","cardActionsHiddenAll":"卡片上不显示任何操作。","generationTimeoutTip":"生成器超时——请重试，或在设置中提高延迟预算。","tabGeneration":"生成","tabCards":"卡片","tabPrivacy":"隐私","tabFavourites":"收藏","tabAbout":"关于","secGeneration":"建议的生成方式","secLimits":"时间与大小","secAppearance":"卡片外观","secActions":"卡片操作","secPrivacy":"本机上的数据","secAudit":"审计日志","secAbout":"版本与更新","secPerformance":"性能","setFallbackModel":"备用模型","setFallbackModelTip":"回合失败或超时时，会使用对话的默认模型重试一次。","originFallback":"via {model}（备用）","diagCopy":"复制诊断信息","diagCopyTip":"复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。"}
     };
     // END GENERATED DICTIONARIES
+    function createI18n({ dictionaries, ns, warn = console.warn }) {
+      return {
+        register(ctx) {
+          for (const [code, dictionary] of Object.entries(dictionaries)) {
+            ctx.effect(() => {
+              try {
+                return ctx.locale.register(ns, code, dictionary);
+              } catch (error) {
+                warn('dsh-nextsteps: ' + code + ' dictionary was not accepted by the locale service:', error);
+                return undefined;
+              }
+            }, 'dsh-nextsteps: ' + code + ' dictionary');
+          }
+        },
+        fallback(key) {
+          return dictionaries.en[key] ?? key;
+        }
+      };
+    }
+    const i18n = createI18n({ dictionaries: DICTIONARIES, ns: NS });
     const DEFAULT_SETTINGS = {
       lang: 'auto',
       maxFollowups: 3,
@@ -3102,7 +3122,7 @@ window.__ModuleLoader__.load({
         try {
           t = typeof props.t === 'function' ? props.t : ctx.locale.bind(NS);
         } catch {
-          t = (key) => DICTIONARIES.en[key] ?? key;
+          t = (key) => i18n.fallback(key);
         }
         const [settings, setSettings] = React.useState(pluginSettings);
         const [updateState, setUpdateState] = React.useState({ version: '', update: null, checking: false, installing: false, installed: '', installError: '', asked: '' });
@@ -3938,16 +3958,7 @@ window.__ModuleLoader__.load({
           const touched = pruneExpiredCaptures(index, pluginSettings.retentionDays);
           if (touched.size > 0) persistCaptures('', index, touched);
         });
-        for (const [code, dictionary] of Object.entries(DICTIONARIES)) {
-          ctx.effect(() => {
-            try {
-              return ctx.locale.register(NS, code, dictionary);
-            } catch (error) {
-              console.warn('dsh-nextsteps: ' + code + ' dictionary was not accepted by the locale service:', error);
-              return undefined;
-            }
-          }, 'dsh-nextsteps: ' + code + ' dictionary');
-        }
+        i18n.register(ctx);
 
         ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
           name: 'tool.call.toolview',
@@ -3968,6 +3979,7 @@ window.__ModuleLoader__.load({
           locale: NS
         }, createSettings(ctx)));
       },
+      i18n,
       flushWrites,
       generationRound,
       localStore
