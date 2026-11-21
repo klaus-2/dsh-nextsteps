@@ -191,5 +191,10 @@
   "setFallbackModelTip": "When a round fails or times out, it is repeated once with the chat's default model.",
   "originFallback": "via {model} (fallback)",
   "diagCopy": "Copy diagnostics",
-  "diagCopyTip": "Copies a technical report with the plugin version, environment, settings, metrics and the last error, for reporting issues."
+  "diagCopyTip": "Copies a technical report with the plugin version, environment, settings, metrics and the last error, for reporting issues.",
+  "supportTitle": "Enjoying Nextsteps?",
+  "supportMessage": "A star on GitHub helps other people discover the plugin — it takes ten seconds.",
+  "supportStar": "Star on GitHub",
+  "supportThanks": "Thank you! Every star helps the plugin reach more people.",
+  "supportDismiss": "Dismiss"
 }

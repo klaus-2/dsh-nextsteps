@@ -77,6 +77,81 @@ test("the settings section renders every control", () => {
   }
 });
 
+test("the settings page opens with the star request banner", () => {
+  const client = loadClient();
+  const fetchStub = stubFetch({
+    "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
+    "/api/dsh-nextsteps.models": { ok: true, groups: [] },
+    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
+  }, {
+    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
+    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+  });
+  try {
+    const { tree } = settingsTree(client);
+    const banner = walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-support"))[0];
+    assert(banner !== undefined, "the banner renders while the user has not answered");
+    const cta = walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-support-cta"))[0];
+    assert(cta !== undefined, "the banner carries the star call to action");
+    assertEqual(cta.props.href, "https://github.com/klaus-2/dsh-nextsteps", "the call to action opens the repository");
+    assertEqual(cta.props.target, "_blank", "the call to action opens in a new tab");
+    const close = walk(tree, (node) => node.props?.["aria-label"] === "supportDismiss")[0];
+    assert(close !== undefined, "the banner offers the dismiss control");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("starring the project thanks the user once and stays thanked", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const cta = walk(tree, (node) => String(node.props?.className ?? "").split(/\s+/).includes("dsh-sf-support-cta"))[0];
+    assert(cta !== undefined, "the ask banner offers the star call to action");
+    cta.props.onClick({ preventDefault: () => {} });
+    client.instance.flushWrites();
+    assert(String(storage._data["dsh-nextsteps.support"]).includes("thanked"), "the thanked answer persists");
+    const after = section.component({ t: (key) => key });
+    const thanks = walk(after, (node) => node.props?.role === "status");
+    assert(thanks.length >= 1, "the thank-you view announces itself");
+    assertEqual(walk(after, (node) => String(node.props?.className ?? "").includes("dsh-sf-support-cta")).length, 0, "the call to action leaves after the thank you");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("dismissing the banner keeps it dismissed", async () => {
+  const storage = memoryStorage();
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    const tree = section.component({ t: (key) => key });
+    const close = walk(tree, (node) => node.props?.["aria-label"] === "supportDismiss")[0];
+    close.props.onClick();
+    client.instance.flushWrites();
+    assert(String(storage._data["dsh-nextsteps.support"]).includes("dismissed"), "the dismissal persists");
+    assertEqual(walk(section.component({ t: (key) => key }), (node) => String(node.props?.className ?? "").includes("dsh-sf-support")).length, 0, "a dismissed banner never renders again");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a stored answer keeps the banner hidden from the first render", async () => {
+  const storage = memoryStorage({ "dsh-nextsteps.support": JSON.stringify({ state: "thanked", at: 1 }) });
+  const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" } }, { storage });
+  try {
+    await settled(client);
+    const section = registrations.find((entry) => entry.spec?.name === "settings.section");
+    assertEqual(walk(section.component({ t: (key) => key }), (node) => String(node.props?.className ?? "").includes("dsh-sf-support")).length, 0, "a thanked user does not see the ask banner again");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
 test("the styles checkboxes follow the stored selection", async () => {
   const settings = { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["explore"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 };
   const { client, registrations } = clientWithRoutes({ "/api/dsh-nextsteps.settings": { ok: true, settings, version: "1.0.0" } });
@@ -1501,12 +1576,15 @@ test("the stylesheet carries the cardline and hover-reveal contract", () => {
   assertEqual(itemActionRows, 2, "the per-card row and the settings preview carry the reveal class");
   assert(!source.includes("dsh-sf-hints"), "the green shortcut hint bar is gone from the markup and the stylesheet");
   assertIncludes(source, "className: 'dsh-sf-item-actions', onMouseDown: (event) => event.preventDefault()", "the per-card actions keep the press inside the row so the first click lands");
-  assertEqual([...source.matchAll(/onMouseDown: \(event\) => event\.preventDefault\(\)/g)].length, 2, "the send card and the action row are the only press guards, so the first click lands");
+  assertEqual([...source.matchAll(/onMouseDown: \(event\) => event\.preventDefault\(\)/g)].length, 3, "the send card, the action row and the banner close keep the press inside so the first click lands");
   const sharedActionRows = [...source.matchAll(/className: 'dsh-sf-actions'/g)].length;
   assertEqual(sharedActionRows, 3, "the editor, manual and footer rows keep the always-visible class");
   assertIncludes(source, "className: 'dsh-sf-action dsh-sf-undo'", "the undo button carries its own compact class");
   assertIncludes(source, ".dsh-sf-status { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; max-width: 100%; }", "the notice and the undo share one status line");
   assert(!source.includes("onDragStart"), "the dead HTML5 drag start is gone");
+  assertIncludes(source, ".dsh-sf-support { position: relative;", "the star request banner carries its own surface");
+  assertIncludes(source, "@keyframes dsh-sf-star-twinkle", "the banner star twinkles");
+  assertIncludes(source, "@media (prefers-reduced-motion: reduce)", "the banner animations respect reduced motion");
   assert(!source.includes("onDragOver"), "the dead HTML5 drag over is gone");
   assert(!source.includes("dataTransfer"), "the dead HTML5 drag payload is gone");
 });

@@ -191,5 +191,10 @@
   "setFallbackModelTip": "Quando uma rodada falha ou estoura o tempo, ela é repetida uma vez com o modelo padrão da conversa.",
   "originFallback": "via {model} (reserva)",
   "diagCopy": "Copiar diagnóstico",
-  "diagCopyTip": "Copia um relatório técnico com a versão do plugin, o ambiente, as configurações, as métricas e o último erro, para reportar problemas."
+  "diagCopyTip": "Copia um relatório técnico com a versão do plugin, o ambiente, as configurações, as métricas e o último erro, para reportar problemas.",
+  "supportTitle": "Gostando do Nextsteps?",
+  "supportMessage": "Uma estrela no GitHub ajuda outras pessoas a descobrirem o plugin — leva dez segundos.",
+  "supportStar": "Dar estrela no GitHub",
+  "supportThanks": "Obrigado! Cada estrela ajuda o plugin a chegar em mais pessoas.",
+  "supportDismiss": "Dispensar"
 }

@@ -191,5 +191,10 @@
   "setFallbackModelTip": "回合失败或超时时，会使用对话的默认模型重试一次。",
   "originFallback": "via {model}（备用）",
   "diagCopy": "复制诊断信息",
-  "diagCopyTip": "复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。"
+  "diagCopyTip": "复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。",
+  "supportTitle": "喜欢 Nextsteps 吗？",
+  "supportMessage": "在 GitHub 上加一颗 Star，能让更多人发现这个插件——只要十秒。",
+  "supportStar": "去 GitHub 点 Star",
+  "supportThanks": "感谢支持！每一颗 Star 都能让插件帮到更多人。",
+  "supportDismiss": "关闭"
 }
