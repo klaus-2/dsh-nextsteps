@@ -78,6 +78,7 @@ export async function runPackageSuite(harness, { pluginDir, packageName }) {
         "package.json",
         "lib/host/generation-round.mjs",
         "lib/host/followup-interpretation.mjs",
+        "lib/host/conversation-options.mjs",
         "lib/locale/en.json",
         "lib/locale/pt-BR.json",
         "lib/locale/zh-CN.json",

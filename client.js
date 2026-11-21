@@ -3304,6 +3304,23 @@ window.__ModuleLoader__.load({
       confirmBeforeSend: false,
       cardActions: [...CARD_ACTION_IDS]
     };
+    // Inline mirror of lib/host/conversation-options.mjs — the client cannot import it (the DSH sync require rejects subpaths); scripts/suite/options.test.mjs enforces parity.
+    const CONVERSATION_OPTION_FIELDS_PARITY = /* CONVERSATION-OPTIONS-PARITY:BEGIN */{
+      "lang": { "kind": "enum", "values": ["auto","en","pt-BR","zh-CN","es","fr","de","it","ja","ko","ru","ar","hi","id","tr","vi"], "default": "auto" },
+      "maxFollowups": { "kind": "int", "min": 1, "max": 6, "default": 3 },
+      "showHeader": { "kind": "bool", "default": true },
+      "model": { "kind": "string", "default": "" },
+      "fallbackModel": { "kind": "bool", "default": false },
+      "styles": { "kind": "enumList", "values": ["next-action","explore","deep-dive"], "emptyDefault": true, "default": ["next-action","explore","deep-dive"] },
+      "generationMode": { "kind": "enum", "values": ["auto","on-demand"], "default": "auto" },
+      "latencyBudgetMs": { "kind": "int", "min": 5000, "max": 120000, "default": 60000 },
+      "maxSuggestionChars": { "kind": "int", "min": 60, "max": 600, "default": 200 },
+      "retentionDays": { "kind": "int", "min": 0, "max": 365, "default": 0 },
+      "transcriptScope": { "kind": "enum", "values": ["full","minimal"], "default": "full" },
+      "customInstruction": { "kind": "string", "maxChars": 500, "default": "" },
+      "confirmBeforeSend": { "kind": "bool", "default": false },
+      "cardActions": { "kind": "enumList", "values": ["copy","favorite","edit","insert","discard","regenerate","moveEarlier","moveLater","expand","newChat","notRelevant"], "emptyDefault": false, "default": ["copy","favorite","edit","insert","discard","regenerate","moveEarlier","moveLater","expand","newChat","notRelevant"] }
+    }/* CONVERSATION-OPTIONS-PARITY:END */;
     let pluginSettings = { ...DEFAULT_SETTINGS };
     let hostSettingsLoaded = false;
     let updateManager = undefined;

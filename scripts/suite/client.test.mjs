@@ -4,8 +4,25 @@ import { suite, test, assert, assertEqual, assertIncludes, assertMatch, pluginId
 import { loadClient, fakeSlotHost, stubFetch, walk, textOf, memoryStorage, fakeIntersectionObserver, fakeClipboard, dispatchDocument } from "../client-harness.mjs";
 import { FUZZ_COUNT, assertFollowupsShape, buildPayload, fuzzMessage } from "./fuzz-kit.mjs";
 import { root } from "../client-harness.mjs";
+import { createConversationOptions } from "../../lib/host/conversation-options.mjs";
 
 suite("client: rendering, dictionaries and persistence");
+
+const hostFieldNames = createConversationOptions({
+  languages: ["auto", "en", "pt-BR", "zh-CN", "es", "fr", "de", "it", "ja", "ko", "ru", "ar", "hi", "id", "tr", "vi"],
+  styleIds: ["next-action", "explore", "deep-dive"],
+  cardActionIds: ["copy", "favorite", "edit", "insert", "discard", "regenerate", "moveEarlier", "moveLater", "expand", "newChat", "notRelevant"],
+  generationModes: ["auto", "on-demand"],
+  constants: {
+    generateTimeoutMs: 60000,
+    defaultMaxSuggestionChars: 200,
+    maxCustomInstructionChars: 500,
+    minLatencyBudgetMs: 5000,
+    maxLatencyBudgetMs: 120000,
+    minMaxSuggestionChars: 60,
+    maxMaxSuggestionChars: 600
+  }
+}).fields.map((field) => field.name);
 
 function settingsTree(client, props = {}) {
   const { ctx, registrations } = fakeSlotHost(client.react);
@@ -1838,10 +1855,9 @@ test("the settings page sends no key the host does not read", async () => {
     const checkboxes = walk(rendered, (node) => node.type === "input" && node.props.type === "checkbox");
     assert(checkboxes.length >= 1, "the settings page offers the style checkboxes");
     const clientSource = readFileSync(path.join(root, "client.js"), "utf8");
-    const hostSource = readFileSync(path.join(root, "index.js"), "utf8");
     const sent = [...new Set([...clientSource.matchAll(/save\(\{ ([a-zA-Z]+):/g)].map((match) => match[1]))];
     for (const key of sent) {
-      assert(hostSource.includes(`${key}:`), `the host reads the ${key} setting`);
+      assert(hostFieldNames.includes(key), `the host reads the ${key} setting`);
     }
     assert(!sent.includes("favorites"), "the favourites list is never sent as a setting");
     assert(!sent.includes("discarded"), "the discarded list is never sent as a setting");

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGenerationRound, defaultTimeSource } from './lib/host/generation-round.mjs';
 import { createFollowupInterpretation } from './lib/host/followup-interpretation.mjs';
+import { createConversationOptions } from './lib/host/conversation-options.mjs';
 
 const TOOL_NAME = 'suggest_followups';
 const inject = ['tools', 'connection'];
@@ -293,8 +294,6 @@ const STYLE_ANGLES = {
 };
 
 const GENERATION_MODES = ['auto', 'on-demand'];
-const DEFAULT_STYLES = [...STYLE_IDS];
-const DEFAULT_GENERATION_MODE = 'auto';
 const DEFAULT_MAX_SUGGESTION_CHARS = 200;
 const MIN_MAX_SUGGESTION_CHARS = 60;
 const MAX_MAX_SUGGESTION_CHARS = 600;
@@ -322,99 +321,34 @@ const LANGUAGE_NAMES = {
   'vi': "Vietnamese"
 };
 
-function modelKeyOf(stored) {
-  if (stored === null || typeof stored !== 'object') return '';
-  if (typeof stored.model === 'string') return stored.model.includes('/') ? stored.model : '';
-  const provider = typeof stored.provider === 'string' ? stored.provider : '';
-  const model = typeof stored.model === 'string' ? stored.model : '';
-  return provider !== '' && model !== '' ? `${provider}/${model}` : '';
-}
-
 const CARD_ACTION_IDS = ['copy', 'favorite', 'edit', 'insert', 'discard', 'regenerate', 'moveEarlier', 'moveLater', 'expand', 'newChat', 'notRelevant'];
 
-function cardActionsOf(stored) {
-  if (!Array.isArray(stored)) return undefined;
-  const ids = [];
-  for (const entry of stored) {
-    if (typeof entry !== 'string' || !CARD_ACTION_IDS.includes(entry) || ids.includes(entry)) continue;
-    ids.push(entry);
+const conversationOptions = createConversationOptions({
+  languages: LANGUAGES,
+  styleIds: STYLE_IDS,
+  cardActionIds: CARD_ACTION_IDS,
+  generationModes: GENERATION_MODES,
+  constants: {
+    generateTimeoutMs: GENERATE_TIMEOUT_MS,
+    defaultMaxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
+    maxCustomInstructionChars: MAX_CUSTOM_INSTRUCTION_CHARS,
+    minLatencyBudgetMs: MIN_LATENCY_BUDGET_MS,
+    maxLatencyBudgetMs: MAX_LATENCY_BUDGET_MS,
+    minMaxSuggestionChars: MIN_MAX_SUGGESTION_CHARS,
+    maxMaxSuggestionChars: MAX_MAX_SUGGESTION_CHARS
   }
-  return ids;
-}
+});
 
-function stylesOf(stored) {
-  if (!Array.isArray(stored)) return undefined;
-  const ids = [];
-  for (const entry of stored) {
-    if (typeof entry !== 'string') continue;
-    if (!STYLE_IDS.includes(entry)) continue;
-    if (ids.includes(entry)) continue;
-    ids.push(entry);
-  }
-  if (ids.length === 0) return undefined;
-  return ids;
-}
-
-function generationModeOf(stored) {
-  return typeof stored === 'string' && GENERATION_MODES.includes(stored) ? stored : undefined;
-}
-
-function latencyBudgetOf(stored) {
-  return Number.isInteger(stored) && stored >= MIN_LATENCY_BUDGET_MS && stored <= MAX_LATENCY_BUDGET_MS ? stored : undefined;
-}
-
-function maxSuggestionCharsOf(stored) {
-  return Number.isInteger(stored) && stored >= MIN_MAX_SUGGESTION_CHARS && stored <= MAX_MAX_SUGGESTION_CHARS ? stored : undefined;
-}
-
-function retentionDaysOf(stored) {
-  return Number.isInteger(stored) && stored >= 0 && stored <= 365 ? stored : undefined;
-}
-
-function transcriptScopeOf(stored) {
-  return stored === 'minimal' ? 'minimal' : stored === 'full' ? 'full' : undefined;
-}
-
-function customInstructionOf(stored) {
-  return typeof stored === 'string' ? stored.trim().slice(0, MAX_CUSTOM_INSTRUCTION_CHARS) : undefined;
-}
+const latencyBudgetOf = conversationOptions.fields.find((field) => field.name === 'latencyBudgetMs').validate;
+const maxSuggestionCharsOf = conversationOptions.fields.find((field) => field.name === 'maxSuggestionChars').validate;
+const customInstructionOf = conversationOptions.fields.find((field) => field.name === 'customInstruction').validate;
 
 function settingsLoad() {
   try {
     const stored = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {};
-    return {
-      lang: LANGUAGES.includes(stored.lang) ? stored.lang : 'auto',
-      maxFollowups: Number.isInteger(stored.maxFollowups) && stored.maxFollowups >= 1 && stored.maxFollowups <= 6 ? stored.maxFollowups : 3,
-      showHeader: stored.showHeader !== false,
-      model: typeof stored.model === 'string' ? (stored.model.includes('/') ? stored.model : '') : modelKeyOf(stored),
-      fallbackModel: stored.fallbackModel === true,
-      styles: stylesOf(stored.styles) ?? [...DEFAULT_STYLES],
-      generationMode: generationModeOf(stored.generationMode) ?? DEFAULT_GENERATION_MODE,
-      latencyBudgetMs: latencyBudgetOf(stored.latencyBudgetMs) ?? GENERATE_TIMEOUT_MS,
-      maxSuggestionChars: maxSuggestionCharsOf(stored.maxSuggestionChars) ?? DEFAULT_MAX_SUGGESTION_CHARS,
-      retentionDays: retentionDaysOf(stored.retentionDays) ?? 0,
-      transcriptScope: transcriptScopeOf(stored.transcriptScope) ?? 'full',
-      customInstruction: customInstructionOf(stored.customInstruction) ?? '',
-      confirmBeforeSend: stored.confirmBeforeSend === true,
-      cardActions: cardActionsOf(stored.cardActions) ?? [...CARD_ACTION_IDS]
-    };
+    return conversationOptions.normalize(stored);
   } catch {
-    return {
-      lang: 'auto',
-      maxFollowups: 3,
-      showHeader: true,
-      model: '',
-      fallbackModel: false,
-      styles: [...DEFAULT_STYLES],
-      generationMode: DEFAULT_GENERATION_MODE,
-      latencyBudgetMs: GENERATE_TIMEOUT_MS,
-      maxSuggestionChars: DEFAULT_MAX_SUGGESTION_CHARS,
-      retentionDays: 0,
-      transcriptScope: 'full',
-      customInstruction: '',
-      confirmBeforeSend: false,
-      cardActions: [...CARD_ACTION_IDS]
-    };
+    return conversationOptions.defaults();
   }
 }
 
@@ -637,22 +571,7 @@ async function apply(ctx) {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: 'bad request' }, 400); }
       const current = settingsLoad();
-      const next = {
-        lang: LANGUAGES.includes(body?.lang) ? body.lang : current.lang,
-        maxFollowups: Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : current.maxFollowups,
-        showHeader: typeof body?.showHeader === 'boolean' ? body.showHeader : current.showHeader,
-        model: typeof body?.model === 'string' && body.model.includes('/') ? body.model : body?.model === '' || body?.model === undefined || body?.model === null ? '' : current.model,
-        fallbackModel: typeof body?.fallbackModel === 'boolean' ? body.fallbackModel : current.fallbackModel,
-        styles: stylesOf(body?.styles) ?? current.styles,
-        generationMode: generationModeOf(body?.generationMode) ?? current.generationMode,
-        latencyBudgetMs: latencyBudgetOf(body?.latencyBudgetMs) ?? current.latencyBudgetMs,
-        maxSuggestionChars: maxSuggestionCharsOf(body?.maxSuggestionChars) ?? current.maxSuggestionChars,
-        retentionDays: retentionDaysOf(body?.retentionDays) ?? current.retentionDays,
-        transcriptScope: transcriptScopeOf(body?.transcriptScope) ?? current.transcriptScope,
-        customInstruction: customInstructionOf(body?.customInstruction) ?? current.customInstruction,
-        confirmBeforeSend: typeof body?.confirmBeforeSend === 'boolean' ? body.confirmBeforeSend : current.confirmBeforeSend,
-        cardActions: cardActionsOf(body?.cardActions) ?? current.cardActions
-      };
+      const next = conversationOptions.merge(current, body ?? {});
       await settingsSave(next);
       reapplyTool(next);
       return json({ ok: true, settings: next });
@@ -725,17 +644,14 @@ async function apply(ctx) {
         if (!outcome.ok) return json({ error: 'the DSH_NEXTSTEPS_FIXTURE value is not usable followups JSON' }, 400);
         return json({ ok: true, rev: PLUGIN_REV, followups: outcome.followups, model: 'fixture', source: 'fixture' });
       }
-      const overrideLang = typeof body?.lang === 'string' && LANGUAGES.includes(body.lang) && body.lang !== 'auto' ? body.lang : undefined;
-      const overrideCount = Number.isInteger(body?.maxFollowups) && body.maxFollowups >= 1 && body.maxFollowups <= 6 ? body.maxFollowups : undefined;
-      const overrideModel = typeof body?.model === 'string' && body.model.includes('/') ? body.model : undefined;
-      const overrideInstruction = customInstructionOf(body?.customInstruction) ?? '';
-      const derived = overrideLang !== undefined || overrideCount !== undefined || overrideModel !== undefined || overrideInstruction !== ''
+      const overrides = conversationOptions.sanitizeOverride(body);
+      const derived = overrides.lang !== undefined || overrides.maxFollowups !== undefined || overrides.model !== undefined || overrides.customInstruction !== ''
         ? {
           ...settings,
-          ...(overrideLang !== undefined ? { lang: overrideLang } : {}),
-          ...(overrideCount !== undefined ? { maxFollowups: overrideCount } : {}),
-          ...(overrideModel !== undefined ? { model: overrideModel } : {}),
-          ...(overrideInstruction !== '' ? { customInstruction: overrideInstruction } : {})
+          ...(overrides.lang !== undefined ? { lang: overrides.lang } : {}),
+          ...(overrides.maxFollowups !== undefined ? { maxFollowups: overrides.maxFollowups } : {}),
+          ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+          ...(overrides.customInstruction !== '' ? { customInstruction: overrides.customInstruction } : {})
         }
         : settings;
       const avoid = Array.isArray(body?.avoid)
