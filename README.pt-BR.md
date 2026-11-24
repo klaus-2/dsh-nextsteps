@@ -76,7 +76,7 @@ dsh plugin --profile web add dsh-nextsteps
 - Um histórico de capturas incremental: cada sessão guarda sua própria chave e um índice registra a ordem, então uma sessão que você nunca abre nunca é lida.
 - Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, modelo reserva, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações, diagnóstico.
 - Um idioma explícito (ou um modelo explícito) passa a usar uma chamada limpa separada, então os cards mantêm esse idioma mesmo numa conversa escrita em outro; `Automático` sem modelo segue a conversa dentro do turno.
-- Atualizador in-app — verificação de versão no npm, instalação com um clique, pedido de reinício.
+- Atualizador in-app — verifica a release mais recente do GitHub (confirmada no npm) cerca de 15 segundos após a inicialização, instala com um clique pelo gerenciador de plugins do dsh, pede o reinício e mostra um diálogo de Novidades com as notas da versão.
 - Interface em English, Português (Brasil) e 简体中文.
 
 ## Atalhos de teclado e a região viva
@@ -128,7 +128,7 @@ A mesma página mostra também a tabela de **desempenho** (geração, persistên
 
 ## Atualizações
 
-A mesma página de configurações pergunta ao npm registry qual é a versão mais recente de `dsh-nextsteps`. Quando uma versão mais nova é publicada, o plugin primeiro confere se a versão existe no registry e então **Atualizar agora** instala pelo gerenciador de plugins do dsh. A versão instalada é mostrada e você é convidado a reiniciar. As atualizações instalam somente o pacote npm `dsh-nextsteps` — cópias de desenvolvimento são detectadas e deixadas em paz.
+A mesma página de configurações mantém o plugin atualizado. Cerca de 15 segundos após cada inicialização, o plugin verifica a release mais recente de `dsh-nextsteps` no GitHub — uma verificação somente leitura, sem credenciais — e só oferece uma versão quando ela já está no npm; o resultado aparece na linha **Atualizações**. Nada é instalado automaticamente: **Atualizar agora** passa pelo gerenciador de plugins do dsh apenas quando você clica, e a linha avisa quando o dsh precisa reiniciar para concluir. Depois que uma versão é instalada, um diálogo de **Novidades** mostra as notas dela no idioma da interface, uma vez por versão; ele traz o mesmo pedido de estrela do banner das configurações e respeita a escolha que você já fez ali. Cópias que não foram instaladas com o nome npm `dsh-nextsteps` só se atualizam manualmente: a linha informa a nova versão, mas a atualização passa por Configurações → Plugins.
 
 ## Requisitos
 

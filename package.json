@@ -11,6 +11,7 @@
   "files": [
     "cordis.patch.yml",
     "index.js",
+    "release-notes.json",
     "client.js",
     "lib/host",
     "lib/locale",
@@ -29,7 +30,8 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-remotes"
       ]
     }
   },

@@ -236,7 +236,10 @@ window.__ModuleLoader__.load({
     const CLICKED_KEY = 'dsh-nextsteps.clicked';
     const DRAG_THRESHOLD_PX = 6;
     const CONFIRM_RESET_MS = 4000;
-    const UPDATE_KEY = 'dsh-nextsteps.updated';
+    const UPDATE_ROUTE = '/api/dsh-nextsteps.update';
+    const UPDATE_INSTALLED_KEY = 'dsh-nextsteps.update.installed';
+    const WHATS_NEW_KEY = 'dsh-nextsteps.update.whatsNew';
+    const SEEN_KEY = 'dsh-nextsteps.update.seen';
     const CAPTURES_INDEX_KEY = 'dsh-nextsteps.captures.index';
     const CAPTURE_SESSION_KEY = 'dsh-nextsteps.captures.session';
     const FAVORITES_KEY = 'dsh-nextsteps.favorites';
@@ -262,76 +265,8 @@ window.__ModuleLoader__.load({
     const AUDIT_LIMIT = 200;
     const SUPPORT_KEY = 'dsh-nextsteps.support';
 
-    const API_PORTS = [47497, 47498, 47499, 47500, 47501, 47502, 47503, 47504, 47505, 47506, 47507, 47508, 47509, 47510, 47511, 47512, 47513, 47514, 47515, 47516];
-    const HEALTH_TIMEOUT_MS = 1000;
-    const SECRET_TIMEOUT_MS = 5000;
-    const UPDATE_TIMEOUT_MS = 15000;
-    let API_BASE = 'http://127.0.0.1:47497';
-    let identifiedApiBase = '';
-    let apiDiscovery = null;
-    const SECRET_ROUTE = '/api/dsh-nextsteps.secret';
-    const SECRET_HEADER = 'x-dsh-nextsteps-secret';
-    let INSTANCE_SECRET = '';
-
     const versionOf = (text) => { const m = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(String(text ?? '')); return m === null ? undefined : m.slice(1).map(Number); };
-    const compareVersions = (a, b) => { const pa = versionOf(a); const pb = versionOf(b); if (pa === undefined || pb === undefined) return 0; for (let i = 0; i < 3; i += 1) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; } return 0; };
-    const isNewer = (candidate, running) => versionOf(candidate) !== undefined && versionOf(running) !== undefined && compareVersions(candidate, running) > 0;
-
-    async function resolveInstanceSecret() {
-      if (INSTANCE_SECRET !== '') return INSTANCE_SECRET;
-      try {
-        console.info('dsh-nextsteps: requesting ' + SECRET_ROUTE);
-        const r = await fetch(SECRET_ROUTE, { cache: 'no-store', signal: AbortSignal.timeout(SECRET_TIMEOUT_MS) });
-        const j = await r.json();
-        if (j && j.ok && typeof j.secret === 'string' && j.secret !== '') {
-          INSTANCE_SECRET = j.secret;
-          console.info('dsh-nextsteps: secret acquired');
-        } else {
-          console.info('dsh-nextsteps: the secret route answered ok=' + (j?.ok === true));
-        }
-      } catch (error) {
-        console.info('dsh-nextsteps: the secret request failed ' + describeError(error));
-      }
-      return INSTANCE_SECRET;
-    }
-
-    function authHeaders(extra) {
-      if (identifiedApiBase === '' || identifiedApiBase !== API_BASE) throw new Error('the Nextsteps host has not been identified');
-      const headers = { ...(extra ?? {}) };
-      if (INSTANCE_SECRET !== '') headers[SECRET_HEADER] = INSTANCE_SECRET;
-      return headers;
-    }
-
-    async function resolveApiBase() {
-      if (identifiedApiBase !== '') return identifiedApiBase;
-      if (apiDiscovery === null) {
-        apiDiscovery = (async () => {
-          console.info('dsh-nextsteps: api discovery: probing ports...');
-          for (const port of API_PORTS) {
-            try {
-              const r = await fetch(`http://127.0.0.1:${port}/.ns/health`, { cache: 'no-store', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
-              if (!r.ok) continue;
-              const j = await r.json().catch(() => null);
-              if (j === null || j.ok !== true || j.name !== NS || j.port !== port) continue;
-              console.info(`dsh-nextsteps: api discovery: host found on :${port}, fetching secret...`);
-              if (await resolveInstanceSecret() === '') {
-                console.info(`dsh-nextsteps: api discovery: host on :${port} ok but the secret is unavailable`);
-                apiDiscovery = null;
-                return null;
-              }
-              API_BASE = `http://127.0.0.1:${port}`;
-              identifiedApiBase = API_BASE;
-              console.info(`dsh-nextsteps: api discovery: identified base ${API_BASE}`);
-              return API_BASE;
-            } catch {}
-          }
-          console.info('dsh-nextsteps: api discovery: no host found in the port range');
-          apiDiscovery = null;
-          return null;
-        })();
-      }
-      return apiDiscovery;
-    }
+    const compareVersions = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
 
     function createLocalStore(deps) {
       const retryDelays = Array.isArray(deps?.retryDelays) ? deps.retryDelays : WRITE_RETRY_DELAYS_MS;
@@ -659,7 +594,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const updateHandle = store.handle(UPDATE_KEY, { private: 'none' });
+    const updateInstalledHandle = store.handle(UPDATE_INSTALLED_KEY, { private: 'none' });
+    const whatsNewHandle = store.handle(WHATS_NEW_KEY, { private: 'none' });
+    const seenHandle = store.handle(SEEN_KEY, { private: 'none' });
     const favoritesOrderHandle = store.handle(FAVORITES_ORDER_KEY, { private: 'none' });
     const metricsHandle = store.handle(METRICS_KEY, { private: 'none' });
     const sessionOverridesHandle = store.handle(SESSION_OVERRIDES_KEY, { private: 'none' });
@@ -685,9 +622,236 @@ window.__ModuleLoader__.load({
       supportHandle.enqueue(JSON.stringify({ state, at: Date.now() }));
     }
 
-    const remembered = () => updateHandle.read({ silent: true }) ?? '';
-    const remember = (value) => { updateHandle.write(String(value)); };
-    const forget = () => { updateHandle.remove({ notify: false }); };
+    const RELEASE_TAG_URL = REPO_URL + '/releases/tag/v';
+    const matchLanguage = (ids, active) => {
+      const lower = String(active ?? '').toLowerCase();
+      return ids.find((x) => x.toLowerCase() === lower) ?? ids.find((x) => x.toLowerCase() === lower.split('-')[0]);
+    };
+    const notesByLanguage = (value) => (value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value)
+      .filter(([id, text]) => /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(id) && typeof text === 'string' && text.trim() !== '')) : {});
+    const notesIn = (notes, active) => {
+      const id = matchLanguage(Object.keys(notes), active) ?? (Object.hasOwn(notes, 'en') ? 'en' : Object.keys(notes)[0]);
+      return { lang: id, text: notes[id] };
+    };
+    const plainNotes = (text) => String(text ?? '').replace(/^#{1,6}\s+/gm, '').replace(/\*\*([^*\n]+)\*\*/g, '$1');
+    const isGitHubUrl = (value) => typeof value === 'string' && /^https:\/\/github\.com(?:\/|$)/.test(value);
+    const fillVersion = (text, version) => String(text).split('{version}').join(String(version ?? ''));
+
+    function createUpdater() {
+      let state = { status: 'idle' };
+      let busy = false;
+      const listeners = new Set();
+      const set = (next) => { state = next; for (const fn of [...listeners]) fn(); return state; };
+      const remembered = () => updateInstalledHandle.read({ silent: true });
+      const updater = {
+        manager: undefined,
+        getSnapshot: () => state,
+        subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
+        async check() {
+          if (busy) return state;
+          const before = state;
+          busy = true;
+          set({ ...state, status: 'checking' });
+          try {
+            const response = await fetch(UPDATE_ROUTE, { cache: 'no-store' });
+            const info = await response.json().catch(() => null);
+            if ((!response.ok || info === null) && before.status === 'restart') return set(before);
+            if (!response.ok || info === null || info.ok === false) throw new Error(info?.error ?? `HTTP ${response.status}`);
+            const installed = versionOf(info.installed);
+            const current = versionOf(info.current);
+            const installedNewer = installed !== undefined && current !== undefined && compareVersions(installed, current) > 0;
+            const status = installedNewer ? 'restart' : !info.newer ? 'current' : remembered() === info.latest ? 'restart' : info.managed ? 'available' : 'manual';
+            return set({ status, info });
+          } catch (error) {
+            if (before.status === 'restart') return set(before);
+            return set({ status: 'error', info: state.info, error: String(error?.message ?? error) });
+          }
+          finally { busy = false; }
+        },
+        async install() {
+          const { info } = state;
+          if (busy || state.status !== 'available' || updater.manager === undefined) return state;
+          if (versionOf(info?.latest) === undefined || info?.name !== NS) return set({ status: 'error', info, error: 'malformed update info' });
+          busy = true;
+          set({ status: 'installing', info });
+          try {
+            const install = async (spec) => {
+              const reply = await updater.manager.installBundle(spec, { requestId: `${NS}-update-${info.latest}-${Date.now()}` });
+              if (!reply?.ok) throw new Error(reply?.error?.message ?? reply?.error?.diagnostic?.split('\n').find((line) => line.trim() !== '') ?? reply?.error?.code ?? 'plugin manager did not answer');
+              return reply.value;
+            };
+            let result = await install(`${info.name}@${info.latest}`);
+            if (result.error?.code === 'already-installed') result = await install(`https://registry.npmjs.org/${info.name}/-/${info.name}-${info.latest}.tgz`);
+            const firstLine = () => result.error?.diagnostic?.split('\n').find((line) => line.trim() !== '') ?? result.error?.code ?? result.application;
+            const live = result.application === 'applied';
+            if (!live && result.application !== 'restart-required' && result.version !== info.latest) throw new Error(firstLine());
+            updateInstalledHandle.write(info.latest);
+            const notes = typeof info.notes === 'string' && info.notes !== '' ? { notes: info.notes } : {};
+            whatsNewHandle.write(JSON.stringify({ version: info.latest, ...notes, url: info.url }));
+            return set(live ? { status: 'current', info: { ...info, current: info.latest, newer: false } } : { status: 'restart', info });
+          } catch (error) { return set({ status: 'error', info, error: String(error?.message ?? error) }); }
+          finally { busy = false; }
+        }
+      };
+      return updater;
+    }
+
+    function createWhatsNew() {
+      let note = null;
+      let running = null;
+      let loaded = false;
+      let refreshSeq = 0;
+      const listeners = new Set();
+      const emit = () => { for (const fn of [...listeners]) fn(); };
+      const set = (next) => { note = next; emit(); };
+      const starDue = () => readSupportState() === undefined;
+      const ask = async () => {
+        try {
+          const response = await fetch(`${UPDATE_ROUTE}?current=1`, { cache: 'no-store' });
+          const answer = response.ok ? await response.json() : undefined;
+          const nums = versionOf(answer?.current);
+          return nums === undefined ? undefined : { version: answer.current, nums, notes: notesByLanguage(answer?.notes) };
+        } catch { return undefined; }
+      };
+      return {
+        getSnapshot: () => note,
+        getRunning: () => running,
+        subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
+        close: () => set(null),
+        stopStar(hide) {
+          writeSupportState(hide ? 'dismissed' : 'thanked');
+          if (note !== null) set({ ...note, star: hide ? false : 'thanked' });
+        },
+        refresh() {
+          const seq = ++refreshSeq;
+          ask().then((run) => { if (seq === refreshSeq) { running = run === undefined ? null : { version: run.version, notes: run.notes }; emit(); } });
+        },
+        show() { if (running !== null && Object.keys(running.notes).length > 0) set({ version: running.version, notes: running.notes, url: RELEASE_TAG_URL + running.version, star: starDue() }); },
+        async load() {
+          if (loaded) return;
+          loaded = true;
+          const raw = whatsNewHandle.read({ silent: true });
+          if (raw !== null) whatsNewHandle.remove({ notify: false });
+          const keep = () => { if (whatsNewHandle.read({ silent: true }) === null) whatsNewHandle.write(raw, { notify: false }); };
+          const run = await ask();
+          running = run === undefined ? null : { version: run.version, notes: run.notes }; emit();
+          let record;
+          if (raw !== null) {
+            let saved; try { saved = JSON.parse(raw); } catch { saved = undefined; }
+            const version = versionOf(saved?.version);
+            if (version !== undefined) {
+              if (run === undefined) { keep(); return; }
+              const order = compareVersions(run.nums, version);
+              if (order < 0) { keep(); return; }
+              if (order === 0) record = { version: saved.version, notes: { ...(typeof saved.notes === 'string' && saved.notes.trim() !== '' ? { en: saved.notes } : {}), ...run.notes },
+                url: isGitHubUrl(saved.url) ? saved.url : undefined };
+            }
+          }
+          if (run === undefined) return;
+          const seen = versionOf(seenHandle.read({ silent: true }));
+          if (seen !== undefined && compareVersions(run.nums, seen) <= 0) return;
+          seenHandle.write(run.version);
+          const shown = record ?? (seen === undefined ? undefined : { version: run.version, notes: run.notes, url: RELEASE_TAG_URL + run.version });
+          if (shown !== undefined && Object.keys(shown.notes).length > 0) set({ ...shown, star: starDue() });
+        }
+      };
+    }
+
+    const UPDATE_STYLES = '.dsh-sf-update { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--dsw-alias-border-l1, #2a2f3a); border-radius: 14px; background: var(--dsw-alias-bg-layer-1, #16181d); }\n.dsh-sf-update-title { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #eee); }\n.dsh-sf-update-status { display: flex; flex: 1; min-width: 180px; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12px; line-height: 17px; color: var(--dsw-alias-label-secondary, #bbb); }\n.dsh-sf-update-link { color: var(--dsw-alias-label-primary, #eee); text-decoration: underline; text-underline-offset: 2px; }\n.dsh-sf-update-open { padding: 0; font: inherit; color: var(--dsw-alias-label-secondary, #bbb); background: none; border: none; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }\n.dsh-sf-update-open:hover { color: var(--dsw-alias-label-primary, #eee); }\n.dsh-sf-update-action { flex: none; padding: 7px 14px; font-size: 12.5px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-label-primary, #eee); background: var(--dsw-alias-bg-layer-2, #1d2026); border: 1px solid var(--dsw-alias-border-l1, #2a2f3a); border-radius: 10px; cursor: pointer; transition: border-color 160ms ease; }\n.dsh-sf-update-action:hover { border-color: var(--dsw-alias-brand-primary, #4f8cff); }\n.dsh-sf-update-action:disabled { opacity: 0.5; cursor: default; }\n.dsh-sf-update-action:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4f8cff); outline-offset: 1px; }\n@media (prefers-reduced-motion: reduce) { .dsh-sf-update-action { transition: none; } }';
+
+    let primitives;
+    try { primitives = require('@deepseek-ai/dsh-client-ui-primitives'); } catch { primitives = undefined; }
+
+    function UpdateSettings({ updater, whatsNew, t }) {
+      const state = React.useSyncExternalStore(updater.subscribe, updater.getSnapshot);
+      const running = React.useSyncExternalStore(whatsNew.subscribe, whatsNew.getRunning);
+      React.useEffect(() => { if (updater.getSnapshot().status === 'idle') updater.check(); }, []);
+      React.useEffect(() => { whatsNew.refresh(); }, [whatsNew]);
+      const { status, info } = state;
+      const latest = status === 'restart' && versionOf(info?.installed) !== undefined ? info.installed : info?.latest;
+      const text = status === 'checking' || status === 'idle' ? t('updateChecking')
+        : status === 'error' ? t('updateFailed').split('{error}').join(String(state.error))
+        : fillVersion(status === 'current' ? t('updateCurrent') : status === 'available' ? t('updateAvailable') : status === 'installing' ? t('updateInstalling') : status === 'restart' ? t('updateRestart') : t('updateManual'), latest);
+      const canInstall = status === 'available' && updater.manager !== undefined;
+      return h('div', { className: 'dsh-sf-update' },
+        h('div', { className: 'dsh-sf-update-title' }, t('updateTitle')),
+        h('div', { className: 'dsh-sf-update-status', role: 'status' },
+          info?.current ? h('span', {}, fillVersion(t('updateVersion'), info.current)) : null,
+          text,
+          info?.url && status !== 'current' ? h('a', { className: 'dsh-sf-update-link', href: info.url, target: '_blank', rel: 'noopener noreferrer' }, t('updateNotes')) : null,
+          running !== null && primitives?.Modal !== undefined && Object.keys(running.notes).length > 0 ? h('button', { type: 'button', className: 'dsh-sf-update-open', onClick: () => whatsNew.show() }, t('updateWhatsNew')) : null),
+        h('button', {
+          type: 'button',
+          className: 'dsh-sf-update-action',
+          disabled: status === 'checking' || status === 'installing',
+          onClick: () => (canInstall ? updater.install() : updater.check())
+        }, canInstall ? t('updateInstall') : t('updateCheck')));
+    }
+
+    const WHATS_NEW_STYLES = '.dsh-sf-wn.dsh-sf-wn { width: min(520px, 100%); max-height: calc(100vh - 48px); }\n.dsh-sf-whatsnew { max-height: min(52vh, 440px); overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 2px 6px; border-radius: 8px; font-size: 13.5px; line-height: 21px; color: var(--dsw-alias-label-primary, #eee); overflow-wrap: anywhere; }\n.dsh-sf-whatsnew:focus { outline: none; }\n.dsh-sf-whatsnew:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4f8cff); outline-offset: 2px; }\n.dsh-sf-whatsnew p { margin: 0; }\n.dsh-sf-whatsnew ul { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }\n.dsh-sf-whatsnew li { position: relative; padding-left: 18px; }\n.dsh-sf-whatsnew li::before { content: ""; position: absolute; left: 3px; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-brand-primary, #4f8cff); }\n.dsh-sf-whatsnew-star { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 18px; padding: 10px 12px; border: 1px solid rgba(245,158,11,0.35); border-radius: 12px; background: rgba(245,158,11,0.07); font-size: 12.5px; line-height: 18px; color: var(--dsw-alias-label-secondary, #bbb); }\n.dsh-sf-whatsnew-star-icon { flex: none; font-size: 16px; line-height: 1; }\n.dsh-sf-whatsnew-star-text { flex: 1 1 140px; min-width: 0; }\n.dsh-sf-whatsnew-link { display: inline-flex; align-items: center; padding: 5px 10px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-label-primary, #eee); text-decoration: none; background: rgba(245,158,11,0.14); border: 1px solid rgba(245,158,11,0.5); border-radius: 8px; transition: border-color 160ms ease, background 160ms ease; }\n.dsh-sf-whatsnew-link:hover { border-color: rgba(245,158,11,0.8); background: rgba(245,158,11,0.22); }\n.dsh-sf-whatsnew-dismiss { padding: 5px 6px; font: inherit; font-size: 12px; color: var(--dsw-alias-label-tertiary, #888); background: none; border: none; border-radius: 6px; cursor: pointer; }\n.dsh-sf-whatsnew-dismiss:hover { color: var(--dsw-alias-label-primary, #eee); text-decoration: underline; text-underline-offset: 2px; }\n.dsh-sf-whatsnew-star[data-state="thanked"] .dsh-sf-whatsnew-star-icon { animation: dsh-sf-wn-pop 700ms cubic-bezier(0.34,1.56,0.64,1) both; }\n.dsh-sf-whatsnew-foot { display: flex; flex: 1; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; min-width: 0; }\n.dsh-sf-whatsnew-notes { margin-right: auto; font-size: 12.5px; color: var(--dsw-alias-label-secondary, #bbb); text-decoration: underline; text-underline-offset: 2px; }\n.dsh-sf-whatsnew-notes::after { content: "\\00a0\\2197"; }\n.dsh-sf-whatsnew-notes:hover { color: var(--dsw-alias-label-primary, #eee); }\n.dsh-sf-whatsnew-link:focus-visible, .dsh-sf-whatsnew-dismiss:focus-visible, .dsh-sf-whatsnew-notes:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4f8cff); outline-offset: 2px; }\n@keyframes dsh-sf-wn-pop { 0% { transform: scale(0.4) rotate(-30deg); } 62% { transform: scale(1.4) rotate(10deg); } 100% { transform: scale(1) rotate(0deg); } }\n@media (prefers-reduced-motion: reduce) { .dsh-sf-whatsnew-link { transition: none; } .dsh-sf-whatsnew-star-icon { animation: none !important; } }';
+
+    const trapDialogFocus = () => {
+      if (typeof document === 'undefined') return undefined;
+      const before = document.activeElement;
+      const dialog = () => document.querySelector('.dsh-sf-wn');
+      dialog()?.querySelector('[data-dsh-sf-autofocus]')?.focus();
+      const onKey = (event) => {
+        const root = dialog();
+        if (event.key !== 'Tab' || root === null) return;
+        const items = [...root.querySelectorAll('a[href], button:not([disabled]), [tabindex="0"]')];
+        if (items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        const at = document.activeElement;
+        if (!root.contains(at)) { event.preventDefault(); first.focus(); }
+        else if (event.shiftKey && at === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && at === last) { event.preventDefault(); first.focus(); }
+      };
+      document.addEventListener('keydown', onKey);
+      return () => {
+        document.removeEventListener('keydown', onKey);
+        if (before?.isConnected) before.focus?.();
+      };
+    };
+
+    function createWhatsNewDialog(ctx, whatsNew) {
+      return function WhatsNewDialog() {
+        const note = React.useSyncExternalStore(whatsNew.subscribe, whatsNew.getSnapshot);
+        const [, setLocaleTick] = React.useState(0);
+        React.useEffect(() => (typeof ctx.locale?.subscribe === 'function' ? ctx.locale.subscribe(() => setLocaleTick((n) => n + 1)) : undefined), []);
+        const open = note !== null && primitives?.Modal !== undefined;
+        React.useEffect(() => (open ? trapDialogFocus() : undefined), [open]);
+        let t;
+        try { t = ctx.locale.bind(NS); } catch { t = (key) => i18n.fallback(key); }
+        const active = ctx.locale?.getSnapshot?.()?.active ?? 'en';
+        if (!open) return null;
+        const shown = notesIn(note.notes, active);
+        const title = fillVersion(t('whatsNewTitle'), note.version);
+        const lines = plainNotes(shown.text).split(/\r?\n/).map((line) => line.replace(/^\s*[-*•]\s+/, '').trim()).filter((line) => line !== '');
+        const thanked = note.star === 'thanked';
+        return h(primitives.Modal, {
+          open: true,
+          onClose: whatsNew.close,
+          closeLabel: t('whatsNewClose'),
+          title,
+          className: 'dsh-sf-wn',
+          footer: h('div', { className: 'dsh-sf-whatsnew-foot' },
+            note.url === undefined ? null : h('a', { className: 'dsh-sf-whatsnew-notes', href: note.url, target: '_blank', rel: 'noopener noreferrer' }, t('updateNotes')),
+            h(primitives.Button, { variant: 'primary', onClick: whatsNew.close }, t('whatsNewClose')))
+        },
+          h('style', null, WHATS_NEW_STYLES),
+          h('div', { className: 'dsh-sf-whatsnew', lang: shown.lang, tabIndex: 0, role: 'region', 'aria-label': title, 'data-dsh-sf-autofocus': '' },
+            lines.length > 1 ? h('ul', null, lines.map((line, index) => h('li', { key: index }, line))) : h('p', null, lines[0] ?? '')),
+          note.star ? h('div', { className: 'dsh-sf-whatsnew-star', 'data-state': thanked ? 'thanked' : 'ask' },
+            h('span', { className: 'dsh-sf-whatsnew-star-icon', 'aria-hidden': 'true' }, '⭐'),
+            thanked ? h('span', { className: 'dsh-sf-whatsnew-star-text', role: 'status' }, t('supportThanks')) : [
+              h('span', { key: 'text', className: 'dsh-sf-whatsnew-star-text' }, t('whatsNewStar').trim()),
+              h('a', { key: 'link', className: 'dsh-sf-whatsnew-link', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer', onClick: () => whatsNew.stopStar(false) }, t('whatsNewStarLink')),
+              h('button', { key: 'dismiss', type: 'button', className: 'dsh-sf-whatsnew-dismiss', onClick: () => whatsNew.stopStar(true) }, t('whatsNewStarDismiss'))
+            ]) : null);
+      };
+    }
+
 
     const CSS = `
 .dsh-sf-root { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
@@ -3316,9 +3480,9 @@ window.__ModuleLoader__.load({
     const MODEL_TEST_ROUTE = '/api/dsh-nextsteps.model-test';
     // BEGIN GENERATED DICTIONARIES
     const DICTIONARIES = {
-      en: {"setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","setConfirmSend":"Confirm before sending","setConfirmSendTip":"The first click arms the send and the second confirms; it also applies to new conversation.","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","customInstruction":"Custom instruction for the suggestions","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","discardedClear":"Clear discarded","discardedClearConfirm":"Click again to confirm","discardedCleared":"The discarded suggestions were cleared.","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","collapseGroup":"Collapse cards","expandGroup":"Expand cards","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","sendConfirm":"Send this suggestion?","sendConfirmYes":"Send now","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srSendConfirm":"The send is armed; click again to confirm.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: ","retryGeneration":"Try again","originLabel":"via {model}","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","sessionPause":"Pause suggestions","sessionInstruction":"Instruction for this conversation","openSettings":"Open Nextsteps settings","settingsUnavailable":"Opening the settings is not available here.","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","srFavoritesReordered":"The favourites were reordered.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatConfirm":"Start a new conversation with this suggestion?","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here.","update":"Updates","current":"Current version","check":"Check for updates","checking":"Checking…","upToDate":"You are on the latest version","available":"Update available","open":"Open release page","none":"No releases published yet","updateNow":"Update now","installingMsg":"Installing {v}...","installedMsg":"Version {v} was installed. Restart the dsh to use it.","heldBackMsg":"Version {v} was installed instead of {asked} — pnpm holds back a release that is too recent.","localDev":"Local development copy — update with git pull.","error":"Update check failed","installError":"The update failed","unsupportedVersion":"That release is not a version this plugin can install","repo":"GitHub repository","issues":"Report an issue","actionRegenerate":"Regenerate","regenerating":"Regenerating…","srRegenerated":"The suggestion was regenerated.","actionNotRelevant":"Not relevant","notRelevantMarked":"Marked as not relevant","notRelevantUnmarked":"Mark removed","updatePrecheck":"The version could not be verified on the npm registry.","updateNoManager":"No plugin installer is available in this host.","setRetention":"Retention","setRetentionTip":"Automatically delete stored suggestions older than this many days. 0 turns it off (0-365).","setTranscriptScope":"Transcript scope","setTranscriptScopeTip":"How much of the turn the generator sees. Minimal sends only the last user and assistant messages.","optTranscriptFull":"Full transcript","optTranscriptMinimal":"Minimal (last messages)","warnInjection":"This suggestion looks like a prompt-injection attempt","warnSecrets":"This suggestion looks like it contains a credential or secret","srSecretsWarning":"A suggestion looks like it contains a credential or secret.","sessionPrivate":"Private conversation","srPrivateOn":"This conversation is private; suggestions stay in memory only.","srPrivateOff":"This conversation is no longer private.","privatePurgeFailed":"The stored suggestions of this conversation could not be deleted; check the storage.","audit":"Audit log","auditEmpty":"No audited events yet.","auditClear":"Clear audit log","auditCleared":"The audit log was cleared.","auditKindGenerated":"generated","auditKindSent":"sent","originRewrite":"from this turn's reply","originFixture":"from the test fixture","setCardActions":"Card actions","setCardActionsTip":"Pick which actions each card shows and in which order. Uncheck to hide one; uncheck all to hide every action.","cardActionsHiddenAll":"No actions are shown on the cards.","generationTimeoutTip":"The generator ran out of time — try again, or raise the latency budget in the settings.","tabGeneration":"Generation","tabCards":"Cards","tabPrivacy":"Privacy","tabFavourites":"Favourites","tabAbout":"About","secGeneration":"How the suggestions are generated","secLimits":"Timing and size","secAppearance":"Card appearance","secActions":"Card actions","secPrivacy":"Your data on this machine","secAudit":"Audit log","secAbout":"Version and updates","secPerformance":"Performance","setFallbackModel":"Fallback model","setFallbackModelTip":"When a round fails or times out, it is repeated once with the chat's default model.","originFallback":"via {model} (fallback)","diagCopy":"Copy diagnostics","diagCopyTip":"Copies a technical report with the plugin version, environment, settings, metrics and the last error, for reporting issues.","supportTitle":"Enjoying Nextsteps?","supportMessage":"A star on GitHub helps other people discover the plugin — it takes ten seconds.","supportStar":"Star on GitHub","supportThanks":"Thank you! Every star helps the plugin reach more people.","supportDismiss":"Dismiss"},
-      'pt-BR': {"setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","setConfirmSend":"Confirmar antes de enviar","setConfirmSendTip":"O primeiro clique arma o envio e o segundo confirma; vale também para nova conversa.","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","customInstruction":"Instrução personalizada para as sugestões","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","discardedClear":"Limpar descartadas","discardedClearConfirm":"Clique novamente para confirmar","discardedCleared":"As sugestões descartadas foram apagadas.","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","collapseGroup":"Recolher cartões","expandGroup":"Expandir cartões","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","sendConfirm":"Enviar esta sugestão?","sendConfirmYes":"Enviar agora","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srSendConfirm":"O envio está aguardando confirmação; clique novamente para confirmar.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: ","retryGeneration":"Tentar novamente","originLabel":"via {model}","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","sessionPause":"Pausar sugestões","sessionInstruction":"Instrução para esta conversa","openSettings":"Abrir as configurações do Nextsteps","settingsUnavailable":"Abrir as configurações não está disponível aqui.","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","srFavoritesReordered":"Os favoritos foram reordenados.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatConfirm":"Iniciar uma nova conversa com esta sugestão?","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui.","update":"Atualizações","current":"Versão atual","check":"Verificar atualizações","checking":"Verificando…","upToDate":"Você está na versão mais recente","available":"Atualização disponível","open":"Abrir página da versão","none":"Nenhuma versão publicada ainda","updateNow":"Atualizar agora","installingMsg":"Instalando {v}...","installedMsg":"A versão {v} foi instalada. Reinicie o dsh para usá-la.","heldBackMsg":"A versão {v} foi instalada em vez da {asked} — o pnpm retém uma versão lançada há pouco tempo.","localDev":"Cópia de desenvolvimento local — atualize com git pull.","error":"Falha ao verificar atualizações","installError":"A atualização falhou","unsupportedVersion":"Essa versão não é uma versão que este plugin consiga instalar","repo":"Repositório no GitHub","issues":"Reportar um problema","actionRegenerate":"Regenerar","regenerating":"Regenerando…","srRegenerated":"A sugestão foi regenerada.","actionNotRelevant":"Não é relevante","notRelevantMarked":"Marcado como não relevante","notRelevantUnmarked":"Marcação removida","updatePrecheck":"Não foi possível verificar a versão no registro do npm.","updateNoManager":"Nenhum instalador de plugins está disponível neste host.","setRetention":"Retenção","setRetentionTip":"Apaga automaticamente as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365).","setTranscriptScope":"Escopo do histórico","setTranscriptScopeTip":"Quanto do turno o gerador enxerga. Mínimo envia apenas a última mensagem de usuário e de assistente.","optTranscriptFull":"Histórico completo","optTranscriptMinimal":"Mínimo (últimas mensagens)","warnInjection":"Esta sugestão parece uma tentativa de injeção de prompt","warnSecrets":"Esta sugestão parece conter uma credencial ou segredo","srSecretsWarning":"Uma sugestão parece conter uma credencial ou segredo.","sessionPrivate":"Conversa privada","srPrivateOn":"Esta conversa é privada; as sugestões ficam apenas em memória.","srPrivateOff":"Esta conversa não é mais privada.","privatePurgeFailed":"Não foi possível apagar as sugestões armazenadas desta conversa; verifique o armazenamento.","audit":"Registro de auditoria","auditEmpty":"Nenhum evento auditado ainda.","auditClear":"Apagar registro","auditCleared":"O registro de auditoria foi apagado.","auditKindGenerated":"gerado","auditKindSent":"enviado","originRewrite":"da resposta deste turno","originFixture":"do fixture de teste","setCardActions":"Ações do cartão","setCardActionsTip":"Escolha quais ações cada cartão mostra e em qual ordem. Desmarque para ocultar; com tudo desmarcado nenhuma ação aparece.","cardActionsHiddenAll":"Nenhuma ação é mostrada nos cartões.","generationTimeoutTip":"O gerador esgotou o tempo — tente de novo ou aumente o orçamento de latência nas configurações.","tabGeneration":"Geração","tabCards":"Cartões","tabPrivacy":"Privacidade","tabFavourites":"Favoritos","tabAbout":"Sobre","secGeneration":"Como as sugestões são geradas","secLimits":"Tempo e tamanho","secAppearance":"Aparência dos cartões","secActions":"Ações dos cartões","secPrivacy":"Seus dados neste computador","secAudit":"Registro de auditoria","secAbout":"Versão e atualizações","secPerformance":"Desempenho","setFallbackModel":"Modelo reserva","setFallbackModelTip":"Quando uma rodada falha ou estoura o tempo, ela é repetida uma vez com o modelo padrão da conversa.","originFallback":"via {model} (reserva)","diagCopy":"Copiar diagnóstico","diagCopyTip":"Copia um relatório técnico com a versão do plugin, o ambiente, as configurações, as métricas e o último erro, para reportar problemas.","supportTitle":"Gostando do Nextsteps?","supportMessage":"Uma estrela no GitHub ajuda outras pessoas a descobrirem o plugin — leva dez segundos.","supportStar":"Dar estrela no GitHub","supportThanks":"Obrigado! Cada estrela ajuda o plugin a chegar em mais pessoas.","supportDismiss":"Dispensar"},
-      'zh-CN': {"setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","setConfirmSend":"发送前确认","setConfirmSendTip":"第一次点击进入待确认状态，第二次点击才会发送；同样适用于新建对话。","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","customInstruction":"建议的自定义指令","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","discardedClear":"清空已丢弃","discardedClearConfirm":"再次点击以确认","discardedCleared":"已丢弃的建议已清空。","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","collapseGroup":"收起卡片","expandGroup":"展开卡片","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","sendConfirm":"发送这条建议？","sendConfirmYes":"立即发送","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srSendConfirm":"发送已待确认；再次点击以确认。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：","retryGeneration":"重试","originLabel":"由 {model} 生成","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","sessionPause":"暂停生成建议","sessionInstruction":"本会话指令","openSettings":"打开 Nextsteps 设置","settingsUnavailable":"此处无法打开设置。","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatConfirm":"用这条建议新建对话？","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。","update":"更新","current":"当前版本","check":"检查更新","checking":"检查中…","upToDate":"已是最新版本","available":"有可用更新","open":"打开发布页","none":"尚未发布任何版本","updateNow":"立即更新","installingMsg":"正在安装 {v}...","installedMsg":"版本 {v} 已安装。重启 dsh 以使用。","heldBackMsg":"安装了版本 {v} 而不是 {asked} — pnpm 会暂缓过于新鲜的版本。","localDev":"本地开发副本 — 请用 git pull 更新。","error":"检查更新失败","installError":"更新失败","unsupportedVersion":"该版本不是此插件可安装的版本","repo":"GitHub 仓库","issues":"反馈问题","actionRegenerate":"重新生成","regenerating":"正在重新生成…","srRegenerated":"建议已重新生成。","actionNotRelevant":"不相关","notRelevantMarked":"已标记为不相关","notRelevantUnmarked":"已取消标记","updatePrecheck":"无法在 npm registry 上验证该版本。","updateNoManager":"此宿主没有可用的插件安装器。","setRetention":"保留期限","setRetentionTip":"自动删除超过此天数的已存建议。0 表示关闭（0-365）。","setTranscriptScope":"历史记录范围","setTranscriptScopeTip":"生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。","optTranscriptFull":"完整历史记录","optTranscriptMinimal":"最小（最后几条）","warnInjection":"这条建议疑似提示词注入","warnSecrets":"这条建议疑似包含凭据或密钥","srSecretsWarning":"有建议疑似包含凭据或密钥。","sessionPrivate":"私人对话","srPrivateOn":"此对话为私人模式；建议仅保留在内存中。","srPrivateOff":"此对话不再是私人模式。","privatePurgeFailed":"无法删除此对话的已存建议；请检查存储。","audit":"审计日志","auditEmpty":"尚无审计事件。","auditClear":"清空审计日志","auditCleared":"审计日志已清空。","auditKindGenerated":"生成","auditKindSent":"发送","originRewrite":"来自本回合的回答","originFixture":"来自测试 fixture","setCardActions":"卡片操作","setCardActionsTip":"选择每张卡片显示哪些操作及其顺序。取消勾选即隐藏；全部取消勾选则不显示任何操作。","cardActionsHiddenAll":"卡片上不显示任何操作。","generationTimeoutTip":"生成器超时——请重试，或在设置中提高延迟预算。","tabGeneration":"生成","tabCards":"卡片","tabPrivacy":"隐私","tabFavourites":"收藏","tabAbout":"关于","secGeneration":"建议的生成方式","secLimits":"时间与大小","secAppearance":"卡片外观","secActions":"卡片操作","secPrivacy":"本机上的数据","secAudit":"审计日志","secAbout":"版本与更新","secPerformance":"性能","setFallbackModel":"备用模型","setFallbackModelTip":"回合失败或超时时，会使用对话的默认模型重试一次。","originFallback":"via {model}（备用）","diagCopy":"复制诊断信息","diagCopyTip":"复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。","supportTitle":"喜欢 Nextsteps 吗？","supportMessage":"在 GitHub 上加一颗 Star，能让更多人发现这个插件——只要十秒。","supportStar":"去 GitHub 点 Star","supportThanks":"感谢支持！每一颗 Star 都能让插件帮到更多人。","supportDismiss":"关闭"}
+      en: {"setModel":"Model","setModelTip":"The model that generates the suggestions. Auto uses the chat's model inside the turn; an explicit language or model uses a separate call.","optModelAuto":"Auto (same model as the chat)","modelUnavailable":"No model list available in this install","header":"Suggested followups","srFollowupSent":"Followup sent","sendFailed":"Could not send: ","intro":"Suggested next-step prompts under every finished agent turn — one click sends the followup.","setLanguage":"Language","setLanguageTip":"Followups are generated in this language. Auto follows the conversation; an explicit language uses a separate call.","optAuto":"Auto (follow the conversation)","setMax":"Followups per turn","setMaxTip":"How many suggested prompts the model should produce (1-6).","setHeader":"Show header","setHeaderTip":"The small “Suggested followups” label above the cards.","setConfirmSend":"Confirm before sending","setConfirmSendTip":"The first click arms the send and the second confirms; it also applies to new conversation.","setStyles":"Suggestion styles","setStylesTip":"The angles the suggestions should cover. The generator varies the prompts across the selected styles. At least one style stays selected.","styleNextAction":"Next action","styleExplore":"Explore","styleDeepDive":"Deep dive","setGenMode":"Generation","setGenModeTip":"Auto suggests the followups when the turn ends; on demand waits for your button.","optGenAuto":"Auto (when the turn ends)","optGenOnDemand":"On demand (button)","setBudget":"Latency budget","setBudgetTip":"How long the generator may run before the request is given up (5000-120000 ms).","setMaxChars":"Suggestion length","setMaxCharsTip":"The maximum number of characters of one suggestion (60-600).","customInstruction":"Custom instruction for the suggestions","metrics":"Performance","metricGeneration":"Generation","metricPersistence":"Persistence","metricRendering":"Rendering","metricAvg":"Average","metricMax":"Maximum","metricNoData":"No data yet","favorites":"Favourites","favoritesEmpty":"No favourite suggestion yet.","favoritesSearch":"Search favourites","favoriteCopy":"Copy","favoriteRemove":"Remove","favoriteEdit":"Edit favourite","favoriteDuplicate":"A favourite with this text already exists.","favoriteSelectAll":"Select all","favoriteCopySelected":"Copy selected ({n})","favoriteRemoveSelected":"Remove selected ({n})","favoriteRemoveConfirm":"Confirm removing {n}","discarded":"Discarded","discardedEmpty":"No discarded suggestion.","discardRestore":"Restore","discardedClear":"Clear discarded","discardedClearConfirm":"Click again to confirm","discardedCleared":"The discarded suggestions were cleared.","actionCopy":"Copy","actionDiscard":"Discard","actionFavorite":"Favourite","actionEdit":"Edit","actionInsertDraft":"Insert in the composer","actionExpand":"Show the full prompt","actionCollapse":"Hide the full prompt","collapseGroup":"Collapse cards","expandGroup":"Expand cards","copied":"Copied","copyFailed":"The suggestion could not be copied.","editConfirm":"Send","editCancel":"Cancel","editPrompt":"The suggestion text","charsRemaining":"{n} characters left","charsOver":"{n} characters over the limit","sendConfirm":"Send this suggestion?","sendConfirmYes":"Send now","addSuggestion":"Add suggestion","manualPlaceholder":"Write your own suggestion","manualSave":"Save","manualCancel":"Cancel","generateNow":"Generate suggestions","generating":"Generating…","generatingElapsed":"Generating… {t}","undoDiscard":"Undo discard","srCopied":"The suggestion was copied to the clipboard.","srDiscarded":"The suggestion was discarded. Use Undo to bring it back.","srFavorited":"The suggestion was saved as a favourite.","srFavoriteEdited":"The favourite was updated.","srFavoritesCopied":"{n} favourites were copied to the clipboard.","srFavoritesRemoved":"{n} favourites were removed.","srEdited":"The edited suggestion was sent.","srSendConfirm":"The send is armed; click again to confirm.","srInserted":"The suggestion was placed in the composer draft.","srRestored":"The discarded suggestion was restored.","favoritesExport":"Export","favoritesExportJson":"Export JSON","srFavoritesExported":"Favourites exported.","srFavoritesImported":"{added} added, {updated} updated, {skipped} skipped.","favoritesExportFailed":"The favourites could not be exported.","favoritesImportFailed":"The file could not be imported.","testModel":"Test model","modelTesting":"Testing…","modelTestOk":"Available ({ms} ms)","modelTestFail":"Unavailable ({e})","generationFailed":"Generation failed: ","retryGeneration":"Try again","originLabel":"via {model}","sessionOptions":"Conversation options","sessionLangGlobal":"Same as global","sessionReset":"Reset","sessionPause":"Pause suggestions","sessionInstruction":"Instruction for this conversation","openSettings":"Open Nextsteps settings","settingsUnavailable":"Opening the settings is not available here.","actionMoveEarlier":"Move earlier","actionMoveLater":"Move later","srReordered":"The suggestion was moved.","srFavoritesReordered":"The favourites were reordered.","dragToReorder":"Drag to reorder","actionNewChat":"New conversation with this suggestion","newChatConfirm":"Start a new conversation with this suggestion?","newChatUnavailable":"Starting a new conversation is not available here.","insertDraftUnavailable":"Placing the suggestion in the composer is not available here.","checking":"Checking…","repo":"GitHub repository","issues":"Report an issue","actionRegenerate":"Regenerate","regenerating":"Regenerating…","srRegenerated":"The suggestion was regenerated.","actionNotRelevant":"Not relevant","notRelevantMarked":"Marked as not relevant","notRelevantUnmarked":"Mark removed","setRetention":"Retention","setRetentionTip":"Automatically delete stored suggestions older than this many days. 0 turns it off (0-365).","setTranscriptScope":"Transcript scope","setTranscriptScopeTip":"How much of the turn the generator sees. Minimal sends only the last user and assistant messages.","optTranscriptFull":"Full transcript","optTranscriptMinimal":"Minimal (last messages)","warnInjection":"This suggestion looks like a prompt-injection attempt","warnSecrets":"This suggestion looks like it contains a credential or secret","srSecretsWarning":"A suggestion looks like it contains a credential or secret.","sessionPrivate":"Private conversation","srPrivateOn":"This conversation is private; suggestions stay in memory only.","srPrivateOff":"This conversation is no longer private.","privatePurgeFailed":"The stored suggestions of this conversation could not be deleted; check the storage.","audit":"Audit log","auditEmpty":"No audited events yet.","auditClear":"Clear audit log","auditCleared":"The audit log was cleared.","auditKindGenerated":"generated","auditKindSent":"sent","originRewrite":"from this turn's reply","originFixture":"from the test fixture","setCardActions":"Card actions","setCardActionsTip":"Pick which actions each card shows and in which order. Uncheck to hide one; uncheck all to hide every action.","cardActionsHiddenAll":"No actions are shown on the cards.","generationTimeoutTip":"The generator ran out of time — try again, or raise the latency budget in the settings.","tabGeneration":"Generation","tabCards":"Cards","tabPrivacy":"Privacy","tabFavourites":"Favourites","tabAbout":"About","secGeneration":"How the suggestions are generated","secLimits":"Timing and size","secAppearance":"Card appearance","secActions":"Card actions","secPrivacy":"Your data on this machine","secAudit":"Audit log","secAbout":"Version and updates","secPerformance":"Performance","setFallbackModel":"Fallback model","setFallbackModelTip":"When a round fails or times out, it is repeated once with the chat's default model.","originFallback":"via {model} (fallback)","diagCopy":"Copy diagnostics","diagCopyTip":"Copies a technical report with the plugin version, environment, settings, metrics and the last error, for reporting issues.","supportTitle":"Enjoying Nextsteps?","supportMessage":"A star on GitHub helps other people discover the plugin — it takes ten seconds.","supportStar":"Star on GitHub","supportThanks":"Thank you! Every star helps the plugin reach more people.","supportDismiss":"Dismiss","updateTitle":"Updates","updateChecking":"Checking for updates…","updateCurrent":"You have the latest version.","updateAvailable":"Version {version} is available.","updateInstalling":"Installing {version}…","updateRestart":"Version {version} is installed. Restart the harness to finish.","updateManual":"Version {version} is available. This copy was not installed from npm; update it from Settings → Plugins.","updateFailed":"Update check failed: {error}","updateVersion":"Version {version}","updateCheck":"Check for updates","updateInstall":"Update now","updateNotes":"Release notes","updateWhatsNew":"What's new","whatsNewTitle":"What's new in {version}","whatsNewClose":"Close","whatsNewStar":"Enjoying Nextsteps? ","whatsNewStarLink":"Star it on GitHub","whatsNewStarDismiss":"Don't ask again"},
+      'pt-BR': {"setModel":"Modelo","setModelTip":"O modelo que gera as sugestões. Automático usa o modelo da conversa dentro do turno; um idioma ou modelo explícito usa uma chamada separada.","optModelAuto":"Automático (mesmo modelo da conversa)","modelUnavailable":"Nenhuma lista de modelos disponível nesta instalação","header":"Sugestões de acompanhamento","srFollowupSent":"Follow-up enviado","sendFailed":"Não consegui enviar: ","intro":"Sugestões de próximos passos sob cada turno concluído do agente — um clique envia o followup.","setLanguage":"Idioma","setLanguageTip":"Os followups são gerados neste idioma. Automático segue a conversa; um idioma explícito usa uma chamada separada.","optAuto":"Automático (segue a conversa)","setMax":"Followups por turno","setMaxTip":"Quantas sugestões o modelo deve produzir (1-6).","setHeader":"Mostrar cabeçalho","setHeaderTip":"O rótulo pequeno “Sugestões de acompanhamento” acima dos cartões.","setConfirmSend":"Confirmar antes de enviar","setConfirmSendTip":"O primeiro clique arma o envio e o segundo confirma; vale também para nova conversa.","setStyles":"Estilos de sugestão","setStylesTip":"Os ângulos que as sugestões devem cobrir. O gerador varia os prompts entre os estilos selecionados. Pelo menos um estilo permanece selecionado.","styleNextAction":"Próxima ação","styleExplore":"Explorar","styleDeepDive":"Aprofundar","setGenMode":"Geração","setGenModeTip":"Automático sugere os followups quando o turno termina; sob demanda espera pelo seu botão.","optGenAuto":"Automático (ao fim do turno)","optGenOnDemand":"Sob demanda (botão)","setBudget":"Orçamento de latência","setBudgetTip":"Quanto tempo o gerador pode rodar antes de a requisição ser abandonada (5000-120000 ms).","setMaxChars":"Tamanho da sugestão","customInstruction":"Instrução personalizada para as sugestões","setMaxCharsTip":"O número máximo de caracteres de uma sugestão (60-600).","metrics":"Desempenho","metricGeneration":"Geração","metricPersistence":"Persistência","metricRendering":"Renderização","metricAvg":"Média","metricMax":"Máximo","metricNoData":"Sem dados ainda","favorites":"Favoritos","favoritesEmpty":"Nenhuma sugestão favorita ainda.","favoritesSearch":"Buscar favoritos","favoriteCopy":"Copiar","favoriteRemove":"Remover","favoriteEdit":"Editar favorito","favoriteDuplicate":"Já existe um favorito com esse texto.","favoriteSelectAll":"Selecionar todos","favoriteCopySelected":"Copiar selecionados ({n})","favoriteRemoveSelected":"Remover selecionados ({n})","favoriteRemoveConfirm":"Confirmar a remoção de {n}","discarded":"Descartadas","discardedEmpty":"Nenhuma sugestão descartada.","discardRestore":"Restaurar","discardedClear":"Limpar descartadas","discardedClearConfirm":"Clique novamente para confirmar","discardedCleared":"As sugestões descartadas foram apagadas.","actionCopy":"Copiar","actionDiscard":"Descartar","actionFavorite":"Favoritar","actionEdit":"Editar","actionInsertDraft":"Inserir no compositor","actionExpand":"Mostrar o prompt completo","actionCollapse":"Ocultar o prompt completo","collapseGroup":"Recolher cartões","expandGroup":"Expandir cartões","copied":"Copiado","copyFailed":"Não foi possível copiar a sugestão.","editConfirm":"Enviar","editCancel":"Cancelar","editPrompt":"O texto da sugestão","charsRemaining":"{n} caracteres restantes","charsOver":"{n} caracteres acima do limite","sendConfirm":"Enviar esta sugestão?","sendConfirmYes":"Enviar agora","addSuggestion":"Adicionar sugestão","manualPlaceholder":"Escreva sua própria sugestão","manualSave":"Salvar","manualCancel":"Cancelar","generateNow":"Gerar sugestões","generating":"Gerando…","generatingElapsed":"Gerando… {t}","undoDiscard":"Desfazer descarte","srCopied":"A sugestão foi copiada para a área de transferência.","srDiscarded":"A sugestão foi descartada. Use Desfazer para trazê-la de volta.","srFavorited":"A sugestão foi salva como favorita.","srFavoriteEdited":"O favorito foi atualizado.","srFavoritesCopied":"{n} favoritos foram copiados para a área de transferência.","srFavoritesRemoved":"{n} favoritos foram removidos.","srEdited":"A sugestão editada foi enviada.","srSendConfirm":"O envio está aguardando confirmação; clique novamente para confirmar.","srInserted":"A sugestão foi colocada no rascunho do compositor.","srRestored":"A sugestão descartada foi restaurada.","favoritesExport":"Exportar","favoritesExportJson":"Exportar JSON","srFavoritesExported":"Favoritos exportados.","srFavoritesImported":"{added} adicionados, {updated} atualizados, {skipped} ignorados.","favoritesExportFailed":"Não foi possível exportar os favoritos.","favoritesImportFailed":"Não foi possível importar o arquivo.","testModel":"Testar modelo","modelTesting":"Testando…","modelTestOk":"Disponível ({ms} ms)","modelTestFail":"Indisponível ({e})","generationFailed":"Falha ao gerar: ","retryGeneration":"Tentar novamente","originLabel":"via {model}","sessionOptions":"Opções da conversa","sessionLangGlobal":"Igual ao global","sessionReset":"Redefinir","sessionPause":"Pausar sugestões","sessionInstruction":"Instrução para esta conversa","openSettings":"Abrir as configurações do Nextsteps","settingsUnavailable":"Abrir as configurações não está disponível aqui.","actionMoveEarlier":"Mover para antes","actionMoveLater":"Mover para depois","srReordered":"A sugestão foi movida.","srFavoritesReordered":"Os favoritos foram reordenados.","dragToReorder":"Arraste para reordenar","actionNewChat":"Nova conversa com esta sugestão","newChatConfirm":"Iniciar uma nova conversa com esta sugestão?","newChatUnavailable":"Não foi possível iniciar uma nova conversa aqui.","insertDraftUnavailable":"Não foi possível colocar a sugestão no compositor aqui.","checking":"Verificando…","repo":"Repositório no GitHub","issues":"Reportar um problema","actionRegenerate":"Regenerar","regenerating":"Regenerando…","srRegenerated":"A sugestão foi regenerada.","actionNotRelevant":"Não é relevante","notRelevantMarked":"Marcado como não relevante","notRelevantUnmarked":"Marcação removida","setRetention":"Retenção","setRetentionTip":"Apaga automaticamente as sugestões armazenadas com mais dias que este valor. 0 desliga (0-365).","setTranscriptScope":"Escopo do histórico","setTranscriptScopeTip":"Quanto do turno o gerador enxerga. Mínimo envia apenas a última mensagem de usuário e de assistente.","optTranscriptFull":"Histórico completo","optTranscriptMinimal":"Mínimo (últimas mensagens)","warnInjection":"Esta sugestão parece uma tentativa de injeção de prompt","warnSecrets":"Esta sugestão parece conter uma credencial ou segredo","srSecretsWarning":"Uma sugestão parece conter uma credencial ou segredo.","sessionPrivate":"Conversa privada","srPrivateOn":"Esta conversa é privada; as sugestões ficam apenas em memória.","srPrivateOff":"Esta conversa não é mais privada.","privatePurgeFailed":"Não foi possível apagar as sugestões armazenadas desta conversa; verifique o armazenamento.","audit":"Registro de auditoria","auditEmpty":"Nenhum evento auditado ainda.","auditClear":"Apagar registro","auditCleared":"O registro de auditoria foi apagado.","auditKindGenerated":"gerado","auditKindSent":"enviado","originRewrite":"da resposta deste turno","originFixture":"do fixture de teste","setCardActions":"Ações do cartão","setCardActionsTip":"Escolha quais ações cada cartão mostra e em qual ordem. Desmarque para ocultar; com tudo desmarcado nenhuma ação aparece.","cardActionsHiddenAll":"Nenhuma ação é mostrada nos cartões.","generationTimeoutTip":"O gerador esgotou o tempo — tente de novo ou aumente o orçamento de latência nas configurações.","tabGeneration":"Geração","tabCards":"Cartões","tabPrivacy":"Privacidade","tabFavourites":"Favoritos","tabAbout":"Sobre","secGeneration":"Como as sugestões são geradas","secLimits":"Tempo e tamanho","secAppearance":"Aparência dos cartões","secActions":"Ações dos cartões","secPrivacy":"Seus dados neste computador","secAudit":"Registro de auditoria","secAbout":"Versão e atualizações","secPerformance":"Desempenho","setFallbackModel":"Modelo reserva","setFallbackModelTip":"Quando uma rodada falha ou estoura o tempo, ela é repetida uma vez com o modelo padrão da conversa.","originFallback":"via {model} (reserva)","diagCopy":"Copiar diagnóstico","diagCopyTip":"Copia um relatório técnico com a versão do plugin, o ambiente, as configurações, as métricas e o último erro, para reportar problemas.","supportTitle":"Gostando do Nextsteps?","supportMessage":"Uma estrela no GitHub ajuda outras pessoas a descobrirem o plugin — leva dez segundos.","supportStar":"Dar estrela no GitHub","supportThanks":"Obrigado! Cada estrela ajuda o plugin a chegar em mais pessoas.","supportDismiss":"Dispensar","updateTitle":"Atualizações","updateChecking":"Verificando atualizações…","updateCurrent":"Você já tem a versão mais recente.","updateAvailable":"A versão {version} está disponível.","updateInstalling":"Instalando {version}…","updateRestart":"A versão {version} está instalada. Reinicie o harness para concluir.","updateManual":"A versão {version} está disponível. Esta cópia não foi instalada pelo npm; atualize em Settings → Plugins.","updateFailed":"Falha ao verificar atualizações: {error}","updateVersion":"Versão {version}","updateCheck":"Verificar atualizações","updateInstall":"Atualizar agora","updateNotes":"Notas da versão","updateWhatsNew":"Novidades","whatsNewTitle":"Novidades da versão {version}","whatsNewClose":"Fechar","whatsNewStar":"Gostando do Nextsteps? ","whatsNewStarLink":"Deixe uma estrela no GitHub","whatsNewStarDismiss":"Não perguntar novamente"},
+      'zh-CN': {"setModel":"模型","setModelTip":"生成建议的模型。“自动”在回合内使用对话所用的模型;指定语言或模型时使用单独调用。","optModelAuto":"自动（与对话相同的模型）","modelUnavailable":"此安装没有可用的模型列表","header":"建议的后续操作","srFollowupSent":"后续操作已发送","sendFailed":"发送失败：","intro":"在每个智能体回合完成后的下方推荐下一步提示——单击即可发送。","setLanguage":"语言","setLanguageTip":"后续操作提示将以此语言生成。“自动”跟随对话语言;指定语言时使用单独调用。","optAuto":"自动（跟随对话）","setMax":"每回合提示数","setMaxTip":"模型应生成的建议提示数量（1-6）。","setHeader":"显示标题","setHeaderTip":"卡片上方的小标题“建议的后续操作”。","setConfirmSend":"发送前确认","setConfirmSendTip":"第一次点击进入待确认状态，第二次点击才会发送；同样适用于新建对话。","setStyles":"建议风格","setStylesTip":"建议应覆盖的角度。生成器会在所选风格之间变换提示。至少保留一种风格。","styleNextAction":"下一步行动","styleExplore":"探索","styleDeepDive":"深入","setGenMode":"生成方式","setGenModeTip":"自动会在回合结束时给出后续操作；按需则等待你点击按钮。","optGenAuto":"自动（回合结束时）","optGenOnDemand":"按需（按钮）","setBudget":"延迟预算","setBudgetTip":"生成器最多可以运行多久才会放弃请求（5000-120000 毫秒）。","setMaxChars":"建议长度","customInstruction":"建议的自定义指令","setMaxCharsTip":"一条建议的最大字符数（60-600）。","metrics":"性能","metricGeneration":"生成","metricPersistence":"持久化","metricRendering":"渲染","metricAvg":"平均","metricMax":"最大","metricNoData":"暂无数据","favorites":"收藏","favoritesEmpty":"还没有收藏的建议。","favoritesSearch":"搜索收藏","favoriteCopy":"复制","favoriteRemove":"移除","favoriteEdit":"编辑收藏","favoriteDuplicate":"已存在相同文本的收藏。","favoriteSelectAll":"全选","favoriteCopySelected":"复制所选（{n}）","favoriteRemoveSelected":"移除所选（{n}）","favoriteRemoveConfirm":"确认移除 {n} 条","discarded":"已丢弃","discardedEmpty":"没有已丢弃的建议。","discardRestore":"恢复","discardedClear":"清空已丢弃","discardedClearConfirm":"再次点击以确认","discardedCleared":"已丢弃的建议已清空。","actionCopy":"复制","actionDiscard":"丢弃","actionFavorite":"收藏","actionEdit":"编辑","actionInsertDraft":"插入到输入框","actionExpand":"显示完整提示","actionCollapse":"隐藏完整提示","collapseGroup":"收起卡片","expandGroup":"展开卡片","copied":"已复制","copyFailed":"无法复制这条建议。","editConfirm":"发送","editCancel":"取消","editPrompt":"建议文本","charsRemaining":"还可输入 {n} 个字符","charsOver":"超出限制 {n} 个字符","sendConfirm":"发送这条建议？","sendConfirmYes":"立即发送","addSuggestion":"添加建议","manualPlaceholder":"写下你自己的建议","manualSave":"保存","manualCancel":"取消","generateNow":"生成建议","generating":"正在生成…","generatingElapsed":"生成中… {t}","undoDiscard":"撤销丢弃","srCopied":"建议已复制到剪贴板。","srDiscarded":"建议已被丢弃。使用“撤销丢弃”可以恢复。","srFavorited":"建议已加入收藏。","srFavoriteEdited":"收藏已更新。","srFavoritesCopied":"{n} 条收藏已复制到剪贴板。","srFavoritesRemoved":"已移除 {n} 条收藏。","srEdited":"编辑后的建议已发送。","srSendConfirm":"发送已待确认；再次点击以确认。","srInserted":"建议已放入输入框草稿。","srRestored":"已丢弃的建议已恢复。","favoritesExport":"导出","favoritesExportJson":"导出 JSON","srFavoritesExported":"收藏已导出。","srFavoritesImported":"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条。","favoritesExportFailed":"无法导出收藏。","favoritesImportFailed":"无法导入该文件。","testModel":"测试模型","modelTesting":"测试中…","modelTestOk":"可用（{ms} 毫秒）","modelTestFail":"不可用（{e}）","generationFailed":"生成失败：","retryGeneration":"重试","originLabel":"由 {model} 生成","sessionOptions":"会话选项","sessionLangGlobal":"跟随全局","sessionReset":"重置","sessionPause":"暂停生成建议","sessionInstruction":"本会话指令","openSettings":"打开 Nextsteps 设置","settingsUnavailable":"此处无法打开设置。","actionMoveEarlier":"前移","actionMoveLater":"后移","srReordered":"建议已移动。","srFavoritesReordered":"收藏已重新排序。","dragToReorder":"拖动以重新排序","actionNewChat":"用此建议新建对话","newChatConfirm":"用这条建议新建对话？","newChatUnavailable":"此处无法新建对话。","insertDraftUnavailable":"此处无法将建议放入输入框。","checking":"检查中…","repo":"GitHub 仓库","issues":"反馈问题","actionRegenerate":"重新生成","regenerating":"正在重新生成…","srRegenerated":"建议已重新生成。","actionNotRelevant":"不相关","notRelevantMarked":"已标记为不相关","notRelevantUnmarked":"已取消标记","setRetention":"保留期限","setRetentionTip":"自动删除超过此天数的已存建议。0 表示关闭（0-365）。","setTranscriptScope":"历史记录范围","setTranscriptScopeTip":"生成器能看到多少回合内容。最小模式只发送最后一条用户和助手消息。","optTranscriptFull":"完整历史记录","optTranscriptMinimal":"最小（最后几条）","warnInjection":"这条建议疑似提示词注入","warnSecrets":"这条建议疑似包含凭据或密钥","srSecretsWarning":"有建议疑似包含凭据或密钥。","sessionPrivate":"私人对话","srPrivateOn":"此对话为私人模式；建议仅保留在内存中。","srPrivateOff":"此对话不再是私人模式。","privatePurgeFailed":"无法删除此对话的已存建议；请检查存储。","audit":"审计日志","auditEmpty":"尚无审计事件。","auditClear":"清空审计日志","auditCleared":"审计日志已清空。","auditKindGenerated":"生成","auditKindSent":"发送","originRewrite":"来自本回合的回答","originFixture":"来自测试 fixture","setCardActions":"卡片操作","setCardActionsTip":"选择每张卡片显示哪些操作及其顺序。取消勾选即隐藏；全部取消勾选则不显示任何操作。","cardActionsHiddenAll":"卡片上不显示任何操作。","generationTimeoutTip":"生成器超时——请重试，或在设置中提高延迟预算。","tabGeneration":"生成","tabCards":"卡片","tabPrivacy":"隐私","tabFavourites":"收藏","tabAbout":"关于","secGeneration":"建议的生成方式","secLimits":"时间与大小","secAppearance":"卡片外观","secActions":"卡片操作","secPrivacy":"本机上的数据","secAudit":"审计日志","secAbout":"版本与更新","secPerformance":"性能","setFallbackModel":"备用模型","setFallbackModelTip":"回合失败或超时时，会使用对话的默认模型重试一次。","originFallback":"via {model}（备用）","diagCopy":"复制诊断信息","diagCopyTip":"复制包含插件版本、环境、设置、指标和最后一次错误的技术报告，用于反馈问题。","supportTitle":"喜欢 Nextsteps 吗？","supportMessage":"在 GitHub 上加一颗 Star，能让更多人发现这个插件——只要十秒。","supportStar":"去 GitHub 点 Star","supportThanks":"感谢支持！每一颗 Star 都能让插件帮到更多人。","supportDismiss":"关闭","updateTitle":"更新","updateChecking":"正在检查更新…","updateCurrent":"您已是最新版本。","updateAvailable":"有新版本 {version} 可用。","updateInstalling":"正在安装 {version}…","updateRestart":"{version} 已安装。重启 harness 以完成更新。","updateManual":"有新版本 {version} 可用。此副本并非通过 npm 安装；请在设置 → 插件中更新。","updateFailed":"检查更新失败：{error}","updateVersion":"版本 {version}","updateCheck":"检查更新","updateInstall":"立即更新","updateNotes":"版本说明","updateWhatsNew":"新功能","whatsNewTitle":"{version} 的新功能","whatsNewClose":"关闭","whatsNewStar":"喜欢 Nextsteps 吗？ ","whatsNewStarLink":"去 GitHub 点个 Star","whatsNewStarDismiss":"不再询问"}
     };
     // END GENERATED DICTIONARIES
     function createI18n({ dictionaries, ns, warn = console.warn }) {
@@ -3376,7 +3540,6 @@ window.__ModuleLoader__.load({
     }/* CONVERSATION-OPTIONS-PARITY:END */;
     let pluginSettings = { ...DEFAULT_SETTINGS };
     let hostSettingsLoaded = false;
-    let updateManager = undefined;
 
     let pluginVersion;
 
@@ -3427,8 +3590,6 @@ window.__ModuleLoader__.load({
           applySettings(data.settings);
           if (typeof data.version === 'string') {
             pluginVersion = data.version;
-            const record = remembered();
-            if (record !== '' && versionOf(pluginVersion) !== undefined && !isNewer(record, pluginVersion)) forget();
           }
         }
       } catch (error) {
@@ -3446,7 +3607,6 @@ window.__ModuleLoader__.load({
           t = (key) => i18n.fallback(key);
         }
         const [settings, setSettings] = React.useState(pluginSettings);
-        const [updateState, setUpdateState] = React.useState({ version: '', update: null, checking: false, installing: false, installed: '', installError: '', asked: '' });
         const [instructionDraft, setInstructionDraft] = React.useState(undefined);
         const [local, setLocal] = React.useState(() => ({ favorites: readFavoritesState(), discarded: readDiscardedState() }));
         const [audit, setAudit] = React.useState(() => {
@@ -3474,7 +3634,6 @@ window.__ModuleLoader__.load({
         }, []);
         React.useEffect(() => {
           refreshPluginSettings().then((loaded) => setSettings({ ...loaded }));
-          checkUpdate();
         }, []);
         const [models, setModels] = React.useState(() => modelCatalogCache);
         React.useEffect(() => {
@@ -3712,132 +3871,6 @@ window.__ModuleLoader__.load({
             setModelTest({ phase: 'fail', ms: 0, error: String(error?.message ?? error) });
           }
         };
-        const checkUpdate = async () => {
-          setUpdateState((prev) => ({ ...prev, checking: true }));
-          try {
-            await resolveApiBase();
-            const r = await fetch(API_BASE + '/.ns/update', { cache: 'no-store', headers: authHeaders(), signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS) });
-            const j = await r.json();
-            if (j.update?.error !== undefined) {
-              setUpdateState((prev) => ({ ...prev, checking: false, update: j.update, version: j.version ?? prev.version }));
-              return;
-            }
-            if (!r.ok || j.update === undefined || j.update === null) {
-              setUpdateState((prev) => ({ ...prev, checking: false, update: { error: typeof j.error === 'string' ? j.error : `http ${r.status}` } }));
-              return;
-            }
-            setUpdateState((prev) => ({ ...prev, checking: false, update: j.update, version: j.version ?? prev.version }));
-          } catch {
-            const pending = remembered();
-            setUpdateState((prev) => (pending === ''
-              ? { ...prev, checking: false, update: { error: 'unreachable' } }
-              : { ...prev, checking: false, installed: pending }));
-          }
-        };
-
-        const precheckPackument = async (version) => {
-          try {
-            const response = await fetch('https://registry.npmjs.org/dsh-nextsteps/' + version, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
-            if (response.status !== 200) return false;
-            const j = await responseJson(response);
-            if (j === null || typeof j !== 'object') return false;
-            return typeof j?.dist?.integrity === 'string' && /^sha512-[A-Za-z0-9+/=]{40,}$/.test(j.dist.integrity);
-          } catch {
-            return false;
-          }
-        };
-
-        const askHostToInstall = async (latest, requestId) => {
-          const canUpdate = updateManager !== undefined && typeof updateManager.updateBundle === 'function';
-          const canInstall = updateManager !== undefined && typeof updateManager.installBundle === 'function';
-          if (!canUpdate && !canInstall) return undefined;
-          const installSpec = async (spec) => {
-            const reply = await updateManager.installBundle(spec, { requestId });
-            if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
-            return reply.value;
-          };
-          const refuse = (result) => {
-            const refusal = String(result?.error?.diagnostic ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== '');
-            const why = refusal.find((line) => line.startsWith('dsh:')) ?? refusal.at(-1) ?? result?.error?.code ?? 'install failed';
-            setUpdateState((prev) => ({ ...prev, installing: false, installed: '', asked: '', installError: String(why).slice(0, 160) }));
-            return { application: 'refused' };
-          };
-          const landedOnDisk = (result) => typeof result?.version === 'string' && versionOf(result.version) !== undefined;
-          if (canUpdate) {
-            const reply = await updateManager.updateBundle(NS, latest, { requestId });
-            if (!reply?.ok) throw new Error(reply?.error?.message ?? 'plugin manager did not answer');
-            const result = reply.value?.result ?? reply.value;
-            if (result?.application !== 'failed' && result?.application !== 'cancelled') return result;
-            if (landedOnDisk(result)) return result;
-            if (result?.error?.code === 'invalid-spec') throw new Error('the plugin manager rejected the install spec');
-            if (result?.error?.code === 'already-installed') return undefined;
-            return refuse(result);
-          }
-          const result = await installSpec(NS + '@' + latest);
-          if (result?.application !== 'failed' && result?.application !== 'cancelled') return result;
-          if (landedOnDisk(result)) return result;
-          if (result?.error?.code === 'already-installed') return undefined;
-          return refuse(result);
-        };
-
-        const installUpdate = async () => {
-          const latest = (updateState.update?.latest ?? '').replace(/^v/, '');
-          if (versionOf(latest) === undefined) {
-            setUpdateState((prev) => ({ ...prev, installing: false, installError: 'unsupported-version' }));
-            return;
-          }
-          const hasManager = updateManager !== undefined && (typeof updateManager.updateBundle === 'function' || typeof updateManager.installBundle === 'function');
-          if (!hasManager) {
-            setUpdateState((prev) => ({ ...prev, installing: false, installError: 'no-installer' }));
-            return;
-          }
-          setUpdateState((prev) => ({ ...prev, installing: true, installed: '', installError: '' }));
-          const requestId = NS + '-update-' + latest + '-' + Date.now();
-          try {
-            const verified = await precheckPackument(latest);
-            if (verified !== true) {
-              setUpdateState((prev) => ({ ...prev, installing: false, installError: 'precheck' }));
-              return;
-            }
-            const result = await askHostToInstall(latest, requestId);
-            if (result === undefined) {
-              remember(latest);
-              setUpdateState((prev) => ({ ...prev, installing: false, installed: latest, asked: latest }));
-              return;
-            }
-            if (result.application === 'refused') return;
-            const lines = String(result?.error?.diagnostic ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== '');
-            const reason = lines.find((line) => line.startsWith('dsh:')) ?? lines.at(-1) ?? result?.error?.code ?? 'install failed';
-            const live = result?.application === 'applied';
-            const overridden = result?.application === 'overridden';
-            const reported = typeof result?.version === 'string' && versionOf(result.version) !== undefined ? result.version : undefined;
-            if (!live && !overridden && result?.application !== 'restart-required' && reported === undefined) {
-              setUpdateState((prev) => ({ ...prev, installing: false, installError: String(reason).slice(0, 160) }));
-              return;
-            }
-            const landed = reported ?? latest;
-            remember(landed);
-            if (live) {
-              setUpdateState((prev) => ({ ...prev, installing: false, installed: '', version: landed, asked: '', update: prev.update === null ? prev.update : { ...prev.update, newer: false } }));
-              return;
-            }
-            const startFailed = result?.application === 'failed';
-            setUpdateState((prev) => ({ ...prev, installing: false, installed: landed, asked: latest, installError: startFailed ? String(reason).slice(0, 160) : '' }));
-            return;
-          } catch (error) {
-            setUpdateState((prev) => ({ ...prev, installing: false, installError: String(error?.message ?? error).slice(0, 160) }));
-          }
-        };
-
-        const u = updateState.update;
-        const pendingVersion = [updateState.installed, u?.installed]
-          .filter((value) => typeof value === 'string' && versionOf(value) !== undefined)
-          .reduce((best, value) => (best === undefined || isNewer(value, best) ? value : best), undefined);
-        const runningVersion = updateState.version || pluginVersion;
-        const pendingIsNewer = pendingVersion !== undefined && (versionOf(runningVersion) === undefined || compareVersions(pendingVersion, runningVersion) > 0);
-        const heldBack = pendingVersion !== undefined && versionOf(runningVersion) !== undefined && compareVersions(pendingVersion, runningVersion) <= 0 && versionOf(updateState.asked ?? '') !== undefined && isNewer(updateState.asked, pendingVersion);
-        const pendingMsg = heldBack ? t('heldBackMsg').replace('{v}', pendingVersion).replace('{asked}', updateState.asked) : t('installedMsg').replace('{v}', pendingVersion);
-        const updateStatus = u === null ? t('none') : u.error ? t('error') + ' (' + u.error + ')' : updateState.installing ? t('installingMsg').replace('{v}', (u.latest ?? '').replace(/^v/, '')) : u.newer ? t('available') + ': ' + u.latest : t('upToDate');
         const controlStyle = { background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 8px', fontSize: 13 };
         const linkStyle = { background: 'none', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '5px 10px', color: 'var(--dsw-alias-label-primary)', fontSize: 12, cursor: 'pointer', textDecoration: 'none' };
         const row = (label, tip, control, key) => h('div', { key, title: tip, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)', flexWrap: 'wrap' } },
@@ -4187,6 +4220,8 @@ window.__ModuleLoader__.load({
               h('div', { style: { fontSize: 15, fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, 'Nextsteps'),
               h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', lineHeight: '18px', marginTop: 2 } }, t('intro')))),
           supportBanner,
+          h('style', null, UPDATE_STYLES),
+          UpdateSettings({ updater, whatsNew, t }),
           h('div', { role: 'tablist', style: { display: 'flex', gap: 6, padding: '12px 0 14px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
             tabDefs.map(([id, label]) => tabButton(id, label))),
           h('div', { style: paneStyle('generation') },
@@ -4244,32 +4279,22 @@ window.__ModuleLoader__.load({
             h('div', { style: { ...cardStyle, ...wide } },
               row(t('discarded'), discardedEntries.length === 0 ? t('discardedEmpty') : '', discardedList, 'discarded'))),
           h('div', { style: paneStyle('about') },
-            h('div', { style: { ...cardStyle, ...wide } },
-              sectionTitle(t('secAbout')),
-              h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '12px 0', flexWrap: 'wrap' } },
-                h('div', { style: { minWidth: 0 } },
-                  h('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, t('update')),
-                  h('div', { style: { fontSize: 12, color: pendingIsNewer || updateState.installing ? 'var(--dsw-alias-state-success-primary, #22c55e)' : u !== null && u.newer ? 'var(--dsw-alias-state-success-primary, #22c55e)' : 'var(--dsw-alias-label-tertiary)', marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', alignItems: 'center' } },
-                    h('span', null, t('current') + ': ' + (runningVersion || pendingVersion || '—')),
-                    h('span', null, updateState.checking ? t('checking') : updateStatus))),
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' } },
-                  u !== null && u.newer && !pendingIsNewer ? h('button', { onClick: installUpdate, disabled: updateState.installing, style: { ...linkStyle, fontWeight: 600, opacity: updateState.installing ? 0.6 : 1, cursor: updateState.installing ? 'wait' : 'pointer' } }, t('updateNow')) : null,
-                  h('button', { onClick: checkUpdate, style: linkStyle }, t('check')),
-                  u !== null && typeof u.url === 'string' && u.url !== '' ? h('a', { href: u.url, target: '_blank', rel: 'noreferrer', style: linkStyle, title: t('open') }, t('open')) : null)),
-              updateState.installError !== '' ? h('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, padding: '8px 0' } }, updateState.installError === 'local-development' ? t('localDev') : updateState.installError === 'unsupported-version' ? t('unsupportedVersion') : updateState.installError === 'precheck' ? t('updatePrecheck') : updateState.installError === 'no-installer' ? t('updateNoManager') : t('installError') + ' (' + updateState.installError + ')') : null,
-              pendingIsNewer || heldBack ? h('div', { style: { color: 'var(--dsw-alias-state-success-primary, #22c55e)', fontSize: 12, padding: '8px 0' } }, pendingMsg) : null)),
             h('div', { style: cardStyle },
               sectionTitle(t('secPerformance')),
               row(t('metrics'), t('metrics'), metricTable, 'metrics')),
             h('div', { style: cardStyle },
+              sectionTitle(t('secAbout')),
               row(t('diagCopy'), t('diagCopyTip'), h('button', { type: 'button', className: 'dsh-sf-action', onClick: copyDiagnostics }, t('diagCopy')), 'diagcopy'),
               h('div', { style: { display: 'flex', gap: 8, padding: '12px 0', flexWrap: 'wrap' } },
                 h('a', { href: REPO_URL, target: '_blank', rel: 'noreferrer', style: linkStyle }, t('repo')),
-                h('a', { href: REPO_URL + '/issues', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('issues')))),
+                h('a', { href: REPO_URL + '/issues', target: '_blank', rel: 'noreferrer', style: linkStyle }, t('issues'))))),
           h('div', { className: 'dsh-sf-notice', style: { paddingBottom: 8 } }, localNotice));
       };
     }
 
+
+    const updater = createUpdater();
+    const whatsNew = createWhatsNew();
 
     const localStore = {
       WRITE_RETRY_DELAYS_MS,
@@ -4278,7 +4303,9 @@ window.__ModuleLoader__.load({
       flush: () => store.flush(),
       handle: (key, policy) => store.handle(key, policy),
       handles: {
-        update: updateHandle,
+        updateInstalled: updateInstalledHandle,
+        whatsNew: whatsNewHandle,
+        seen: seenHandle,
         favoritesOrder: favoritesOrderHandle,
         metrics: metricsHandle,
         sessionOverrides: sessionOverridesHandle,
@@ -4304,9 +4331,15 @@ window.__ModuleLoader__.load({
           return [() => fiber.dispose()];
         };
         for (const off of injectScope(['remote.pluginManager'], (scope) => {
-          updateManager = scope.remote?.pluginManager;
-          scope.effect(() => () => { updateManager = undefined; }, 'dsh-nextsteps: update installer');
+          updater.manager = scope.remote?.pluginManager;
+          scope.effect(() => () => { updater.manager = undefined; }, 'dsh-nextsteps: update installer');
         })) if (ctx.effect !== undefined) ctx.effect(() => off, 'dsh-nextsteps: update installer scope');
+        if (ctx.effect !== undefined) ctx.effect(() => {
+          const timerId = window.setTimeout(() => { updater.check(); }, 15000);
+          timerId.unref?.();
+          whatsNew.load();
+          return () => window.clearTimeout(timerId);
+        }, 'dsh-nextsteps: update auto-check');
         installStyles(ctx);
         readIndex();
         migrateLegacyCaptures();
@@ -4335,6 +4368,12 @@ window.__ModuleLoader__.load({
           label: () => 'Nextsteps',
           locale: NS
         }, createSettings(ctx)));
+
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'whats-new',
+          locale: NS
+        }, createWhatsNewDialog(ctx, whatsNew)));
       },
       i18n,
       flushWrites,

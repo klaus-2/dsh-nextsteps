@@ -127,7 +127,8 @@ test("the plugin identity is the same on both halves", () => {
   assertIncludes(clientSource, `id: '${pluginId}',`, "the client registers the plugin id");
   assertIncludes(hostSource, `const PLUGIN_NAME = '${pluginId}';`, "the host registers the plugin name");
   assertIncludes(hostSource, "const name = PLUGIN_NAME;", "the plugin name is single-sourced");
-  assertIncludes(hostSource, `https://registry.npmjs.org/${pluginId}/latest`, "the host reads the installable version from the npm registry");
+  assertIncludes(hostSource, `path: '/api/${pluginId}.update',`, "the host registers the update route");
+  assertIncludes(clientSource, `const UPDATE_ROUTE = '/api/${pluginId}.update';`, "the client asks the host update route");
 });
 
 test("the storage keys belong to the plugin", () => {

@@ -53,9 +53,10 @@ test("the sources carry no identity from another variant", () => {
   }
 });
 
-test("the release check reads the registry and nothing else", () => {
-  assert(hostSource.includes("registry.npmjs.org"), "the host reads the installable version from the registry");
-  assert(!hostSource.includes("api.github.com"), "the host never asks the GitHub API");
+test("the release check reads the GitHub release and confirms it on npm", () => {
+  assert(hostSource.includes("https://api.github.com/repos/klaus-2/dsh-nextsteps/releases/latest"), "the host reads the latest GitHub release");
+  assert(hostSource.includes("https://registry.npmjs.org/"), "the host confirms the release on the npm registry");
+  assert(!hostSource.includes("createServer") && !hostSource.includes("node:http"), "the host opens no loopback server");
 });
 
 test("the client does not require a json file", () => {

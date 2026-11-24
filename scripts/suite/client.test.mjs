@@ -59,10 +59,8 @@ test("the settings section renders every control", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   });
   try {
     const { tree } = settingsTree(client);
@@ -82,10 +80,8 @@ test("the settings page opens with the star request banner", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   });
   try {
     const { tree } = settingsTree(client);
@@ -178,10 +174,8 @@ test("the language select offers every language the host accepts", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   });
   try {
     const { tree } = settingsTree(client);
@@ -202,10 +196,8 @@ test("the model row explains an empty catalog instead of waiting forever", () =>
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   });
   try {
     const { tree } = settingsTree(client);
@@ -224,10 +216,8 @@ test("the followup count input keeps the bounds", () => {
   const fetchStub = stubFetch({
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   });
   try {
     const { tree } = settingsTree(client);
@@ -317,10 +307,8 @@ test("the client asks the host for its settings and its model catalog", async ()
   const client = loadClient({ routes: {
     "/api/dsh-nextsteps.settings": { ok: true, settings: { lang: "auto", maxFollowups: 3, showHeader: true, model: "", styles: ["next-action", "explore", "deep-dive"], generationMode: "auto", latencyBudgetMs: 30000, maxSuggestionChars: 200 }, version: "1.0.0" },
     "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-    "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
   }, prefixes: {
-    "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-    "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+    "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
   } });
   try {
     const { ctx, registrations } = fakeSlotHost(client.react);
@@ -335,8 +323,7 @@ test("the client asks the host for its settings and its model catalog", async ()
     assert(urls.some((url) => url.includes(".models")), `the client reads the model catalog: ${JSON.stringify(urls)}`);
     const hostChannel = urls.filter((url) => !/^https?:\/\//.test(url));
     assert(hostChannel.every((url) => url.startsWith("/api/dsh-nextsteps.")), `the client only calls its own host routes: ${JSON.stringify(hostChannel)}`);
-    const loopback = urls.filter((url) => /^https?:\/\//.test(url));
-    assert(loopback.length > 0 && loopback.every((url) => url.startsWith("http://127.0.0.1:") && url.includes("/.ns/")), `the client talks to its own loopback server only: ${JSON.stringify(loopback)}`);
+    assert(urls.every((url) => !/^https?:\/\//.test(url)), `the client opens no loopback or remote channel: ${JSON.stringify(urls)}`);
   } finally {
     client.fetchStub.restore();
   }
@@ -490,8 +477,7 @@ test("the client survives a host that answers with an empty body", async () => {
     "/api/dsh-nextsteps.settings": "",
     "/api/dsh-nextsteps.models": ""
   }, {
-    "/.ns/health": "",
-    "/.ns/update": ""
+    "/api/dsh-nextsteps.update": ""
   });
   try {
     const { ctx, registrations } = fakeSlotHost(client.react);
@@ -3600,11 +3586,9 @@ function favoritesExportClient(storageSeed) {
     routes: {
       "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
       "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
     },
     prefixes: {
-      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-      "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+      "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
     }
   });
   const originalCreate = URL.createObjectURL;
@@ -3715,12 +3699,10 @@ test("the settings page tests the selected model and shows the latency", async (
     routes: {
       "/api/dsh-nextsteps.settings": { ok: true, settings: NEW_SETTINGS, version: "1.0.0" },
       "/api/dsh-nextsteps.models": { ok: true, groups: [{ id: "demo", name: "Demo", models: [{ id: "demo-model", name: "Demo Model" }] }] },
-      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) },
       "/api/dsh-nextsteps.model-test": { ok: true, model: "demo/demo-model", latencyMs: 42 }
     },
     prefixes: {
-      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-      "/.ns/update": { ok: true, version: "1.0.0", update: { latest: "v1.0.0", newer: false } }
+      "/api/dsh-nextsteps.update": { ok: true, current: "1.0.0", latest: "1.0.0", managed: true, newer: false }
     }
   });
   try {
@@ -5546,28 +5528,23 @@ test("the capture unwraps a double-encoded payload under seeded fuzzing", () => 
   }
 });
 
-suite("client: the update precheck");
+suite("client: the update installer");
 
-const PACKUMENT_OK = () => ({ dist: { integrity: "sha512-" + "A".repeat(86) + "==" } });
+const UPDATE_INFO = { ok: true, name: "dsh-nextsteps", current: "1.0.16", latest: "1.0.17", managed: true, newer: true, url: "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v1.0.17", notes: "Fresh notes" };
 
-function updateRoutes(packumentAnswer = PACKUMENT_OK()) {
+function updateRoutes(info = UPDATE_INFO) {
   return {
     routes: {
       "/api/dsh-nextsteps.settings": { ok: true, settings: { ...NEW_SETTINGS }, version: "1.0.16" },
       "/api/dsh-nextsteps.models": { ok: true, groups: [] },
-      "/api/dsh-nextsteps.secret": { ok: true, secret: "a".repeat(64) }
-    },
-    prefixes: {
-      "/.ns/health": (init, url) => ({ ok: true, name: "dsh-nextsteps", port: Number(new URL(url).port) }),
-      "/.ns/update": { ok: true, version: "1.0.16", update: { latest: "v1.0.17", newer: true } },
-      "https://registry.npmjs.org/dsh-nextsteps/": packumentAnswer
+      "/api/dsh-nextsteps.update?current=1": { ok: true, current: "1.0.16" },
+      "/api/dsh-nextsteps.update": info
     }
   };
 }
 
 async function updatePage(client, pluginManager) {
   const base = fakeSlotHost(client.react);
-  const managerCalls = [];
   const ctx = { ...base.ctx };
   if (pluginManager !== undefined) {
     ctx.inject = (deps, setup) => {
@@ -5582,75 +5559,73 @@ async function updatePage(client, pluginManager) {
   for (const effect of client.react.__effects ?? []) await effect();
   await new Promise((resolve) => setTimeout(resolve, 30));
   const rendered = settings.component({ t: (key) => key });
-  const buttons = walk(rendered, (node) => node.type === "button" && node.children.includes("updateNow"));
-  return { settings, rendered, buttons, managerCalls };
+  const buttonsWith = (tree, label) => walk(tree, (node) => node.type === "button" && node.children.includes(label));
+  const mentions = (tree, key) => walk(tree, (node) => node.children.includes(key)).length > 0;
+  return { settings, rendered, buttonsWith, mentions };
 }
 
-test("the install consults the packument and then asks the manager", async () => {
+test("the install hands the exact npm spec to the plugin manager", async () => {
   const managerCalls = [];
   const pluginManager = {
-    async updateBundle(name, version, options) {
-      managerCalls.push({ spec: name + "@" + version, options });
+    async installBundle(spec, options) {
+      managerCalls.push({ spec, options });
       return { ok: true, value: { application: "applied", version: "1.0.17" } };
     }
   };
   const client = loadClient(updateRoutes());
   try {
-    const { settings, buttons } = await updatePage(client, pluginManager);
-    assertEqual(buttons.length, 1, "the update button appears");
+    const { settings, rendered, buttonsWith, mentions } = await updatePage(client, pluginManager);
+    const buttons = buttonsWith(rendered, "updateInstall");
+    assertEqual(buttons.length, 1, "the install button appears");
     await buttons[0].props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assertEqual(managerCalls.length, 1, "the manager is asked once");
-    assertEqual(managerCalls[0]?.spec, "dsh-nextsteps@1.0.17", "the manager receives the exact version");
-    assert(client.fetchStub.calls.some((call) => call.url.includes("registry.npmjs.org/dsh-nextsteps/1.0.17")), "the packument is consulted for the exact version");
-    const packumentCall = client.fetchStub.calls.find((call) => call.url.includes("registry.npmjs.org/dsh-nextsteps/1.0.17"));
-    assert(packumentCall !== undefined && packumentCall.headers?.["x-dsh-nextsteps-secret"] === undefined, "the packument carries no instance secret");
-    assert(!client.fetchStub.calls.some((call) => call.url.includes("/.ns/update/install")), "the dead install route is never called");
-    const settledPage = settings.component({ t: (key) => key });
-    assertEqual(walk(settledPage, (node) => node.type === "button" && node.children.includes("updateNow")).length, 0, "the update button disappears once the release is applied");
-    assert(walk(settledPage, (node) => node.children.includes("upToDate")).length === 1, "the row reports the running copy is up to date");
+    assertEqual(managerCalls.map((call) => call.spec), ["dsh-nextsteps@1.0.17"], "the manager receives the exact version");
+    assert(String(managerCalls[0]?.options?.requestId).startsWith("dsh-nextsteps-update-1.0.17-"), "the install carries a request id");
+    assert(!client.fetchStub.calls.some((call) => call.url.includes("127.0.0.1")), "no loopback port is probed");
+    assertEqual(client.storage.getItem("dsh-nextsteps.update.installed"), "1.0.17", "the installed version is remembered");
+    const settled = settings.component({ t: (key) => key });
+    assertEqual(buttonsWith(settled, "updateInstall").length, 0, "the install button disappears once the release is applied");
+    assert(mentions(settled, "updateCurrent"), "the row reports the running copy is up to date");
   } finally {
     client.fetchStub.restore();
   }
 });
 
-test("a packument that does not verify blocks the install before the manager", async () => {
-  const managerCalls = [];
-  const pluginManager = {
-    async updateBundle() {
-      managerCalls.push("asked");
-      return { ok: true, value: { application: "applied", version: "1.0.17" } };
-    }
-  };
-  const client = loadClient(updateRoutes({}));
-  try {
-    const { settings, buttons } = await updatePage(client, pluginManager);
-    assertEqual(buttons.length, 1, "the update button appears");
-    await buttons[0].props.onClick();
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assertEqual(managerCalls.length, 0, "the manager is never asked without a verified packument");
-    const after = settings.component({ t: (key) => key });
-    const errors = walk(after, (node) => node.children.includes("updatePrecheck"));
-    assertEqual(errors.length, 1, "the precheck failure is named on the page");
-    assert(!client.storage.getItem("dsh-nextsteps.updated"), "nothing is remembered as installed");
-  } finally {
-    client.fetchStub.restore();
-  }
-});
-
-test("a host without a plugin manager names the missing installer", async () => {
+test("a refused install names the failure and remembers nothing", async () => {
+  const pluginManager = { async installBundle() { return { ok: false, error: { message: "pnpm exited 1" } }; } };
   const client = loadClient(updateRoutes());
   try {
-    const { settings, buttons } = await updatePage(client, undefined);
-    assertEqual(buttons.length, 1, "the update button appears");
+    const { settings, rendered, buttonsWith, mentions } = await updatePage(client, pluginManager);
+    const buttons = buttonsWith(rendered, "updateInstall");
+    assertEqual(buttons.length, 1, "the install button appears");
     await buttons[0].props.onClick();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const after = settings.component({ t: (key) => key });
-    const errors = walk(after, (node) => node.children.includes("updateNoManager"));
-    assertEqual(errors.length, 1, "the missing installer is named on the page");
-    assert(!client.fetchStub.calls.some((call) => call.url.includes("/.ns/update/install")), "no install request is sent");
-    assert(!client.fetchStub.calls.some((call) => call.url.includes("registry.npmjs.org")), "the packument is not consulted without a manager");
-    assert(!client.storage.getItem("dsh-nextsteps.updated"), "nothing is remembered as installed");
+    assert(mentions(settings.component({ t: (key) => key }), "updateFailed"), "the failure is named on the page");
+    assert(!client.storage.getItem("dsh-nextsteps.update.installed"), "nothing is remembered as installed");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a host without a plugin manager offers a check instead of an install", async () => {
+  const client = loadClient(updateRoutes());
+  try {
+    const { rendered, buttonsWith, mentions } = await updatePage(client, undefined);
+    assertEqual(buttonsWith(rendered, "updateInstall").length, 0, "no install button without an installer");
+    assertEqual(buttonsWith(rendered, "updateCheck").length, 1, "the check button stays");
+    assert(mentions(rendered, "updateAvailable"), "the newer release is still named");
+    assert(!client.fetchStub.calls.some((call) => call.url.includes("registry.npmjs.org")), "the client never asks the registry itself");
+  } finally {
+    client.fetchStub.restore();
+  }
+});
+
+test("a copy that did not come from npm is sent to the plugin settings", async () => {
+  const client = loadClient(updateRoutes({ ...UPDATE_INFO, managed: false }));
+  try {
+    const { rendered, buttonsWith, mentions } = await updatePage(client, { async installBundle() { throw new Error("must not install"); } });
+    assertEqual(buttonsWith(rendered, "updateInstall").length, 0, "no install button for a manual copy");
+    assert(mentions(rendered, "updateManual"), "the row explains the manual update");
   } finally {
     client.fetchStub.restore();
   }

@@ -1189,15 +1189,22 @@ test("a cancelled generation is never answered as an empty success", async () =>
   assert(!warnings.some((line) => line.includes("generation failed")), `a routine cancellation never warns: ${warnings.join(" | ")}`);
 });
 
-test("the secret route hands the instance secret to the client", async () => {
+test("the update route answers the running version and its shipped notes", async () => {
   const { ctx, routes } = stubContext();
   const mod = await import(moduleUrl.href);
   await mod.apply(ctx);
-  const response = await routes.get(`/api/${pluginId}.secret`).fetch(new Request("http://x"));
+  assert(!routes.has(`/api/${pluginId}.secret`), "the old instance route is gone");
+  const route = routes.get(`/api/${pluginId}.update`);
+  assert(route !== undefined, "the update route is registered");
+  assertEqual(route.methods, ["GET"], "the update route answers GET");
+  const fs = await import("node:fs");
+  const pkg = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  const response = await route.fetch(new Request(`http://x/api/${pluginId}.update?current=1`));
   const body = await response.json();
   assertEqual(response.status, 200);
-  assertEqual(body.ok, true, "the secret route answers ok");
-  assert(typeof body.secret === "string" && body.secret.length > 0, "the secret route answers with the instance secret");
+  assertEqual(body.ok, true, "the current check answers ok");
+  assertEqual(body.current, pkg.version, "the current check reports the running version");
+  assert(body.notes === undefined || Object.values(body.notes).every((text) => typeof text === "string"), "the shipped notes are text per language");
 });
 
 test("the style rule reaches the inline section and the generator, and not the rewrite", async () => {

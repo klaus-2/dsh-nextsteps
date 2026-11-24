@@ -283,6 +283,9 @@ export function createReactStub() {
     useMemo(factory) {
       return factory();
     },
+    useSyncExternalStore(subscribe, getSnapshot) {
+      return getSnapshot();
+    },
     Fragment: "Fragment"
   };
   return {
@@ -490,6 +493,7 @@ export function loadClientModule(file, options = {}) {
       if (options.react === undefined) throw new Error(`${file} requires react but no stub was provided`);
       return options.react;
     }
+    if (options.modules !== undefined && Object.hasOwn(options.modules, name)) return options.modules[name];
     throw new Error(`unexpected require("${name}") in ${file}`);
   });
   return { spec: loaded, module, window: windowStub, sandbox, clipboard, execCommands };

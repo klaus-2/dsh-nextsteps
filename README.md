@@ -76,7 +76,7 @@ dsh plugin --profile web add dsh-nextsteps
 - An incremental capture history: each session keeps its own key and an index tracks the order, so a session you never open is never read.
 - Settings page inside the dsh settings — language, followups per turn, styles, generation mode, fallback model, latency budget, suggestion length, header visibility, metrics, favourites, discards, updates, diagnostics.
 - An explicit language (or an explicit model) switches to a separate clean model call, so the cards hold that language even in a conversation written in another one; `Auto` with no model follows the conversation inside the turn.
-- In-app updater — version check against npm, one-click install, restart prompt.
+- In-app updater — checks the latest GitHub release (confirmed on npm) about 15 seconds after startup, installs it with one click through the dsh plugin manager, asks for a restart and shows a What's new dialog with the release notes.
 - UI in English, Português (Brasil) and 简体中文.
 
 ## Keyboard shortcuts and the live region
@@ -129,7 +129,7 @@ The same page also shows the **performance** table (generation, persistence and 
 
 ## Updates
 
-The same settings page asks the npm registry for the latest `dsh-nextsteps` release. When a newer version is published, the plugin first checks that the version exists on the registry, then **Update now** installs it through the dsh plugin manager. The installed version is shown and you are asked to restart. Updates only ever install the `dsh-nextsteps` npm package — a development copy is detected and left alone.
+The same settings page keeps the plugin current. About 15 seconds after every startup the plugin checks the latest GitHub release of `dsh-nextsteps` — a read-only check, no credentials — and offers a version only once npm already holds it; the result is shown in the **Updates** row. Nothing installs automatically: **Update now** runs through the dsh plugin manager only when you press it, and the row tells you when dsh needs a restart to finish. After a version is installed, a **What's new** dialog shows its release notes in the interface language, once per version; it carries the same star request as the settings banner and respects the choice you already made there. Copies that were not installed under the `dsh-nextsteps` npm name are manual-update-only: the row reports the new version, but updating goes through Settings → Plugins.
 
 ## Requirements
 

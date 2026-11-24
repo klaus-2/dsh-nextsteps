@@ -1,10 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import vm from "node:vm";
-import { fakeHostCtx, flush, freePort, extractFunction, withIsolatedHome, withStubbedFetch } from "./harness.mjs";
+import { fakeHostCtx, flush, withIsolatedHome, withStubbedFetch } from "./harness.mjs";
 
 const LANGUAGES = ["auto", "en", "pt-BR", "zh-CN", "es", "fr", "de", "it", "ja", "ko", "ru", "ar", "hi", "id", "tr", "vi"];
 
@@ -62,9 +61,8 @@ export async function runHostSuite(harness, { pluginDir }) {
     const hostSource = readFileSync(path.join(pluginDir, "index.js"), "utf8");
     const pluginVersion = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8")).version;
     const moduleUrl = pathToFileURL(path.join(pluginDir, "index.js")).href;
-    const { apply, name, inject, startServer } = await import(moduleUrl);
+    const { apply, name, inject } = await import(moduleUrl);
     const settingsFile = path.join(home, ".dsh", "dsh-nextsteps", "settings.json");
-    const secretHeader = "x-dsh-nextsteps-secret";
 
     const llm = fakeLlm({
       text: JSON.stringify({ followups: [{ prompt: "Add the missing tests", label: "Add tests" }] })
@@ -79,8 +77,8 @@ export async function runHostSuite(harness, { pluginDir }) {
     await apply(host.ctx);
     harness.eq("the plugin name", name, "dsh-nextsteps");
     harness.eq("the declared services", inject, ["tools", "connection"]);
-    harness.check("the host binds the frozen loopback block", hostSource.includes("const DEFAULT_PORT = 47497;") && hostSource.includes("const PORT_ATTEMPTS = 20;"), "the loopback block must stay at 47497 with 20 attempts");
-    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.model-test", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.secret"]) {
+    harness.check("the host opens no loopback server", !hostSource.includes("node:http") && !hostSource.includes("createServer") && !hostSource.includes("/.ns/"));
+    for (const route of ["/api/dsh-nextsteps.settings", "/api/dsh-nextsteps.models", "/api/dsh-nextsteps.model-test", "/api/dsh-nextsteps.generate", "/api/dsh-nextsteps.update"]) {
       harness.check(`the route ${route} is registered`, host.routes.has(route));
     }
     for (const [route, spec] of host.routes) {
@@ -90,7 +88,7 @@ export async function runHostSuite(harness, { pluginDir }) {
     harness.eq("the models route answers GET", host.routes.get("/api/dsh-nextsteps.models").methods, ["GET"]);
     harness.eq("the model-test route answers POST", host.routes.get("/api/dsh-nextsteps.model-test").methods, ["POST"]);
     harness.eq("the generate route answers POST", host.routes.get("/api/dsh-nextsteps.generate").methods, ["POST"]);
-    harness.eq("the secret route answers GET", host.routes.get("/api/dsh-nextsteps.secret").methods, ["GET"]);
+    harness.check("the secret route is gone", !host.routes.has("/api/dsh-nextsteps.secret"));
     harness.check("the tool is registered", host.tools.has("suggest_followups"));
     harness.check("the system prompt section is registered", host.sections.some((section) => section.name === "dsh-nextsteps"));
     const section = host.sections.find((entry) => entry.name === "dsh-nextsteps");
@@ -637,122 +635,63 @@ export async function runHostSuite(harness, { pluginDir }) {
       harness.check("the tool is still registered", bare.tools.has("suggest_followups"));
     }
 
-    const server = await startServer({ port: await freePort() });
-    const port = server.port ?? server.address().port;
-    const base = `http://127.0.0.1:${port}`;
-    const secret = readFileSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret"), "utf8").trim();
-    const auth = { [secretHeader]: secret };
-    const json = (extra) => ({ [secretHeader]: secret, "content-type": "application/json", ...(extra ?? {}) });
-
-    harness.section("host: boot and instance secret");
-    harness.check("the server binds a port", typeof port === "number" && port > 0, String(port));
-    harness.check("the secret file lives in the profile", existsSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret")));
-    harness.check("the secret is 64 hex characters", /^[0-9a-f]{64}$/.test(secret), secret.slice(0, 12));
+    harness.section("host: the update route");
     {
-      const restarted = await import(`${moduleUrl}?restart=1`);
-      const again = await restarted.startServer({ port: await freePort() });
-      again.close();
-      const reread = readFileSync(path.join(home, ".dsh", "profiles", "desktop", "dsh-nextsteps", "instance.secret"), "utf8").trim();
-      harness.check("the secret survives a restart", reread === secret);
-    }
-    {
-      const health = await fetch(`${base}/.ns/health`);
-      const body = await health.json();
-      harness.check("the health route answers", health.status === 200 && body.ok === true && body.name === "dsh-nextsteps");
-    }
-    {
-      const unauthorized = await fetch(`${base}/.ns/update`);
-      harness.eq("a request without the secret is rejected", unauthorized.status, 401);
-      const wrong = await fetch(`${base}/.ns/update`, { headers: { [secretHeader]: "0".repeat(64) } });
-      harness.eq("a request with a wrong secret is rejected", wrong.status, 401);
-      const authorized = await fetch(`${base}/.ns/update`, { headers: { [secretHeader]: secret } });
-      harness.eq("a request with the real secret passes the gate", authorized.status, 200);
-    }
-
-    harness.section("host: profile directory derivation");
-    {
-      const fixtureHome = path.join(path.parse(process.cwd()).root, "dsh-profile-fixture-home");
-      const fnSource = extractFunction(hostSource, "resolveProfileDir");
-      const resolveProfileDir = typeof fnSource === "string"
-        ? vm.runInNewContext(`(${fnSource})`, { path })
-        : undefined;
-      const cases = [
-        ["the profile is derived from a web install",
-          path.join(fixtureHome, ".dsh", "profiles", "web", "node_modules", "dsh-nextsteps"),
-          path.join(fixtureHome, ".dsh", "profiles", "web")],
-        ["the profile is derived through the pnpm virtual store",
-          path.join(fixtureHome, ".dsh", "profiles", "desktop", "node_modules", ".pnpm", "dsh-nextsteps@1.7.1", "node_modules", "dsh-nextsteps"),
-          path.join(fixtureHome, ".dsh", "profiles", "desktop")],
-        ["a repository checkout falls back to the desktop profile",
-          path.join(fixtureHome, "code", "dsh-nextsteps"),
-          path.join(fixtureHome, ".dsh", "profiles", "desktop")],
-        ["the innermost profiles segment wins",
-          path.join(fixtureHome, "profiles", "outer", ".dsh", "profiles", "inner", "node_modules", "dsh-nextsteps"),
-          path.join(fixtureHome, "profiles", "outer", ".dsh", "profiles", "inner")]
-      ];
-      for (const [name, packageDir, expected] of cases) {
-        const actual = typeof resolveProfileDir === "function" ? resolveProfileDir(packageDir, fixtureHome) : undefined;
-        harness.eq(name, actual, expected);
-      }
-    }
-
-    harness.section("host: version and update");
-    {
+      const updateRoute = host.routes.get("/api/dsh-nextsteps.update");
+      harness.check("the update route is registered", updateRoute !== undefined);
+      harness.eq("the update route answers GET", updateRoute?.methods, ["GET"]);
+      const ask = async (route, query = "") => {
+        const response = await route.fetch(new Request(`http://x/api/dsh-nextsteps.update${query}`));
+        return { status: response.status, body: await response.json() };
+      };
+      const release = (tag, extra) => async () => new Response(JSON.stringify({ tag_name: tag, html_url: `https://github.com/klaus-2/dsh-nextsteps/releases/tag/${tag}`, body: "What changed\n## Install\nnpm i", ...(extra ?? {}) }), { status: 200, headers: { "content-type": "application/json" } });
+      const npmAsked = [];
       await withStubbedFetch([
-        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => new Response(JSON.stringify({ version: "99.0.0" }), { status: 200, headers: { "content-type": "application/json" } }) }
+        { match: "api.github.com/repos/klaus-2/dsh-nextsteps/releases/latest", reply: release("v99.0.0") },
+        { match: "registry.npmjs.org/dsh-nextsteps/", reply: async (url) => { npmAsked.push(url); return new Response("{}", { status: 200 }); } }
       ], async () => {
-        const update = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
-        harness.check("the update route answers", update.ok === true && update.update.latest === "v99.0.0" && update.update.newer === true, JSON.stringify(update.update));
+        const { status, body } = await ask(updateRoute);
+        harness.eq("the update check answers 200", status, 200);
+        harness.check("a newer release that npm holds is offered", body.ok === true && body.latest === "99.0.0" && body.newer === true && body.managed === true && body.current === pluginVersion, JSON.stringify(body).slice(0, 200));
+        harness.eq("the npm gate asks for the exact version", npmAsked, ["https://registry.npmjs.org/dsh-nextsteps/99.0.0"]);
+        harness.eq("the release notes stop before the install section", body.notes, "What changed\n");
+        harness.check("the release page is a GitHub url", body.url === "https://github.com/klaus-2/dsh-nextsteps/releases/tag/v99.0.0", String(body.url));
+        harness.check("the running copy is not reported as a pending install", body.installed === undefined, JSON.stringify(body.installed));
       });
       await withStubbedFetch([
-        { match: "api.github.com", reply: async () => { throw new Error("the GitHub API must not be asked for the version"); } },
-        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => new Response(JSON.stringify({ version: "99.0.0" }), { status: 200, headers: { "content-type": "application/json" } }) }
+        { match: "api.github.com", reply: release("v99.0.0") },
+        { match: "registry.npmjs.org", reply: async () => new Response("not found", { status: 404 }) }
       ], async () => {
-        const withoutNotes = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
-        harness.check("the version comes from the registry alone", withoutNotes.error === undefined && withoutNotes.update.latest === "v99.0.0", JSON.stringify(withoutNotes).slice(0, 140));
-        harness.check("the release is still offered without the notes", withoutNotes.update.newer === true, JSON.stringify(withoutNotes.update).slice(0, 140));
+        const { body } = await ask(updateRoute);
+        harness.check("a release that npm does not hold yet is not offered", body.ok === true && body.newer === false, JSON.stringify(body).slice(0, 160));
       });
       await withStubbedFetch([
-        { match: "registry.npmjs.org/dsh-nextsteps", reply: async () => { throw new Error("This operation was aborted"); } }
+        { match: "api.github.com", reply: release("v99.0.0", { html_url: "https://evil.example/release" }) },
+        { match: "registry.npmjs.org", reply: async () => new Response("{}", { status: 200 }) }
       ], async () => {
-        const brokenRegistry = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
-        harness.check("a registry failure answers with an error", brokenRegistry.update?.error !== undefined, JSON.stringify(brokenRegistry).slice(0, 140));
+        const { body } = await ask(updateRoute);
+        harness.check("a release page outside GitHub is dropped", body.url === undefined, String(body.url));
       });
-      const removed = await fetch(`${base}/.ns/update/install`, { method: "POST", headers: json(), body: JSON.stringify({ version: "9.9.9" }) });
-      harness.check("the in-app install route was removed and answers 404", removed.status === 404, `status=${removed.status}`);
-      const removedBody = await removed.json();
-      harness.check("the removed install route explains itself", removedBody.error === "not found", JSON.stringify(removedBody));
-      const running = await (await fetch(`${base}/.ns/update`, { headers: auth })).json();
-      harness.check("the running copy is not reported as a pending install", running.update.installed === undefined, JSON.stringify({ installed: running.installed, updateInstalled: running.update.installed }));
-    }
-
-    harness.section("host: the in-app install route stays removed");
-    {
-      const staged = await mkdtemp(path.join(tmpdir(), "dsh-regression-install-"));
-      try {
-        await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", version: pluginVersion }));
-        await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
-        await mkdir(path.join(staged, "lib", "host"), { recursive: true });
-        await copyFile(path.join(pluginDir, "lib", "host", "generation-round.mjs"), path.join(staged, "lib", "host", "generation-round.mjs"));
-        await copyFile(path.join(pluginDir, "lib", "host", "followup-interpretation.mjs"), path.join(staged, "lib", "host", "followup-interpretation.mjs"));
-        await copyFile(path.join(pluginDir, "lib", "host", "conversation-options.mjs"), path.join(staged, "lib", "host", "conversation-options.mjs"));
-        const installModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
-        const installServer = await installModule.startServer({ port: await freePort() });
-        const installPort = installServer.port ?? installServer.address().port;
-        const installBase = `http://127.0.0.1:${installPort}`;
-        try {
-          const gone = await fetch(`${installBase}/.ns/update/install`, { method: "POST", headers: { [secretHeader]: secret, "content-type": "application/json" }, body: JSON.stringify({ version: "9.9.9" }) });
-          harness.check("the install route answers 404 on a staged server too", gone.status === 404, `status=${gone.status}`);
-          const goneBody = await gone.json();
-          harness.check("the removed install route explains itself on a staged server", goneBody.error === "not found", JSON.stringify(goneBody));
-          const update = await (await fetch(`${installBase}/.ns/update`, { headers: { [secretHeader]: secret } })).json();
-          harness.check("the update route keeps answering on a staged server", update.ok === true, JSON.stringify(update).slice(0, 140));
-        } finally {
-          await installServer.close?.();
-        }
-      } finally {
-        await rm(staged, { recursive: true, force: true });
-      }
+      await withStubbedFetch([
+        { match: "api.github.com", reply: release("nightly") }
+      ], async () => {
+        const { status, body } = await ask(updateRoute);
+        harness.check("a tag that is not x.y.z fails the check with 502", status === 502 && body.ok === false && /no usable x\.y\.z tag/.test(body.error), JSON.stringify(body));
+      });
+      await withStubbedFetch([
+        { match: "api.github.com", reply: async () => new Response("rate limited", { status: 403 }) }
+      ], async () => {
+        const { status, body } = await ask(updateRoute);
+        harness.check("a GitHub failure fails the check with 502", status === 502 && body.ok === false && body.error.includes("answered 403"), JSON.stringify(body));
+      });
+      await withStubbedFetch([
+        { match: "api.github.com", reply: async () => { throw new Error("current=1 must stay offline"); } }
+      ], async () => {
+        const { status, body } = await ask(updateRoute, "?current=1");
+        const shipped = JSON.parse(readFileSync(path.join(pluginDir, "release-notes.json"), "utf8"));
+        harness.check("?current=1 answers the running version without the network", status === 200 && body.ok === true && body.current === pluginVersion, JSON.stringify(body).slice(0, 160));
+        harness.eq("?current=1 carries the shipped release notes", body.notes, shipped.version === pluginVersion ? shipped.notes : undefined);
+      });
     }
 
     harness.section("host: a newer copy on disk waits for the next start");
@@ -761,41 +700,29 @@ export async function runHostSuite(harness, { pluginDir }) {
       const newerVersion = `${Number(newerMajor) + 1}.0.0`;
       const staged = await mkdtemp(path.join(tmpdir(), "dsh-regression-newer-"));
       try {
-        await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", version: newerVersion }));
+        await writeFile(path.join(staged, "package.json"), JSON.stringify({ name: "dsh-nextsteps", type: "module", version: newerVersion }));
         await copyFile(path.join(pluginDir, "index.js"), path.join(staged, "index.js"));
         await mkdir(path.join(staged, "lib", "host"), { recursive: true });
-        await copyFile(path.join(pluginDir, "lib", "host", "generation-round.mjs"), path.join(staged, "lib", "host", "generation-round.mjs"));
-        await copyFile(path.join(pluginDir, "lib", "host", "followup-interpretation.mjs"), path.join(staged, "lib", "host", "followup-interpretation.mjs"));
-        await copyFile(path.join(pluginDir, "lib", "host", "conversation-options.mjs"), path.join(staged, "lib", "host", "conversation-options.mjs"));
-        const stagedUrl = pathToFileURL(path.join(staged, "index.js")).href;
-        const stagedModule = await import(stagedUrl);
-        const newerServer = await stagedModule.startServer({ port: await freePort() });
-        const newerPort = newerServer.port ?? newerServer.address().port;
-        const newerBase = `http://127.0.0.1:${newerPort}`;
-        const newerAuth = { [secretHeader]: secret };
-        try {
-          const newerUpdate = await (await fetch(`${newerBase}/.ns/update`, { headers: newerAuth })).json();
-          harness.eq("the update route reports the newer copy as installed", newerUpdate.update.installed, newerVersion);
-          harness.eq("the running copy is still the one that runs", newerUpdate.version, pluginVersion);
-        } finally {
-          newerServer.close();
+        for (const file of ["generation-round.mjs", "followup-interpretation.mjs", "conversation-options.mjs"]) {
+          await copyFile(path.join(pluginDir, "lib", "host", file), path.join(staged, "lib", "host", file));
         }
+        const stagedModule = await import(pathToFileURL(path.join(staged, "index.js")).href);
+        harness.eq("a newer copy on disk is reported as installed", stagedModule.installedUpdate(), newerVersion);
+        const stagedHost = fakeHostCtx({ llm, sessionQuery: fakeSessionQuery(turnEvents(12)) });
+        await stagedModule.apply(stagedHost.ctx);
+        await withStubbedFetch([
+          { match: "api.github.com", reply: async () => new Response(JSON.stringify({ tag_name: `v${newerVersion}` }), { status: 200 }) },
+          { match: "registry.npmjs.org", reply: async () => new Response("{}", { status: 200 }) }
+        ], async () => {
+          const route = stagedHost.routes.get("/api/dsh-nextsteps.update");
+          const body = await (await route.fetch(new Request("http://x/api/dsh-nextsteps.update"))).json();
+          harness.eq("the update route names the copy that landed", body.installed, newerVersion);
+          harness.eq("the running copy is still the one that runs", body.current, pluginVersion);
+        });
       } finally {
         await rm(staged, { recursive: true, force: true });
       }
     }
-
-    harness.section("host: the secret route is registered");
-    {
-      const secretRoute = host.routes.get("/api/dsh-nextsteps.secret");
-      harness.check("the secret route is registered", host.routes.has("/api/dsh-nextsteps.secret"));
-      harness.eq("the secret route declares GET", secretRoute.methods, ["GET"]);
-      harness.eq("the secret route buffers the body", secretRoute.requestBody, "buffered");
-      const secretBody = await (await secretRoute.fetch(new Request("http://x/api/dsh-nextsteps.secret"))).json();
-      harness.check("the secret route hands the instance secret over", secretBody.ok === true && secretBody.secret === secret);
-    }
-
-    await server.close?.();
 
     harness.section("host: the four new settings are loaded, validated and persisted");
     {
@@ -990,7 +917,5 @@ export async function runHostSuite(harness, { pluginDir }) {
       }));
     }
 
-    const singleton = await startServer();
-    singleton.close();
   });
 }

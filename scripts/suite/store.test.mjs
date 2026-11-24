@@ -136,16 +136,16 @@ test("subscribe fires once per write across immediate writes, queued retries, si
     assertEqual(storage._data[retryKey], JSON.stringify({ retry: true }), "queued retry persists the exact payload");
     assertEqual(retryEvents.length, 1, "flushing the retry does not notify subscribers again");
 
-    const updateHandle = client.instance.localStore.handles.update;
+    const updateHandle = client.instance.localStore.handles.updateInstalled;
     const updateEvents = [];
     updateHandle.subscribe(() => {
       updateEvents.push("updated");
     });
     assertEqual(updateHandle.write("1.10.1"), true, "update handle write succeeds");
-    assertEqual(storage._data[`${pluginId}.updated`], "1.10.1", "update handle persists the version string");
+    assertEqual(storage._data[`${pluginId}.update.installed`], "1.10.1", "update handle persists the version string");
     assertEqual(updateEvents.length, 1, "update handle write notifies once");
     updateHandle.remove({ notify: false });
-    assertEqual(storage._data[`${pluginId}.updated`], undefined, "silent remove clears the update key synchronously");
+    assertEqual(storage._data[`${pluginId}.update.installed`], undefined, "silent remove clears the update key synchronously");
     assertEqual(updateEvents.length, 1, "silent remove emits no notification");
   } finally {
     client.fetchStub.restore();
