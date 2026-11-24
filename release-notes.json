@@ -1,8 +1,8 @@
 {
-  "version": "1.11.0",
+  "version": "1.12.0",
   "notes": {
-    "en": "New in 1.11.0: near-identical suggestions are filtered, and the generator is asked once for replacements when the filter leaves too few cards.\nAn opt-in fallback model repeats a failed or timed-out round once with the chat's default model.\nCopy diagnostics in the About tab copies a support report for an issue.\nThe configured model is kept when other settings are saved, and the first click on a card lands.",
-    "pt-BR": "Novidades na 1.11.0: sugestões quase idênticas são filtradas, e o gerador recebe um pedido único de substituições quando o filtro deixa cartões de menos.\nUm modelo reserva opcional repete uma rodada falha ou estourada uma vez com o modelo padrão da conversa.\nCopiar diagnóstico, na aba Sobre, copia um relatório de suporte para abrir uma issue.\nO modelo configurado é mantido ao salvar outras configurações, e o primeiro clique num cartão funciona.",
-    "zh-CN": "1.11.0 新功能：会过滤几乎相同的建议，过滤后数量不足时向生成器发起一次补充请求。\n可选的备用模型会在回合失败或超时时用对话的默认模型重试一次。\n“关于”页签中的复制诊断信息可复制用于提交 issue 的支持报告。\n保存其他设置时会保留已配置的模型，卡片的第一次点击即可生效。"
+    "en": "New in 1.12.0: the update check follows the latest GitHub release, offers it once npm holds it and installs through the dsh plugin manager, with no local server.\nA What's new dialog shows the release notes once after an update; the What's new button in the Updates section reopens them.\nThe Updates section sits below the star banner, visible on every settings tab.\nThe Performance and Diagnostics cards now show only in the About tab.",
+    "pt-BR": "Novidades na 1.12.0: a verificação de atualização segue a release mais recente do GitHub, só oferece a versão quando ela já está no npm e instala pelo gerenciador de plugins do dsh, sem servidor local.\nUm diálogo de Novidades mostra as notas da versão uma vez depois de atualizar; o botão Novidades na seção Atualizações reabre as notas.\nA seção Atualizações fica logo abaixo do banner de estrela, visível em todas as abas das configurações.\nOs cards de Desempenho e Diagnóstico agora aparecem só na aba Sobre.",
+    "zh-CN": "1.12.0 新功能：更新检查改为跟随 GitHub 上的最新 release，只有在 npm 上已有该版本时才提供更新，并通过 dsh 插件管理器安装，不再使用本地服务器。\n更新后会显示一次“新功能”对话框，列出该版本的说明；“更新”区域中的“新功能”按钮可再次打开。\n“更新”区域位于点赞横幅下方，在所有设置页签中都可见。\n“性能”和“诊断”卡片现在只显示在“关于”页签中。"
   }
 }

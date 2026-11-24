@@ -6,17 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-24
+
 ### Added
 
-- **What's new dialog.** After an update is installed and dsh restarts, a dialog shows the release notes of the new version in the interface language, once per version, with a link to the release page. The notes ship in the package as `release-notes.json` (en, pt-BR, zh-CN). The dialog carries the star request and shares its state with the settings banner, so a star or a dismissal in either place silences both. The Updates row also gains a **What's new** button that reopens the notes of the running version.
+- **What's new dialog.** After an update is installed and dsh restarts, a dialog shows the release notes of the new version in the interface language, once per version, with a link to the release page. The notes ship in the package as `release-notes.json` (en, pt-BR, zh-CN). The dialog carries the star request and shares its state with the settings banner, so a star or a dismissal in either place silences both. The Updates row also gains a **What's new** button that reopens the notes of the running version. ([`3976120`](https://github.com/klaus-2/dsh-nextsteps/commit/3976120))
 
 ### Changed
 
-- **The update check follows the latest GitHub release.** About 15 seconds after startup (or as soon as the settings page opens, if that comes first), the plugin reads the latest release of `klaus-2/dsh-nextsteps` from the GitHub API (read-only, no credentials) and offers it only when npm already holds that exact version. **Update now** installs through the dsh plugin manager, retrying with the registry tarball when the manager reports the spec as already installed, and the row asks for a restart when the new copy waits for the next start. A copy not installed under the `dsh-nextsteps` npm name is sent to Settings → Plugins instead. The flow is the same one `dsh-orchestrator-kit` uses.
+- **The update check follows the latest GitHub release.** About 15 seconds after startup (or as soon as the settings page opens, if that comes first), the plugin reads the latest release of `klaus-2/dsh-nextsteps` from the GitHub API (read-only, no credentials) and offers it only when npm already holds that exact version. **Update now** installs through the dsh plugin manager, retrying with the registry tarball when the manager reports the spec as already installed, and the row asks for a restart when the new copy waits for the next start. A copy not installed under the `dsh-nextsteps` npm name is sent to Settings → Plugins instead. The flow is the same one `dsh-orchestrator-kit` uses. ([`3976120`](https://github.com/klaus-2/dsh-nextsteps/commit/3976120))
+- **The Updates section sits below the star banner.** The update status, **Check for updates** / **Update now** and **What's new** now render right under the star request, above the tabs, so they are visible whichever tab is open; once the banner is starred or dismissed, the section moves up under the page header. ([`3976120`](https://github.com/klaus-2/dsh-nextsteps/commit/3976120))
+
+### Fixed
+
+- **Performance and Diagnostics show only in the About tab.** The performance table and the Copy diagnostics card used to render below every settings tab; they now belong to the About tab, under the About heading with the repository and issue links. ([`3976120`](https://github.com/klaus-2/dsh-nextsteps/commit/3976120))
 
 ### Removed
 
-- **The plugin's own loopback server.** The host no longer listens on `127.0.0.1:47497`–`47516`, no longer writes an instance file, and the `/api/dsh-nextsteps.secret` route is gone; the client talks only to `/api/dsh-nextsteps.*` routes on the host. The update record moved from `dsh-nextsteps.updated` to `dsh-nextsteps.update.installed`, next to `dsh-nextsteps.update.whatsNew` and `dsh-nextsteps.update.seen`.
+- **The plugin's own loopback server.** The host no longer listens on `127.0.0.1:47497`–`47516`, no longer writes an instance file, and the `/api/dsh-nextsteps.secret` route is gone; the client talks only to `/api/dsh-nextsteps.*` routes on the host. The update record moved from `dsh-nextsteps.updated` to `dsh-nextsteps.update.installed`, next to `dsh-nextsteps.update.whatsNew` and `dsh-nextsteps.update.seen`. ([`3976120`](https://github.com/klaus-2/dsh-nextsteps/commit/3976120))
 
 ## [1.11.0] - 2026-11-24
 
