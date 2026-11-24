@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-nextsteps
 - **Card actions on demand** — copy, favourite, edit, discard, move, expand and new-conversation appear when the pointer or the keyboard focus reaches the card; touch devices keep them visible.
 - **Nothing under an incomplete turn** — a stopped or failed answer shows no header and no buttons; in on-demand mode a lightweight host probe decides whether the generate button makes sense.
 - **Add a suggestion** by hand under the answer, next to the header.
-- **Keyboard shortcuts**, local to the card: `c` copies, `f` favourites, `e` edits, `d` discards and `Esc` closes the editor or the expansion. The hints appear when the card has the focus; `Enter` and `Space` send the card as usual.
+- **Keyboard shortcuts**, local to the card: `c` copies, `f` favourites, `e` edits, `d` discards and `Esc` closes the editor or the expansion; `Enter` and `Space` send the card as usual.
 - **A live region** announces each action to screen readers, and the same text is shown next to the cards so nothing is announced silently.
 - **Performance metrics** in the settings — the average and the worst duration of the generation, the capture and the card build, with the sample count; a stage with no samples says so instead of showing a fake zero.
 - **A latency budget** for the generator (5 000–120 000 ms) and a bounded suggestion length (60–600 characters), so a slow model cannot hold a turn forever.
@@ -59,6 +59,7 @@ dsh plugin --profile web add dsh-nextsteps
 - **Near-identical suggestions are filtered** — the round's prompts are compared by normalized text (token overlap of at least 0.8) and near-duplicates are dropped; when the filter shrinks the answer below the request, the generator is asked once for replacements that also respect the avoid list.
 - **Fallback model** — an opt-in setting repeats a failed or timed-out generation round once with the chat's default model; reserve cards show a fallback origin label, and the client deadline doubles so the reserve can finish.
 - **Copy diagnostics** — a button in the About tab copies a support report with the plugin version, environment, active settings, performance metrics and the last recorded error; the harness version is not reachable from the client and the report says so.
+- **Star request banner** — the settings page opens with a short banner asking for a GitHub star; following the link shows a brief thank-you, and once you star or dismiss it the banner does not come back.
 - **Card origin label** — the last card of a round shows the model that produced it and when, and the label persists with the capture.
 - **Safety badges** — heuristic checks flag suggestions that look like prompt-injection attempts or carry credential-like strings; the card shows a badge and sending stays possible.
 - **Favourites management** — search, edit the text, bulk copy/remove, JSON export and import (backup and moving between machines), and drag or keyboard reordering; the Markdown export follows the saved order.
@@ -80,7 +81,7 @@ dsh plugin --profile web add dsh-nextsteps
 
 ## Keyboard shortcuts and the live region
 
-The shortcuts are **local to the card** — they work when a card has the focus, and they never change what another part of the chat does. `c` copies the prompt, `f` toggles the favourite, `e` opens the editor, `d` discards the card and `Esc` closes the editor or collapses the expansion. A shortcut is ignored while the editor has the focus and whenever a modifier key is held, so the usual editing keys keep working. The hint row appears under the card when it is focused, and every action button carries an `aria-keyshortcuts` attribute so the shortcut is announced too.
+The shortcuts are **local to the card** — they work when a card has the focus, and they never change what another part of the chat does. `c` copies the prompt, `f` toggles the favourite, `e` opens the editor, `d` discards the card and `Esc` closes the editor or collapses the expansion. A shortcut is ignored while the editor has the focus and whenever a modifier key is held, so the usual editing keys keep working. Every action button carries an `aria-keyshortcuts` attribute, so screen readers announce the shortcut too.
 
 Each action writes its outcome into one live region — a single element with `role="status"` whose text changes — and the same text is shown next to the cards. That is why copying, favouriting, discarding, editing and restoring are all announced once, and why a failed copy tells you it failed instead of looking like a success.
 

@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-nextsteps
 - **Ações do card sob demanda** — copiar, favoritar, editar, descartar, mover, expandir e nova conversa aparecem quando o ponteiro ou o foco do teclado chega ao card; dispositivos de toque as mantêm visíveis.
 - **Nada sob um turno incompleto** — uma resposta interrompida ou falha não mostra cabeçalho nem botões; no modo sob demanda, uma sonda leve do host decide se o botão de geração faz sentido.
 - **Adicionar uma sugestão** à mão sob a resposta, ao lado do cabeçalho.
-- **Atalhos de teclado**, locais do card: `c` copia, `f` favorita, `e` edita, `d` descarta e `Esc` fecha o editor ou a expansão. As dicas aparecem quando o card tem o foco; `Enter` e `Space` enviam o card como sempre.
+- **Atalhos de teclado**, locais do card: `c` copia, `f` favorita, `e` edita, `d` descarta e `Esc` fecha o editor ou a expansão; `Enter` e `Space` enviam o card como sempre.
 - **Uma região viva** anuncia cada ação para leitores de tela, e o mesmo texto aparece ao lado dos cards — nada é anunciado em silêncio.
 - **Métricas de desempenho** nas configurações — a duração média e a pior da geração, da captura e da construção dos cards, com a contagem de amostras; um estágio sem amostras diz isso em vez de mostrar um zero falso.
 - **Um orçamento de latência** para o gerador (5 000–120 000 ms) e um tamanho de sugestão limitado (60–600 caracteres), para que um modelo lento não segure um turno para sempre.
@@ -59,6 +59,7 @@ dsh plugin --profile web add dsh-nextsteps
 - **Sugestões quase idênticas são filtradas** — os prompts da rodada são comparados por texto normalizado (sobreposição de tokens de pelo menos 0.8) e as quase-duplicatas são descartadas; quando o filtro encolhe a resposta abaixo do pedido, o gerador recebe um pedido único de substituições que também respeitam a lista de evitar.
 - **Modelo reserva** — uma opção desligada por padrão repete uma rodada falha ou estourada uma vez com o modelo padrão da conversa; os cartões da reserva mostram o rótulo de origem de reserva, e o prazo do cliente dobra para a reserva terminar.
 - **Copiar diagnóstico** — um botão na aba Sobre copia um relatório de suporte com a versão do plugin, o ambiente, as configurações ativas, as métricas de desempenho e o último erro registrado; a versão do harness não é acessível pelo cliente e o relatório diz isso.
+- **Banner de apoio** — a página de configurações abre com um banner curto pedindo uma estrela no GitHub; seguir o link mostra um agradecimento breve, e depois de dar a estrela ou dispensar o banner ele não volta.
 - **Rótulo de origem do cartão** — o último cartão da rodada mostra o modelo que o produziu e quando, e o rótulo persiste com o capture.
 - **Selos de segurança** — verificações heurísticas marcam sugestões que parecem tentativas de injeção de prompt ou contêm strings semelhantes a credenciais; o cartão mostra um selo e o envio continua possível.
 - **Gestão de favoritos** — busca, edição do texto, copiar/remover em lote, exportação e importação em JSON (backup e troca de máquina) e reordenação por arraste ou teclado; a exportação em Markdown segue a ordem salva.
@@ -73,14 +74,14 @@ dsh plugin --profile web add dsh-nextsteps
 - **Selo de estilo** — o cartão pode carregar um selo pequeno com o ângulo dado pelo gerador — Próxima ação, Explorar ou Aprofundar.
 - **Pausar sugestões** — uma opção no painel da conversa que interrompe toda a geração daquela conversa; cartões capturados durante a pausa ficam guardados, porém ocultos, até você retomar.
 - Um histórico de capturas incremental: cada sessão guarda sua própria chave e um índice registra a ordem, então uma sessão que você nunca abre nunca é lida.
-- Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações.
+- Página de configurações dentro das configurações do dsh — idioma, followups por turno, estilos, modo de geração, modelo reserva, orçamento de latência, tamanho da sugestão, visibilidade do cabeçalho, métricas, favoritos, descartes, atualizações, diagnóstico.
 - Um idioma explícito (ou um modelo explícito) passa a usar uma chamada limpa separada, então os cards mantêm esse idioma mesmo numa conversa escrita em outro; `Automático` sem modelo segue a conversa dentro do turno.
 - Atualizador in-app — verificação de versão no npm, instalação com um clique, pedido de reinício.
 - Interface em English, Português (Brasil) e 简体中文.
 
 ## Atalhos de teclado e a região viva
 
-Os atalhos são **locais do card** — funcionam quando o card tem o foco e nunca mudam o que outra parte do chat faz. `c` copia o prompt, `f` alterna o favorito, `e` abre o editor, `d` descarta o card e `Esc` fecha o editor ou recolhe a expansão. Um atalho é ignorado enquanto o editor tem o foco e sempre que uma tecla modificadora está pressionada, então as teclas de edição normais continuam funcionando. A linha de dicas aparece sob o card quando ele está em foco, e cada botão de ação carrega o atributo `aria-keyshortcuts`, para que o atalho também seja anunciado.
+Os atalhos são **locais do card** — funcionam quando o card tem o foco e nunca mudam o que outra parte do chat faz. `c` copia o prompt, `f` alterna o favorito, `e` abre o editor, `d` descarta o card e `Esc` fecha o editor ou recolhe a expansão. Um atalho é ignorado enquanto o editor tem o foco e sempre que uma tecla modificadora está pressionada, então as teclas de edição normais continuam funcionando. Cada botão de ação carrega o atributo `aria-keyshortcuts`, para que os leitores de tela também anunciem o atalho.
 
 Cada ação grava seu resultado em uma região viva — um único elemento com `role="status"` cujo texto muda — e o mesmo texto é exibido ao lado dos cards. É por isso que copiar, favoritar, descartar, editar e restaurar são todos anunciados uma única vez, e por isso uma cópia que falha avisa que falhou em vez de parecer um sucesso.
 
